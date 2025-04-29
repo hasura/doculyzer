@@ -38,7 +38,7 @@ class Document(Base):
     doc_type = Column(String(50))
     source = Column(String(1024))
     content_hash = Column(String(255))
-    metadata = Column(Text)
+    metadata_ = Column(Text)
     created_at = Column(Float)
     updated_at = Column(Float)
 
@@ -58,7 +58,7 @@ class Element(Base):
     content_preview = Column(Text)
     content_location = Column(Text)
     content_hash = Column(String(255))
-    metadata = Column(Text)
+    metadata_ = Column(Text)
 
     # Relationships
     document = relationship("Document", back_populates="elements")
@@ -78,7 +78,7 @@ class Relationship(Base):
     source_id = Column(String(255), ForeignKey('elements.element_id', ondelete='CASCADE'))
     relationship_type = Column(String(50))
     target_reference = Column(String(255))
-    metadata = Column(Text)
+    metadata_ = Column(Text)
 
 
 class Embedding(Base):

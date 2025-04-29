@@ -4,12 +4,10 @@ DOCX document parser module for the document pointer system.
 This module parses DOCX documents into structured elements.
 """
 
-import hashlib
 import json
 import logging
 import os
-import uuid
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional, List, Union
 
 try:
     import docx
@@ -55,78 +53,310 @@ class DocxParser(DocumentParser):
         self.track_changes = self.config.get("track_changes", False)
         self.max_image_size = self.config.get("max_image_size", 1024 * 1024)  # 1MB default
         self.temp_dir = self.config.get("temp_dir", os.path.join(os.path.dirname(__file__), 'temp'))
+        self.max_content_preview = self.config.get("max_content_preview", 100)
 
     def parse(self, doc_content: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse a DOCX document into structured elements."""
+        """
+        Parse a DOCX document into structured elements.
+
+        Args:
+            doc_content: Document content and metadata
+
+        Returns:
+            Dictionary with document metadata, elements, relationships, and extracted links
+        """
         # Extract metadata from doc_content
         source_id = doc_content["id"]
         metadata = doc_content.get("metadata", {}).copy()  # Make a copy to avoid modifying original
 
-        # Check if we have binary content or a path to a file
-        binary_path = doc_content.get("binary_path")
-        if not binary_path:
-            # If we have binary content but no path, we need to save it to a temp file
+        # Get binary content
+        content = doc_content.get("content")
+        if not content and "binary_path" in doc_content:
+            # If we have a path but no content, load the content
+            try:
+                with open(doc_content["binary_path"], 'rb') as f:
+                    content = f.read()
+            except Exception as e:
+                logger.error(f"Error loading DOCX from path: {str(e)}")
+                raise
+
+        # If we still don't have content, raise an error
+        if not content:
+            raise ValueError("No DOCX content provided")
+
+        # Save content to a temporary file if needed
+        binary_path = None
+        try:
+            # Create temp directory if it doesn't exist
             if not os.path.exists(self.temp_dir):
                 os.makedirs(self.temp_dir, exist_ok=True)
 
-            binary_content = doc_content.get("content", b"")
-            if isinstance(binary_content, str):
-                logger.warning("Expected binary content for DOCX but got string. Attempting to process anyway.")
-
-            temp_file_path = os.path.join(self.temp_dir, f"temp_{uuid.uuid4().hex}.docx")
-            with open(temp_file_path, 'wb') as f:
-                if isinstance(binary_content, str):
-                    f.write(binary_content.encode('utf-8'))
+            # Write content to temp file
+            import uuid
+            binary_path = os.path.join(self.temp_dir, f"temp_{uuid.uuid4().hex}.docx")
+            with open(binary_path, 'wb') as f:
+                if isinstance(content, str):
+                    f.write(content.encode('utf-8'))
                 else:
-                    f.write(binary_content)
+                    f.write(content)
 
-            binary_path = temp_file_path
-            logger.debug(f"Saved binary content to temporary file: {binary_path}")
+            # Generate document ID if not present
+            doc_id = metadata.get("doc_id", self._generate_id("doc_"))
 
-        # Generate document ID if not present
-        doc_id = metadata.get("doc_id", self._generate_id("doc_"))
-
-        # Load DOCX document
-        try:
-            doc = docx.Document(binary_path)
-        except Exception as e:
-            logger.error(f"Error loading DOCX document: {str(e)}")
-            raise
-
-        # Create document record with metadata
-        document = {
-            "doc_id": doc_id,
-            "doc_type": "docx",
-            "source": source_id,
-            "metadata": self._extract_document_metadata(doc, metadata),
-            "content_hash": doc_content.get("content_hash", "")
-        }
-
-        # Create root element
-        elements = [self._create_root_element(doc_id, source_id)]
-        root_id = elements[0]["element_id"]
-
-        # Parse document elements
-        elements.extend(self._parse_document_elements(doc, doc_id, root_id, source_id))
-
-        # Extract links from the document
-        links = self._extract_links(doc, elements)
-
-        # Clean up temporary file if needed
-        if binary_path != doc_content.get("binary_path") and os.path.exists(binary_path):
+            # Load DOCX document
             try:
-                os.remove(binary_path)
-                logger.debug(f"Deleted temporary file: {binary_path}")
+                doc = docx.Document(binary_path)
             except Exception as e:
-                logger.warning(f"Failed to delete temporary file {binary_path}: {str(e)}")
+                logger.error(f"Error loading DOCX document: {str(e)}")
+                raise
 
-        # Return the parsed document with extracted links
-        return {
-            "document": document,
-            "elements": elements,
-            "links": links,
-            "relationships": []
-        }
+            # Create document record with metadata
+            document = {
+                "doc_id": doc_id,
+                "doc_type": "docx",
+                "source": source_id,
+                "metadata": self._extract_document_metadata(doc, metadata),
+                "content_hash": doc_content.get("content_hash", "")
+            }
+
+            # Create root element
+            elements = [self._create_root_element(doc_id, source_id)]
+            root_id = elements[0]["element_id"]
+
+            # Parse document elements
+            elements.extend(self._parse_document_elements(doc, doc_id, root_id, source_id))
+
+            # Extract links from the document
+            links = self._extract_links(doc, elements)
+
+            # Return the parsed document with extracted links
+            return {
+                "document": document,
+                "elements": elements,
+                "links": links,
+                "relationships": []
+            }
+        finally:
+            # Clean up temporary file
+            if binary_path and os.path.exists(binary_path):
+                try:
+                    os.remove(binary_path)
+                except Exception as e:
+                    logger.warning(f"Failed to delete temporary file {binary_path}: {str(e)}")
+
+    def _resolve_element_content(self, location_data: Dict[str, Any],
+                                source_content: Optional[Union[str, bytes]]) -> str:
+        """
+        Resolve content for specific DOCX element types.
+
+        Args:
+            location_data: Content location data
+            source_content: Optional pre-loaded source content
+
+        Returns:
+            Resolved content string
+        """
+        source = location_data.get("source", "")
+        element_type = location_data.get("type", "")
+
+        # Load the document if source content is not provided
+        doc = None
+        temp_file = None
+        try:
+            if source_content is None:
+                # Check if source is a file path
+                if os.path.exists(source):
+                    try:
+                        doc = docx.Document(source)
+                    except Exception as e:
+                        raise ValueError(f"Error loading DOCX document: {str(e)}")
+                else:
+                    raise ValueError(f"Source file not found: {source}")
+            else:
+                # Save content to a temporary file
+                if not os.path.exists(self.temp_dir):
+                    os.makedirs(self.temp_dir, exist_ok=True)
+
+                import uuid
+                temp_file = os.path.join(self.temp_dir, f"temp_{uuid.uuid4().hex}.docx")
+                with open(temp_file, 'wb') as f:
+                    if isinstance(source_content, str):
+                        f.write(source_content.encode('utf-8'))
+                    else:
+                        f.write(source_content)
+
+                # Load the document
+                try:
+                    doc = docx.Document(temp_file)
+                except Exception as e:
+                    raise ValueError(f"Error loading DOCX document: {str(e)}")
+
+            # Handle different element types
+            if element_type == "paragraph":
+                # Extract paragraph by index
+                index = location_data.get("index", 0)
+                if 0 <= index < len(doc.paragraphs):
+                    return doc.paragraphs[index].text
+                return ""
+
+            elif element_type == "header":
+                # Extract header by level and/or text
+                level = location_data.get("level")
+                text = location_data.get("text", "")
+
+                # Find headers with appropriate level
+                headers = []
+                for para in doc.paragraphs:
+                    style = para.style.name.lower() if para.style else ""
+                    para_level = None
+
+                    if style == 'title':
+                        para_level = 1
+                    elif style == 'subtitle':
+                        para_level = 2
+                    elif style.startswith('heading '):
+                        try:
+                            para_level = int(style.split(' ')[1])
+                        except (IndexError, ValueError):
+                            pass
+
+                    if (level is None or para_level == level) and (not text or text in para.text):
+                        headers.append(para)
+
+                # Return the first matching header
+                if headers:
+                    return headers[0].text
+                return ""
+
+            elif element_type == "table":
+                # Extract table by index
+                table_index = location_data.get("index", 0)
+                tables = [t for t in doc._body._body.iterchildren() if isinstance(t, CT_Tbl)]
+
+                if 0 <= table_index < len(tables):
+                    table = Table(tables[table_index], doc._body)
+                    result = []
+                    for row in table.rows:
+                        row_text = []
+                        for cell in row.cells:
+                            cell_text = " ".join(p.text for p in cell.paragraphs).strip()
+                            row_text.append(cell_text)
+                        result.append(" | ".join(row_text))
+                    return "\n".join(result)
+                return ""
+
+            elif element_type == "table_row":
+                # Extract table row
+                table_index = location_data.get("table_index", 0)
+                row = location_data.get("row", 0)
+
+                tables = [t for t in doc._body._body.iterchildren() if isinstance(t, CT_Tbl)]
+                if 0 <= table_index < len(tables):
+                    table = Table(tables[table_index], doc._body)
+                    if 0 <= row < len(table.rows):
+                        row_text = []
+                        for cell in table.rows[row].cells:
+                            cell_text = " ".join(p.text for p in cell.paragraphs).strip()
+                            row_text.append(cell_text)
+                        return " | ".join(row_text)
+                return ""
+
+            elif element_type == "table_cell" or element_type == "table_header":
+                # Extract table cell
+                table_index = location_data.get("table_index", 0)
+                row = location_data.get("row", 0)
+                col = location_data.get("col", 0)
+
+                tables = [t for t in doc._body._body.iterchildren() if isinstance(t, CT_Tbl)]
+                if 0 <= table_index < len(tables):
+                    table = Table(tables[table_index], doc._body)
+                    if 0 <= row < len(table.rows) and 0 <= col < len(table.rows[row].cells):
+                        cell = table.rows[row].cells[col]
+                        return " ".join(p.text for p in cell.paragraphs).strip()
+                return ""
+
+            elif element_type == "header" or element_type == "footer":
+                # Extract header/footer
+                section = location_data.get("section", 0)
+                header_type = location_data.get("header_type", "")
+                footer_type = location_data.get("footer_type", "")
+
+                if 0 <= section < len(doc.sections):
+                    section_obj = doc.sections[section]
+
+                    if element_type == "header" and header_type:
+                        attr_name = header_type.replace(' ', '_')
+                        header = getattr(section_obj, attr_name, None)
+                        if header and header.is_linked_to_previous is False:
+                            return "\n".join(p.text for p in header.paragraphs)
+
+                    elif element_type == "footer" and footer_type:
+                        attr_name = footer_type.replace(' ', '_')
+                        footer = getattr(section_obj, attr_name, None)
+                        if footer and footer.is_linked_to_previous is False:
+                            return "\n".join(p.text for p in footer.paragraphs)
+                return ""
+
+            elif element_type == "comment":
+                # Extract comment by ID
+                comment_id = location_data.get("comment_id", "")
+
+                # Python-docx doesn't have direct API for comments
+                # This is a simplified approach that may not work for all documents
+                if doc.part.package.parts:
+                    for rel_type, parts in doc.part.package.rels.items():
+                        if 'comments' in rel_type.lower():
+                            for rel_id, rel in parts.items():
+                                if hasattr(rel, 'target_part') and rel.target_part:
+                                    comments_xml = rel.target_part.blob
+                                    if comments_xml:
+                                        soup = BeautifulSoup(comments_xml, 'xml')
+                                        for comment in soup.find_all('comment'):
+                                            if comment.get('id', '') == comment_id:
+                                                return comment.get_text().strip()
+                return ""
+
+            elif element_type == "body":
+                # Return all paragraphs in the document body
+                return "\n".join(p.text for p in doc.paragraphs)
+
+            else:
+                # For other element types or if no specific handler,
+                # return full document text
+                return "\n".join(p.text for p in doc.paragraphs)
+
+        finally:
+            # Clean up temporary file
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except Exception as e:
+                    logger.warning(f"Failed to delete temporary file {temp_file}: {str(e)}")
+
+    def supports_location(self, content_location: str) -> bool:
+        """
+        Check if this parser supports resolving the given location.
+
+        Args:
+            content_location: Content location pointer
+
+        Returns:
+            True if supported, False otherwise
+        """
+        try:
+            location_data = json.loads(content_location)
+            source = location_data.get("source", "")
+
+            # Check if source exists and is a file
+            if not os.path.exists(source) or not os.path.isfile(source):
+                return False
+
+            # Check file extension for DOCX
+            _, ext = os.path.splitext(source.lower())
+            return ext in ['.docx']
+
+        except (json.JSONDecodeError, TypeError):
+            return False
 
     def _extract_document_metadata(self, doc: DocxDocument, base_metadata: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -200,7 +430,6 @@ class DocxParser(DocumentParser):
         """
         elements = []
         section_stack = [{"id": parent_id, "level": 0}]
-        # current_parent = parent_id
 
         # Extract headers and footers if enabled
         if self.extract_headers_footers:
@@ -329,7 +558,7 @@ class DocxParser(DocumentParser):
             "doc_id": doc_id,
             "element_type": "paragraph",
             "parent_id": parent_id,
-            "content_preview": text[:100] + ("..." if len(text) > 100 else ""),
+            "content_preview": text[:self.max_content_preview] + ("..." if len(text) > self.max_content_preview else ""),
             "content_location": json.dumps({
                 "source": source_id,
                 "type": "paragraph",
@@ -381,7 +610,7 @@ class DocxParser(DocumentParser):
         Returns:
             List of table-related elements
         """
-        elements = []
+        elements = list()
 
         # Generate table element ID
         table_id = self._generate_id("table_")
@@ -446,7 +675,7 @@ class DocxParser(DocumentParser):
                     "doc_id": doc_id,
                     "element_type": "table_cell",
                     "parent_id": row_id,
-                    "content_preview": cell_text[:100] + ("..." if len(cell_text) > 100 else ""),
+                    "content_preview": cell_text[:self.max_content_preview] + ("..." if len(cell_text) > self.max_content_preview else ""),
                     "content_location": json.dumps({
                         "source": source_id,
                         "type": "table_cell",
@@ -541,7 +770,7 @@ class DocxParser(DocumentParser):
                                 "doc_id": doc_id,
                                 "element_type": "header",
                                 "parent_id": headers_id,
-                                "content_preview": header_text[:100] + ("..." if len(header_text) > 100 else ""),
+                                "content_preview": header_text[:self.max_content_preview] + ("..." if len(header_text) > self.max_content_preview else ""),
                                 "content_location": json.dumps({
                                     "source": source_id,
                                     "type": "header",
@@ -575,7 +804,7 @@ class DocxParser(DocumentParser):
                                 "doc_id": doc_id,
                                 "element_type": "footer",
                                 "parent_id": footers_id,
-                                "content_preview": footer_text[:100] + ("..." if len(footer_text) > 100 else ""),
+                                "content_preview": footer_text[:self.max_content_preview] + ("..." if len(footer_text) > self.max_content_preview else ""),
                                 "content_location": json.dumps({
                                     "source": source_id,
                                     "type": "footer",
@@ -656,7 +885,7 @@ class DocxParser(DocumentParser):
                                             "doc_id": doc_id,
                                             "element_type": "comment",
                                             "parent_id": comments_id,
-                                            "content_preview": text[:100] + ("..." if len(text) > 100 else ""),
+                                            "content_preview": text[:self.max_content_preview] + ("..." if len(text) > self.max_content_preview else ""),
                                             "content_location": json.dumps({
                                                 "source": source_id,
                                                 "type": "comment",
@@ -821,29 +1050,3 @@ class DocxParser(DocumentParser):
             Word count
         """
         return sum(len(paragraph.text.split()) for paragraph in doc.paragraphs)
-
-    @staticmethod
-    def _generate_hash(content: str) -> str:
-        """
-        Generate a hash of content for change detection.
-
-        Args:
-            content: Text content
-
-        Returns:
-            MD5 hash of content
-        """
-        return hashlib.md5(content.encode('utf-8')).hexdigest()
-
-    @staticmethod
-    def _generate_id(prefix: str = "") -> str:
-        """
-        Generate a unique ID for a document or element.
-
-        Args:
-            prefix: Optional prefix for the ID
-
-        Returns:
-            Unique ID string
-        """
-        return f"{prefix}{uuid.uuid4()}"

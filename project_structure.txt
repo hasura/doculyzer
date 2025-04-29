@@ -2,61 +2,77 @@
 ├── LICENSE
 ├── README.md
 ├── assets
+├── dist
+│   ├── doculyzer-0.1.0-py3-none-any.whl
+│   └── doculyzer-0.1.0.tar.gz
 ├── main.py
 ├── project_structure.txt
+├── pyproject.toml
 ├── requirements.txt
 ├── src
 │   ├── __init__.py
-│   └── doculyzer
-│       ├── __init__.py
-│       ├── config.py
-│       ├── content_resolver
-│       │   ├── __init__.py
-│       │   ├── base.py
-│       │   ├── confluence.py
-│       │   ├── database.py
-│       │   ├── factory.py
-│       │   ├── file.py
-│       │   ├── jira.py
-│       │   ├── s3.py
-│       │   └── web.py
-│       ├── content_source
-│       │   ├── __init__.py
-│       │   ├── base.py
-│       │   ├── confluence.py
-│       │   ├── database.py
-│       │   ├── factory.py
-│       │   ├── jira.py
-│       │   ├── markdown.py
-│       │   ├── s3.py
-│       │   ├── utils.py
-│       │   └── web.py
-│       ├── document_parser
-│       │   ├── __init__.py
-│       │   ├── base.py
-│       │   ├── docx.py
-│       │   ├── factory.py
-│       │   ├── html_parser.py
-│       │   ├── markdown_parser.py
-│       │   ├── pdf.py
-│       │   ├── pptx.py
-│       │   ├── text.py
-│       │   └── xlsx.py
-│       ├── embeddings
-│       │   ├── __init__.py
-│       │   ├── base.py
-│       │   ├── contextual_embedding.py
-│       │   ├── factory.py
-│       │   └── hugging_face.py
-│       ├── main.py
-│       ├── relationship_detector.py
-│       └── storage
-│           ├── __init__.py
-│           ├── base.py
-│           ├── factory.py
-│           ├── file.py
-│           ├── postgres.py
-│           └── sqlite.py
+│   ├── doculyzer
+│   │   ├── __init__.py
+│   │   ├── config.py
+│   │   ├── content_resolver
+│   │   │   ├── __init__.py
+│   │   │   ├── base.py
+│   │   │   ├── confluence.py
+│   │   │   ├── database.py
+│   │   │   ├── factory.py
+│   │   │   ├── file.py
+│   │   │   ├── jira.py
+│   │   │   ├── mongodb.py
+│   │   │   ├── s3.py
+│   │   │   └── web.py
+│   │   ├── content_source
+│   │   │   ├── __init__.py
+│   │   │   ├── base.py
+│   │   │   ├── confluence.py
+│   │   │   ├── database.py
+│   │   │   ├── factory.py
+│   │   │   ├── file.py
+│   │   │   ├── jira.py
+│   │   │   ├── mongodb.py
+│   │   │   ├── s3.py
+│   │   │   ├── utils.py
+│   │   │   └── web.py
+│   │   ├── document_parser
+│   │   │   ├── __init__.py
+│   │   │   ├── base.py
+│   │   │   ├── docx.py
+│   │   │   ├── factory.py
+│   │   │   ├── html_parser.py
+│   │   │   ├── json.py
+│   │   │   ├── markdown_parser.py
+│   │   │   ├── pdf.py
+│   │   │   ├── pptx.py
+│   │   │   ├── text.py
+│   │   │   └── xlsx.py
+│   │   ├── embeddings
+│   │   │   ├── __init__.py
+│   │   │   ├── base.py
+│   │   │   ├── contextual_embedding.py
+│   │   │   ├── factory.py
+│   │   │   ├── hugging_face.py
+│   │   │   └── openai.py
+│   │   ├── main.py
+│   │   ├── relationship_detector.py
+│   │   └── storage
+│   │       ├── __init__.py
+│   │       ├── base.py
+│   │       ├── factory.py
+│   │       ├── file.py
+│   │       ├── mongodb.py
+│   │       ├── postgres.py
+│   │       ├── sqlalchemy.py
+│   │       └── sqlite.py
+│   └── doculyzer.egg-info
+│       ├── PKG-INFO
+│       ├── SOURCES.txt
+│       ├── dependency_links.txt
+│       ├── requires.txt
+│       └── top_level.txt
 ├── tests
 │   ├── assets
 │   │   ├── introduction.md
@@ -69,4 +85,4 @@
 └── utilities
     └── generate_init.py
 
-14 directories, 56 files
+16 directories, 70 files

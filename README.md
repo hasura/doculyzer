@@ -37,6 +37,9 @@ Doculyzer can ingest and process a variety of document formats:
 - Microsoft Word documents (DOCX)
 - Microsoft PowerPoint presentations (PPTX)
 - Microsoft Excel spreadsheets (XLSX)
+- CSV files
+- XML files
+- JSON files
 
 ## Content Sources
 
@@ -46,7 +49,9 @@ Doculyzer supports multiple content sources:
 - Confluence
 - JIRA
 - Amazon S3
-- Databases
+- Relational Databases
+- ServiceNow
+- MongoDB
 
 ## Architecture
 

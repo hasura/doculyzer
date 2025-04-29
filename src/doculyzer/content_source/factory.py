@@ -17,6 +17,7 @@ from .file import FileContentSource
 from .jira import JiraContentSource
 from .mongodb import MongoDBContentSource
 from .s3 import S3ContentSource
+from .servicenow import ServiceNowContentSource
 from .web import WebContentSource
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,8 @@ def get_content_source(source_config: Dict[str, Any]) -> ContentSource:
         return JiraContentSource(source_config)
     elif source_type == "s3":
         return S3ContentSource(source_config)
+    elif source_type == "servicenow":
+        return ServiceNowContentSource(source_config)
     elif source_type == "mongodb":  # Add the MongoDB option
         return MongoDBContentSource(source_config)
     else:

@@ -1,3 +1,4 @@
+import datetime
 import json
 import logging
 import os
@@ -49,6 +50,13 @@ except ImportError:
 from .base import DocumentDatabase
 
 
+class DateTimeEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, (datetime.datetime, datetime.date)):
+            return obj.isoformat()  # Convert date/datetime to ISO 8601 string
+        return super().default(obj)
+
+
 class SQLiteDocumentDatabase(DocumentDatabase):
     """SQLite implementation of document database."""
 
@@ -62,6 +70,7 @@ class SQLiteDocumentDatabase(DocumentDatabase):
         self.db_path = db_path
         self.conn = None
         self.vector_extension = None
+        self.embedding_generator = None
 
     def initialize(self) -> None:
         """Initialize the database by creating tables if they don't exist."""
@@ -247,7 +256,7 @@ class SQLiteDocumentDatabase(DocumentDatabase):
 
         try:
             # Store document
-            metadata_json = json.dumps(document.get("metadata", {}))
+            metadata_json = json.dumps(document.get("metadata", {}), cls=DateTimeEncoder)
 
             cursor.execute(
                 """
@@ -496,14 +505,14 @@ class SQLiteDocumentDatabase(DocumentDatabase):
 
         return relationships
 
-    def get_element(self, element_id: str) -> Optional[Dict[str, Any]]:
+    def get_element(self, element_pk: int) -> Optional[Dict[str, Any]]:
         """Get element by ID."""
         if not self.conn:
             raise ValueError("Database not initialized")
 
         cursor = self.conn.execute(
-            "SELECT * FROM elements WHERE element_id = ?",
-            (element_id,)
+            "SELECT * FROM elements WHERE element_pk = ?",
+            (element_pk,)
         )
 
         row = cursor.fetchone()
@@ -1072,7 +1081,7 @@ class SQLiteDocumentDatabase(DocumentDatabase):
         # Execute search query
         cursor = self.conn.execute(
             """
-            SELECT element_id, cosine_similarity(embedding, ?) AS similarity
+            SELECT element_pk, cosine_similarity(embedding, ?) AS similarity
             FROM embeddings
             WHERE dimensions = ?
             ORDER BY similarity DESC
@@ -1081,7 +1090,7 @@ class SQLiteDocumentDatabase(DocumentDatabase):
             (query_blob, len(query_embedding), limit)
         )
 
-        return [(row["element_id"], row["similarity"]) for row in cursor]
+        return [(row["element_pk"], row["similarity"]) for row in cursor]
 
     def _register_similarity_function(self) -> None:
         """Register cosine similarity function with SQLite."""
@@ -1146,22 +1155,12 @@ class SQLiteDocumentDatabase(DocumentDatabase):
             raise ValueError("Database not initialized")
 
         try:
-            # Import necessary modules
-            from doculyzer.embeddings import get_embedding_generator
-
-            # Get config
-            try:
-                from doculyzer.config import Config
-                config = Config(os.environ.get("DOCULYZER_CONFIG_PATH", "./config.yaml"))
-            except Exception as e:
-                logger.warning(f"Error loading config: {str(e)}. Using default config.")
-                config = Config()
-
-            # Get the embedding generator
-            embedding_generator = get_embedding_generator(config)
+            if self.embedding_generator is None:
+                from doculyzer.embeddings import get_embedding_generator
+                self.embedding_generator = get_embedding_generator(config)
 
             # Generate embedding for the search text
-            query_embedding = embedding_generator.generate(search_text)
+            query_embedding = self.embedding_generator.generate(search_text)
 
             # Use the embedding to search
             return self.search_by_embedding(query_embedding, limit)

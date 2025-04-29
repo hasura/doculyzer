@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import uuid
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 
 try:
     # noinspection PyUnresolvedReferences
@@ -45,6 +45,7 @@ class XlsxParser(DocumentParser):
         self.max_rows = self.config.get("max_rows", 1000)  # Limit for large spreadsheets
         self.max_cols = self.config.get("max_cols", 100)  # Limit for very wide sheets
         self.temp_dir = self.config.get("temp_dir", os.path.join(os.path.dirname(__file__), 'temp'))
+        self.max_content_preview = self.config.get("max_content_preview", 100)
 
         # Data table detection options
         self.detect_tables = self.config.get("detect_tables", True)  # Whether to detect data tables
@@ -52,7 +53,15 @@ class XlsxParser(DocumentParser):
         self.min_table_cols = self.config.get("min_table_cols", 2)  # Minimum columns for table detection
 
     def parse(self, doc_content: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse an XLSX document into structured elements."""
+        """
+        Parse an XLSX document into structured elements.
+
+        Args:
+            doc_content: Document content and metadata
+
+        Returns:
+            Dictionary with document metadata, elements, relationships, and extracted links
+        """
         # Extract metadata from doc_content
         source_id = doc_content["id"]
         metadata = doc_content.get("metadata", {}).copy()  # Make a copy to avoid modifying original
@@ -106,8 +115,8 @@ class XlsxParser(DocumentParser):
         sheet_elements = self._parse_workbook(workbook, doc_id, root_id, source_id)
         elements.extend(sheet_elements)
 
-        # Extract links from the document
-        links = self._extract_links(sheet_elements)
+        # Extract links from the document using the new helper method
+        links = self._extract_workbook_links(sheet_elements)
 
         # Clean up temporary file if needed
         if binary_path != doc_content.get("binary_path") and os.path.exists(binary_path):
@@ -127,6 +136,223 @@ class XlsxParser(DocumentParser):
             "links": links,
             "relationships": []
         }
+
+    def _resolve_element_content(self, location_data: Dict[str, Any],
+                                source_content: Optional[Union[str, bytes]]) -> str:
+        """
+        Resolve content for specific XLSX element types.
+
+        Args:
+            location_data: Content location data
+            source_content: Optional pre-loaded source content
+
+        Returns:
+            Resolved content string
+        """
+        source = location_data.get("source", "")
+        element_type = location_data.get("type", "")
+        sheet_name = location_data.get("sheet_name", "")
+
+        # Load the document if source content is not provided
+        wb = None
+        temp_file = None
+        try:
+            if source_content is None:
+                # Check if source is a file path
+                if os.path.exists(source):
+                    try:
+                        wb = openpyxl.load_workbook(source, read_only=True, data_only=not self.extract_formulas)
+                    except Exception as e:
+                        raise ValueError(f"Error loading XLSX document: {str(e)}")
+                else:
+                    raise ValueError(f"Source file not found: {source}")
+            else:
+                # Save content to a temporary file
+                if not os.path.exists(self.temp_dir):
+                    os.makedirs(self.temp_dir, exist_ok=True)
+
+                import uuid
+                temp_file = os.path.join(self.temp_dir, f"temp_{uuid.uuid4().hex}.xlsx")
+                with open(temp_file, 'wb') as f:
+                    if isinstance(source_content, str):
+                        f.write(source_content.encode('utf-8'))
+                    else:
+                        f.write(source_content)
+
+                # Load the document
+                try:
+                    wb = openpyxl.load_workbook(temp_file, read_only=True, data_only=not self.extract_formulas)
+                except Exception as e:
+                    raise ValueError(f"Error loading XLSX document: {str(e)}")
+
+            # Handle different element types
+            if element_type == "workbook":
+                # Return information about the workbook
+                sheet_names = wb.sheetnames
+                active_sheet = wb.active.title if hasattr(wb, 'active') and wb.active else None
+                return f"Workbook with sheets: {', '.join(sheet_names)}. Active sheet: {active_sheet or 'None'}"
+
+            # Check if sheet exists
+            if sheet_name and sheet_name not in wb.sheetnames:
+                raise ValueError(f"Sheet '{sheet_name}' not found in workbook")
+
+            # Get the specified sheet
+            if sheet_name:
+                sheet = wb[sheet_name]
+            else:
+                # Use active sheet if no specific sheet name provided
+                sheet = wb.active
+
+            if element_type == "sheet":
+                # Return information about the sheet
+                max_row = min(sheet.max_row or 0, self.max_rows)
+                max_col = min(sheet.max_column or 0, self.max_cols)
+                return f"Sheet '{sheet.title}' with {max_row} rows and {max_col} columns"
+
+            elif element_type == "table_row":
+                # Extract row by index
+                row = location_data.get("row", 0)
+
+                if row <= 0 or row > min(sheet.max_row or 0, self.max_rows):
+                    return f"Row {row} is out of range"
+
+                row_values = []
+                for col in range(1, min(sheet.max_column + 1, self.max_cols + 1)):
+                    cell = sheet.cell(row=row, column=col)
+                    row_values.append(str(cell.value) if cell.value is not None else "")
+
+                return "\t".join(row_values)
+
+            elif element_type == "table_cell":
+                # Extract cell by reference
+                cell_ref = location_data.get("cell", "")
+
+                if cell_ref:
+                    # Direct cell reference (e.g., "A1")
+                    try:
+                        cell = sheet[cell_ref]
+                        return str(cell.value) if cell.value is not None else ""
+                    except Exception as e:
+                        return f"Error accessing cell {cell_ref}: {str(e)}"
+                else:
+                    # Row/column coordinates
+                    row = location_data.get("row", 0)
+                    col = location_data.get("col", 0)
+
+                    if row <= 0 or col <= 0 or row > min(sheet.max_row or 0, self.max_rows) or col > min(sheet.max_column or 0, self.max_cols):
+                        return f"Cell at row {row}, column {col} is out of range"
+
+                    cell = sheet.cell(row=row, column=col)
+                    return str(cell.value) if cell.value is not None else ""
+
+            elif element_type == "data_table":
+                # Extract a range of cells forming a table
+                range_str = location_data.get("range", "")
+
+                if not range_str:
+                    return "No range specified for data table"
+
+                try:
+                    # Get all cells in the range
+                    from openpyxl.utils.cell import range_boundaries
+                    min_col, min_row, max_col, max_row = range_boundaries(range_str)
+
+                    # Extract table data
+                    table_data = []
+                    for row in range(min_row, max_row + 1):
+                        row_data = []
+                        for col in range(min_col, max_col + 1):
+                            cell = sheet.cell(row=row, column=col)
+                            row_data.append(str(cell.value) if cell.value is not None else "")
+                        table_data.append("\t".join(row_data))
+
+                    return "\n".join(table_data)
+                except Exception as e:
+                    return f"Error extracting data table: {str(e)}"
+
+            elif element_type == "comment":
+                # Extract comment from cell
+                cell_ref = location_data.get("cell", "")
+
+                if not cell_ref or not hasattr(sheet, "comments") or not sheet.comments:
+                    return "No comment found"
+
+                if cell_ref in sheet.comments:
+                    comment = sheet.comments[cell_ref]
+                    author = comment.author if hasattr(comment, 'author') else "Unknown"
+                    text = comment.text if hasattr(comment, 'text') else str(comment)
+                    return f"Comment by {author}: {text}"
+                else:
+                    return f"No comment found at cell {cell_ref}"
+
+            elif element_type == "merged_cell":
+                # Extract merged cell content
+                range_str = location_data.get("range", "")
+
+                if not range_str:
+                    return "No range specified for merged cell"
+
+                try:
+                    from openpyxl.utils.cell import range_boundaries
+                    min_col, min_row, max_col, max_row = range_boundaries(range_str)
+
+                    # Get top-left cell (contains the value for merged cells)
+                    cell = sheet.cell(row=min_row, column=min_col)
+                    return str(cell.value) if cell.value is not None else ""
+                except Exception as e:
+                    return f"Error extracting merged cell content: {str(e)}"
+
+            else:
+                # Default: return the sheet content as text
+                max_row = min(sheet.max_row or 0, self.max_rows)
+                max_col = min(sheet.max_column or 0, self.max_cols)
+
+                sheet_content = []
+                for row in range(1, max_row + 1):
+                    row_values = []
+                    for col in range(1, max_col + 1):
+                        cell = sheet.cell(row=row, column=col)
+                        row_values.append(str(cell.value) if cell.value is not None else "")
+                    sheet_content.append("\t".join(row_values))
+
+                return "\n".join(sheet_content)
+
+        finally:
+            # Close workbook
+            if wb:
+                wb.close()
+
+            # Clean up temporary file
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except Exception as e:
+                    logger.warning(f"Failed to delete temporary file {temp_file}: {str(e)}")
+
+    def supports_location(self, content_location: str) -> bool:
+        """
+        Check if this parser supports resolving the given location.
+
+        Args:
+            content_location: Content location pointer
+
+        Returns:
+            True if supported, False otherwise
+        """
+        try:
+            location_data = json.loads(content_location)
+            source = location_data.get("source", "")
+
+            # Check if source exists and is a file
+            if not os.path.exists(source) or not os.path.isfile(source):
+                return False
+
+            # Check file extension for XLSX
+            _, ext = os.path.splitext(source.lower())
+            return ext in ['.xlsx', '.xlsm', '.xltx', '.xltm']
+
+        except (json.JSONDecodeError, TypeError):
+            return False
 
     @staticmethod
     def _extract_document_metadata(workbook: openpyxl.Workbook, base_metadata: Dict[str, Any]) -> Dict[str, Any]:
@@ -422,8 +648,8 @@ class XlsxParser(DocumentParser):
                     content_preview = ""
 
                 # Limit preview length
-                if len(content_preview) > 100:
-                    content_preview = content_preview[:97] + "..."
+                if len(content_preview) > self.max_content_preview:
+                    content_preview = content_preview[:self.max_content_preview - 3] + "..."
 
                 # Cell metadata
                 cell_metadata = {
@@ -495,8 +721,8 @@ class XlsxParser(DocumentParser):
             content_preview = str(value) if value is not None else ""
 
             # Limit preview length
-            if len(content_preview) > 100:
-                content_preview = content_preview[:97] + "..."
+            if len(content_preview) > self.max_content_preview:
+                content_preview = content_preview[:self.max_content_preview - 3] + "..."
 
             # Create merged cell element
             merged_element = {
@@ -556,8 +782,8 @@ class XlsxParser(DocumentParser):
 
             # Limit text length for preview
             content_preview = f"Comment by {author}: {text}"
-            if len(content_preview) > 100:
-                content_preview = content_preview[:97] + "..."
+            if len(content_preview) > self.max_content_preview:
+                content_preview = content_preview[:self.max_content_preview - 3] + "..."
 
             # Create comment element
             comment_element = {
@@ -884,7 +1110,7 @@ class XlsxParser(DocumentParser):
                     "doc_id": doc_id,
                     "element_type": "table_header_row",
                     "parent_id": table_id,
-                    "content_preview": header_text[:100] + ("..." if len(header_text) > 100 else ""),
+                    "content_preview": header_text[:self.max_content_preview] + ("..." if len(header_text) > self.max_content_preview else ""),
                     "content_location": json.dumps({
                         "source": source_id,
                         "type": "table_header_row",
@@ -927,7 +1153,7 @@ class XlsxParser(DocumentParser):
                         "doc_id": doc_id,
                         "element_type": "table_row_headers",
                         "parent_id": table_id,
-                        "content_preview": col_header_text[:100] + ("..." if len(col_header_text) > 100 else ""),
+                        "content_preview": col_header_text[:self.max_content_preview] + ("..." if len(col_header_text) > self.max_content_preview else ""),
                         "content_location": json.dumps({
                             "source": source_id,
                             "type": "table_row_headers",
@@ -946,9 +1172,32 @@ class XlsxParser(DocumentParser):
 
         return elements
 
-    def _extract_links(self, elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _extract_links(self, content: str, element_id: str) -> List[Dict[str, Any]]:
         """
-        Extract hyperlinks from workbook elements.
+        Extract links from content.
+
+        Args:
+            content: Text content
+            element_id: ID of the element containing the links
+
+        Returns:
+            List of extracted link dictionaries
+        """
+        links = []
+
+        # For Excel, we need to handle links differently than in text-based documents
+        # Since we can't extract hyperlinks directly from content string
+        # Instead, we'll implement a helper method for extracting links during the parsing phase
+
+        # This base implementation returns an empty list
+        # The actual link extraction happens during the parsing phase in _extract_workbook_links
+
+        return links
+
+    def _extract_workbook_links(self, elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Helper method to extract hyperlinks from workbook elements.
+        This is called during the parsing phase.
 
         Args:
             elements: List of extracted elements

@@ -10,7 +10,7 @@ import logging
 import os
 import re
 import uuid
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Union
 
 try:
     # noinspection PyPackageRequirements
@@ -55,8 +55,209 @@ class PdfParser(DocumentParser):
         self.min_table_rows = self.config.get("min_table_rows", 2)
         self.min_table_cols = self.config.get("min_table_cols", 2)
 
+    def _resolve_element_content(self, location_data: Dict[str, Any],
+                                source_content: Optional[Union[str, bytes]] = None) -> str:
+        """
+        Resolve content for specific PDF element types.
+
+        Args:
+            location_data: Content location data
+            source_content: Optional pre-loaded source content
+
+        Returns:
+            Resolved content string
+        """
+        source = location_data.get("source", "")
+        element_type = location_data.get("type", "")
+        page_num = location_data.get("page", 1)
+
+        # Load the document if source content is not provided
+        doc = None
+        temp_file = None
+        try:
+            if source_content is None:
+                # Check if source is a file path
+                if os.path.exists(source):
+                    try:
+                        doc = fitz.open(source)
+                    except Exception as e:
+                        raise ValueError(f"Error loading PDF document: {str(e)}")
+                else:
+                    raise ValueError(f"Source file not found: {source}")
+            else:
+                # Save content to a temporary file
+                if not os.path.exists(self.temp_dir):
+                    os.makedirs(self.temp_dir, exist_ok=True)
+
+                import uuid
+                temp_file = os.path.join(self.temp_dir, f"temp_{uuid.uuid4().hex}.pdf")
+                with open(temp_file, 'wb') as f:
+                    if isinstance(source_content, str):
+                        f.write(source_content.encode('utf-8'))
+                    else:
+                        f.write(source_content)
+
+                # Load the document
+                try:
+                    doc = fitz.open(temp_file)
+                except Exception as e:
+                    raise ValueError(f"Error loading PDF document: {str(e)}")
+
+            # Check if page number is valid
+            if 1 <= page_num <= len(doc):
+                page = doc[page_num - 1]
+            else:
+                return f"Invalid page number: {page_num}. Document has {len(doc)} pages."
+
+            # Handle different element types
+            if element_type == "content":
+                # Return basic document information
+                return f"PDF document with {len(doc)} pages"
+
+            elif element_type == "page":
+                # Return the entire page text
+                return page.get_text()
+
+            elif element_type in ["paragraph", "header", "text_block"]:
+                # Extract text from a specific bounding box
+                bbox = location_data.get("bbox")
+                if not bbox:
+                    return "No bounding box specified"
+
+                # Extract text from the bounding box
+                text = page.get_text("text", clip=fitz.Rect(bbox))
+                return text
+
+            elif element_type == "table":
+                # Extract table content
+                bbox = location_data.get("bbox")
+                if not bbox:
+                    return "No bounding box specified for table"
+
+                # Extract text and attempt to format as tabular data
+                table_text = page.get_text("text", clip=fitz.Rect(bbox))
+
+                # Simple formatting to preserve table structure (basic approach)
+                return table_text
+
+            elif element_type == "annotation":
+                # Extract annotation content
+                bbox = location_data.get("bbox")
+                if not bbox:
+                    return "No bounding box specified for annotation"
+
+                # Look for annotations in the bounding box
+                for annot in page.annots():
+                    if self._rectangles_overlap(annot.rect, bbox):
+                        return annot.info.get("content", "No annotation content")
+
+                return "No annotation found in the specified area"
+
+            elif element_type == "image":
+                # Return information about the image
+                xref = location_data.get("xref")
+                if not xref:
+                    return "No image reference specified"
+
+                # Get basic image info
+                for img in page.get_images(full=True):
+                    if img[0] == xref:
+                        width = img[2]
+                        height = img[3]
+                        return f"Image (xref: {xref}, dimensions: {width}x{height})"
+
+                return f"Image with reference {xref} not found"
+
+            elif element_type == "section":
+                # Return content of a section
+                bbox = location_data.get("bbox")
+                if not bbox:
+                    return "No bounding box specified for section"
+
+                # Extract text from the section's bounding box
+                section_text = page.get_text("text", clip=fitz.Rect(bbox))
+                return section_text
+
+            else:
+                # For other element types or if no specific handler,
+                # return page text
+                return page.get_text()
+
+        finally:
+            # Clean up resources
+            if doc:
+                doc.close()
+
+            # Clean up temporary file
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except Exception as e:
+                    logger.warning(f"Failed to delete temporary file {temp_file}: {str(e)}")
+
+    def supports_location(self, content_location: str) -> bool:
+        """
+        Check if this parser supports resolving the given location.
+
+        Args:
+            content_location: Content location pointer
+
+        Returns:
+            True if supported, False otherwise
+        """
+        try:
+            location_data = json.loads(content_location)
+            source = location_data.get("source", "")
+
+            # Check if source exists and is a file
+            if not os.path.exists(source) or not os.path.isfile(source):
+                return False
+
+            # Check file extension for PDF
+            _, ext = os.path.splitext(source.lower())
+            return ext == '.pdf'
+
+        except (json.JSONDecodeError, TypeError):
+            return False
+
+    def _extract_links(self, content: str, element_id: str) -> List[Dict[str, Any]]:
+        """
+        Base method for extracting links from content.
+
+        Args:
+            content: Text content
+            element_id: ID of the element containing the links
+
+        Returns:
+            List of extracted link dictionaries
+        """
+        links = []
+
+        # Extract URLs using a regular expression
+        url_pattern = r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+'
+        urls = re.findall(url_pattern, content)
+
+        # Create link entries for each URL found
+        for url in urls:
+            links.append({
+                "source_id": element_id,
+                "link_text": url,
+                "link_target": url,
+                "link_type": "uri"
+            })
+
+        return links
+
     def parse(self, doc_content: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse a PDF document into structured elements."""
+        """
+        Parse a PDF document into structured elements.
+
+        Args:
+            doc_content: Document content and metadata
+
+        Returns:
+            Dictionary with document metadata, elements, relationships, and extracted links
+        """
         # Extract metadata from doc_content
         source_id = doc_content["id"]
         metadata = doc_content.get("metadata", {}).copy()  # Make a copy to avoid modifying original
@@ -109,8 +310,8 @@ class PdfParser(DocumentParser):
         page_elements = self._parse_document(doc, doc_id, root_id, source_id)
         elements.extend(page_elements)
 
-        # Extract links from the document
-        links = self._extract_links(doc, elements)
+        # Extract links from the document using the helper method
+        links = self._extract_document_links(doc, elements)
 
         # Clean up temporary file if needed
         if binary_path != doc_content.get("binary_path") and os.path.exists(binary_path):
@@ -897,7 +1098,6 @@ class PdfParser(DocumentParser):
                 height = img_info[3]  # Height
                 bpc = img_info[4]  # Bits per component
                 colorspace = img_info[5]  # Colorspace
-                # alt = img_info[6]  # Alternate name (PDF string)
                 name = img_info[7]  # Image name
 
                 # Try to determine image position on the page
@@ -906,9 +1106,6 @@ class PdfParser(DocumentParser):
 
                 # Search for image references in the page's content streams
                 try:
-                    # pix = page.get_pixmap()
-                    # page_width, page_height = pix.width, pix.height
-
                     # Use a heuristic approach to find image positions
                     for item in page.get_drawings():
                         if item["type"] == "image" and item.get("xref") == xref:
@@ -959,9 +1156,10 @@ class PdfParser(DocumentParser):
 
         return elements
 
-    def _extract_links(self, doc: fitz.Document, elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _extract_document_links(self, doc: fitz.Document, elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Extract hyperlinks from PDF document.
+        Helper method to extract hyperlinks from PDF document.
+        This is called during the parsing phase.
 
         Args:
             doc: The PDF document

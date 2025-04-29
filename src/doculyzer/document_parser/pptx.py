@@ -8,7 +8,7 @@ import json
 import logging
 import os
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 
 try:
     import pptx
@@ -58,16 +58,470 @@ class PptxParser(DocumentParser):
         self.extract_templates = self.config.get("extract_templates", False)
         self.temp_dir = self.config.get("temp_dir", os.path.join(os.path.dirname(__file__), 'temp'))
 
+    def _resolve_element_content(self, location_data: Dict[str, Any],
+                                source_content: Optional[Union[str, bytes]] = None) -> str:
+        """
+        Resolve content for specific PPTX element types.
+
+        Args:
+            location_data: Content location data
+            source_content: Optional pre-loaded source content
+
+        Returns:
+            Resolved content string
+        """
+        source = location_data.get("source", "")
+        element_type = location_data.get("type", "")
+        slide_index = location_data.get("slide_index", 0)
+
+        # Load the document if source content is not provided
+        presentation = None
+        temp_file = None
+        try:
+            if source_content is None:
+                # Check if source is a file path
+                if os.path.exists(source):
+                    try:
+                        presentation = Presentation(source)
+                    except Exception as e:
+                        raise ValueError(f"Error loading PPTX document: {str(e)}")
+                else:
+                    raise ValueError(f"Source file not found: {source}")
+            else:
+                # Save content to a temporary file
+                if not os.path.exists(self.temp_dir):
+                    os.makedirs(self.temp_dir, exist_ok=True)
+
+                import uuid
+                temp_file = os.path.join(self.temp_dir, f"temp_{uuid.uuid4().hex}.pptx")
+                with open(temp_file, 'wb') as f:
+                    if isinstance(source_content, str):
+                        f.write(source_content.encode('utf-8'))
+                    else:
+                        f.write(source_content)
+
+                # Load the document
+                try:
+                    presentation = Presentation(temp_file)
+                except Exception as e:
+                    raise ValueError(f"Error loading PPTX document: {str(e)}")
+
+            # Handle different element types
+            if element_type == "presentation_body":
+                # Return basic presentation information
+                slide_count = len(presentation.slides)
+                return f"Presentation with {slide_count} slides"
+
+            elif element_type == "slide":
+                # Check if slide index is valid
+                if slide_index < 0 or slide_index >= len(presentation.slides):
+                    return f"Invalid slide index: {slide_index}. Presentation has {len(presentation.slides)} slides."
+
+                # Get the slide
+                slide = presentation.slides[slide_index]
+
+                # Extract all text from the slide
+                all_text = []
+                for shape in slide.shapes:
+                    if hasattr(shape, 'has_text_frame') and shape.has_text_frame:
+                        text = shape.text_frame.text
+                        if text:
+                            all_text.append(text)
+
+                return "\n\n".join(all_text)
+
+            elif element_type == "text_box":
+                # Extract text from a text box shape
+                shape_path = location_data.get("shape_path", "")
+                if not shape_path:
+                    return "No shape path specified"
+
+                # Check if slide index is valid
+                if slide_index < 0 or slide_index >= len(presentation.slides):
+                    return f"Invalid slide index: {slide_index}"
+
+                # Get the slide
+                slide = presentation.slides[slide_index]
+
+                # Parse shape path to locate the shape
+                shape_indices = shape_path.split('/')
+                shape = self._find_shape_by_path(slide.shapes, shape_indices)
+
+                if not shape or not hasattr(shape, 'has_text_frame') or not shape.has_text_frame:
+                    return f"Text shape not found at path: {shape_path}"
+
+                return shape.text_frame.text
+
+            elif element_type == "paragraph":
+                # Extract specific paragraph from a text shape
+                shape_path = location_data.get("shape_path", "")
+                paragraph_index = location_data.get("paragraph_index", 0)
+
+                # Check if slide index is valid
+                if slide_index < 0 or slide_index >= len(presentation.slides):
+                    return f"Invalid slide index: {slide_index}"
+
+                # Get the slide
+                slide = presentation.slides[slide_index]
+
+                # Parse shape path to locate the shape
+                shape_indices = shape_path.split('/')
+                shape = self._find_shape_by_path(slide.shapes, shape_indices)
+
+                if not shape or not hasattr(shape, 'has_text_frame') or not shape.has_text_frame:
+                    return f"Text shape not found at path: {shape_path}"
+
+                # Check if paragraph index is valid
+                if not hasattr(shape.text_frame, 'paragraphs') or paragraph_index >= len(shape.text_frame.paragraphs):
+                    return f"Invalid paragraph index: {paragraph_index}"
+
+                return shape.text_frame.paragraphs[paragraph_index].text
+
+            elif element_type == "table_cell":
+                # Extract cell content from a table
+                shape_path = location_data.get("shape_path", "")
+                row = location_data.get("row", 0)
+                col = location_data.get("col", 0)
+
+                # Check if slide index is valid
+                if slide_index < 0 or slide_index >= len(presentation.slides):
+                    return f"Invalid slide index: {slide_index}"
+
+                # Get the slide
+                slide = presentation.slides[slide_index]
+
+                # Parse shape path to locate the shape
+                shape_indices = shape_path.split('/')
+                shape = self._find_shape_by_path(slide.shapes, shape_indices)
+
+                if not shape or not hasattr(shape, 'has_table') or not shape.has_table:
+                    return f"Table shape not found at path: {shape_path}"
+
+                # Get table object
+                table = shape.table
+
+                # Check if row and column indices are valid
+                if row < 0 or row >= len(table.rows) or col < 0 or col >= len(table.columns):
+                    return f"Invalid cell coordinates: row={row}, col={col}"
+
+                # Get cell text
+                cell = table.cell(row, col)
+                return cell.text_frame.text if hasattr(cell, 'text_frame') else ""
+
+            elif element_type == "slide_notes":
+                # Extract notes from a slide
+                # Check if slide index is valid
+                if slide_index < 0 or slide_index >= len(presentation.slides):
+                    return f"Invalid slide index: {slide_index}"
+
+                # Get the slide
+                slide = presentation.slides[slide_index]
+
+                # Check if slide has notes
+                if not hasattr(slide, 'notes_slide') or not slide.notes_slide:
+                    return "No notes for this slide"
+
+                # Return notes text
+                return slide.notes_slide.notes_text_frame.text
+
+            elif element_type == "comment":
+                # Extract a specific comment
+                comment_index = location_data.get("comment_index", 0)
+
+                # Check if slide index is valid
+                if slide_index < 0 or slide_index >= len(presentation.slides):
+                    return f"Invalid slide index: {slide_index}"
+
+                # Get the slide
+                slide = presentation.slides[slide_index]
+
+                # Check if slide has comments
+                if not hasattr(slide, 'comments') or not slide.comments:
+                    return "No comments for this slide"
+
+                # Check if comment index is valid
+                if comment_index < 0 or comment_index >= len(slide.comments):
+                    return f"Invalid comment index: {comment_index}"
+
+                # Get comment
+                comment = slide.comments[comment_index]
+
+                # Format comment details
+                author = comment.author if hasattr(comment, 'author') else "Unknown"
+                text = comment.text if hasattr(comment, 'text') else ""
+                date = comment.date if hasattr(comment, 'date') else None
+
+                if date:
+                    return f"Comment by {author} on {date}: {text}"
+                else:
+                    return f"Comment by {author}: {text}"
+
+            elif element_type == "image":
+                # Return information about an image
+                shape_path = location_data.get("shape_path", "")
+
+                # Check if slide index is valid
+                if slide_index < 0 or slide_index >= len(presentation.slides):
+                    return f"Invalid slide index: {slide_index}"
+
+                # Get the slide
+                slide = presentation.slides[slide_index]
+
+                # Parse shape path to locate the shape
+                shape_indices = shape_path.split('/')
+                shape = self._find_shape_by_path(slide.shapes, shape_indices)
+
+                if not shape or not isinstance(shape, Picture):
+                    return f"Image shape not found at path: {shape_path}"
+
+                # Get image details
+                image_name = shape.image.filename if hasattr(shape, 'image') and hasattr(shape.image, 'filename') else "Unknown"
+                alt_text = shape.alt_text if hasattr(shape, 'alt_text') else ""
+
+                return f"Image: {image_name}\nAlt text: {alt_text}"
+
+            elif element_type == "chart":
+                # Return information about a chart
+                shape_path = location_data.get("shape_path", "")
+
+                # Check if slide index is valid
+                if slide_index < 0 or slide_index >= len(presentation.slides):
+                    return f"Invalid slide index: {slide_index}"
+
+                # Get the slide
+                slide = presentation.slides[slide_index]
+
+                # Parse shape path to locate the shape
+                shape_indices = shape_path.split('/')
+                shape = self._find_shape_by_path(slide.shapes, shape_indices)
+
+                if not shape or not hasattr(shape, 'has_chart') or not shape.has_chart:
+                    return f"Chart shape not found at path: {shape_path}"
+
+                # Get chart details
+                chart = shape.chart
+                chart_type = str(chart.chart_type) if hasattr(chart, 'chart_type') else "Unknown"
+                chart_title = chart.chart_title.text_frame.text if hasattr(chart, 'chart_title') and hasattr(chart.chart_title, 'text_frame') else "Untitled Chart"
+
+                # Get categories and series if available
+                categories = []
+                series_names = []
+
+                if hasattr(chart, 'plots') and chart.plots:
+                    plot = chart.plots[0]
+
+                    if hasattr(plot, 'categories'):
+                        for category in plot.categories:
+                            if category:
+                                categories.append(str(category))
+
+                    if hasattr(plot, 'series'):
+                        for series in plot.series:
+                            if hasattr(series, 'name') and series.name:
+                                series_names.append(str(series.name))
+
+                # Format chart description
+                description = f"Chart: {chart_title}\nType: {chart_type}"
+
+                if categories:
+                    description += f"\nCategories: {', '.join(categories)}"
+
+                if series_names:
+                    description += f"\nSeries: {', '.join(series_names)}"
+
+                return description
+
+            else:
+                # For other element types or if no specific handler,
+                # return basic information about the presentation
+                return f"PowerPoint presentation with {len(presentation.slides)} slides"
+
+        finally:
+            # Clean up temporary file
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except Exception as e:
+                    logger.warning(f"Failed to delete temporary file {temp_file}: {str(e)}")
+
+    def supports_location(self, content_location: str) -> bool:
+        """
+        Check if this parser supports resolving the given location.
+
+        Args:
+            content_location: Content location pointer
+
+        Returns:
+            True if supported, False otherwise
+        """
+        try:
+            location_data = json.loads(content_location)
+            source = location_data.get("source", "")
+
+            # Check if source exists and is a file
+            if not os.path.exists(source) or not os.path.isfile(source):
+                return False
+
+            # Check file extension for PPTX
+            _, ext = os.path.splitext(source.lower())
+            return ext in ['.pptx', '.pptm']
+
+        except (json.JSONDecodeError, TypeError):
+            return False
+
+    def _extract_links(self, content: str, element_id: str) -> List[Dict[str, Any]]:
+        """
+        Base method for extracting links from content.
+
+        Args:
+            content: Text content
+            element_id: ID of the element containing the links
+
+        Returns:
+            List of extracted link dictionaries
+        """
+        links = []
+
+        # Extract URLs using a regular expression
+        url_pattern = r'https?://[^\s<>)"\']+|www\.[^\s<>)"\']+|ftp://[^\s<>)"\']+|file://[^\s<>)"\']+|mailto:[^\s<>)"\']+|[^\s<>)"\']+\.(?:com|org|net|edu|gov|io|ai|app)[^\s<>)"\']*'
+        urls = re.findall(url_pattern, content)
+
+        # Create link entries for each URL found
+        for url in urls:
+            # Clean up URL
+            if url.startswith('www.'):
+                url = 'http://' + url
+
+            links.append({
+                "source_id": element_id,
+                "link_text": url,
+                "link_target": url,
+                "link_type": "url"
+            })
+
+        # Look for slide references (e.g., "See slide 5")
+        slide_refs = re.findall(r'slide\s+(\d+)', content, re.IGNORECASE)
+
+        for ref in slide_refs:
+            try:
+                slide_num = int(ref)
+
+                links.append({
+                    "source_id": element_id,
+                    "link_text": f"Slide {slide_num}",
+                    "link_target": f"slide_{slide_num}",
+                    "link_type": "slide_reference"
+                })
+            except ValueError:
+                pass
+
+        return links
+
+    def _extract_document_links(self, presentation, elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Helper method to extract hyperlinks from PowerPoint presentation.
+        This is called during the parsing phase.
+
+        Args:
+            presentation: The PPTX presentation
+            elements: List of extracted elements
+
+        Returns:
+            List of hyperlink dictionaries
+        """
+        links = []
+
+        # Map element IDs to elements for quick lookup
+        # element_map = {elem["element_id"]: elem for elem in elements}
+
+        # Extract hyperlinks from text shapes
+        for element in elements:
+            if element["element_type"] in ["text_box", "paragraph", "table_cell"]:
+                element_id = element["element_id"]
+                text = element.get("metadata", {}).get("text", "")
+
+                # Look for hyperlink patterns in text
+                url_pattern = r'https?://[^\s<>)"\']+|www\.[^\s<>)"\']+|ftp://[^\s<>)"\']+|file://[^\s<>)"\']+|mailto:[^\s<>)"\']+|[^\s<>)"\']+\.(?:com|org|net|edu|gov|io|ai|app)[^\s<>)"\']*'
+                urls = re.findall(url_pattern, text)
+
+                for url in urls:
+                    # Clean up URL
+                    if url.startswith('www.'):
+                        url = 'http://' + url
+
+                    # Add link
+                    links.append({
+                        "source_id": element_id,
+                        "link_text": url,
+                        "link_target": url,
+                        "link_type": "url"
+                    })
+
+                # Look for slide references (e.g., "See slide 5")
+                slide_refs = re.findall(r'slide\s+(\d+)', text, re.IGNORECASE)
+
+                for ref in slide_refs:
+                    try:
+                        slide_num = int(ref)
+                        # Adjust for 0-based indexing
+                        # slide_idx = slide_num - 1
+
+                        # Find target slide element
+                        target_slide = None
+                        for slide_elem in elements:
+                            if (slide_elem["element_type"] == "slide" and
+                                    slide_elem.get("metadata", {}).get("number") == slide_num):
+                                target_slide = slide_elem
+                                break
+
+                        if target_slide:
+                            # Add link
+                            links.append({
+                                "source_id": element_id,
+                                "link_text": f"Slide {slide_num}",
+                                "link_target": target_slide["element_id"],
+                                "link_type": "slide_reference"
+                            })
+                    except (ValueError, IndexError):
+                        pass
+
+        return links
+
     def parse(self, doc_content: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse a PPTX document into structured elements."""
+        """
+        Parse a PPTX document into structured elements.
+
+        Args:
+            doc_content: Document content and metadata
+
+        Returns:
+            Dictionary with document metadata, elements, relationships, and extracted links
+        """
         # Extract metadata from doc_content
         source_id = doc_content["id"]
         metadata = doc_content.get("metadata", {}).copy()  # Make a copy to avoid modifying original
 
-        # Check if we have a binary path
+        # Check if we have a binary path or content
         binary_path = doc_content.get("binary_path")
+        binary_content = doc_content.get("content")
+
+        # If we have content but no path, save it to a temp file
+        if not binary_path and binary_content:
+            if not os.path.exists(self.temp_dir):
+                os.makedirs(self.temp_dir, exist_ok=True)
+
+            import uuid
+            temp_file_path = os.path.join(self.temp_dir, f"temp_{uuid.uuid4().hex}.pptx")
+            with open(temp_file_path, 'wb') as f:
+                if isinstance(binary_content, str):
+                    f.write(binary_content.encode('utf-8'))
+                else:
+                    f.write(binary_content)
+
+            binary_path = temp_file_path
+
         if not binary_path:
-            raise ValueError("PPTX parser requires a binary_path to process the presentation")
+            raise ValueError("PPTX parser requires either binary_path or content to process the presentation")
 
         # Generate document ID if not present
         doc_id = metadata.get("doc_id", self._generate_id("doc_"))
@@ -95,8 +549,16 @@ class PptxParser(DocumentParser):
         # Parse document elements
         elements.extend(self._parse_presentation(presentation, doc_id, root_id, source_id))
 
-        # Extract links from the document
-        links = self._extract_links(presentation, elements)
+        # Extract links from the document using the helper method
+        links = self._extract_document_links(presentation, elements)
+
+        # Clean up temporary file if we created one
+        if binary_path != doc_content.get("binary_path") and os.path.exists(binary_path):
+            try:
+                os.remove(binary_path)
+                logger.debug(f"Deleted temporary file: {binary_path}")
+            except Exception as e:
+                logger.warning(f"Failed to delete temporary file {binary_path}: {str(e)}")
 
         # Return the parsed document with extracted links
         return {
@@ -216,6 +678,45 @@ class PptxParser(DocumentParser):
 
         return elements
 
+    def _find_shape_by_path(self, shapes, shape_indices):
+        """
+        Find a shape by following the shape path indices.
+
+        Args:
+            shapes: Collection of shapes to search in
+            shape_indices: List of indices to follow
+
+        Returns:
+            The shape if found, None otherwise
+        """
+        try:
+            if not shape_indices:
+                return None
+
+            # Get the first index
+            current_idx = int(shape_indices[0])
+
+            # Check if index is valid
+            if current_idx < 0 or current_idx >= len(shapes):
+                return None
+
+            # Get the shape at this index
+            shape = shapes[current_idx]
+
+            # If this is the last index, return the shape
+            if len(shape_indices) == 1:
+                return shape
+
+            # If this is a group shape, recurse into it
+            if isinstance(shape, GroupShape) and hasattr(shape, 'shapes'):
+                return self._find_shape_by_path(shape.shapes, shape_indices[1:])
+
+            # If we get here, the path is invalid
+            return None
+
+        except (ValueError, IndexError, TypeError):
+            return None
+
     def _process_slide(self, slide: Slide, slide_idx: int, doc_id: str, parent_id: str, source_id: str) -> List[
         Dict[str, Any]]:
         """
@@ -249,7 +750,7 @@ class PptxParser(DocumentParser):
             "content_location": json.dumps({
                 "source": source_id,
                 "type": "slide",
-                "index": slide_idx
+                "slide_index": slide_idx
             }),
             "content_hash": self._generate_hash(f"slide_{slide_idx}"),
             "metadata": {
@@ -571,7 +1072,7 @@ class PptxParser(DocumentParser):
         Returns:
             List of table-related elements
         """
-        elements = []
+        elements = list()
 
         try:
             if not shape.has_table or not hasattr(shape, 'table'):
@@ -1082,75 +1583,6 @@ class PptxParser(DocumentParser):
 
         return elements
 
-    def _extract_links(self, presentation, elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Extract links from PowerPoint presentation.
-
-        Args:
-            presentation: The PPTX presentation
-            elements: Document elements
-
-        Returns:
-            List of extracted links
-        """
-        links = []
-
-        # Map element IDs to elements for quick lookup
-        # element_map = {elem["element_id"]: elem for elem in elements}
-
-        # Extract hyperlinks from text shapes
-        for element in elements:
-            if element["element_type"] in ["text_box", "paragraph", "table_cell"]:
-                element_id = element["element_id"]
-                text = element.get("metadata", {}).get("text", "")
-
-                # Look for hyperlink patterns in text
-                url_pattern = r'https?://[^\s<>)"\']+|www\.[^\s<>)"\']+|ftp://[^\s<>)"\']+|file://[^\s<>)"\']+|mailto:[^\s<>)"\']+|[^\s<>)"\']+\.(?:com|org|net|edu|gov|io|ai|app)[^\s<>)"\']*'
-                urls = re.findall(url_pattern, text)
-
-                for url in urls:
-                    # Clean up URL
-                    if url.startswith('www.'):
-                        url = 'http://' + url
-
-                    # Add link
-                    links.append({
-                        "source_id": element_id,
-                        "link_text": url,
-                        "link_target": url,
-                        "link_type": "url"
-                    })
-
-                # Look for slide references (e.g., "See slide 5")
-                slide_refs = re.findall(r'slide\s+(\d+)', text, re.IGNORECASE)
-
-                for ref in slide_refs:
-                    try:
-                        slide_num = int(ref)
-                        # Adjust for 0-based indexing
-                        # slide_idx = slide_num - 1
-
-                        # Find target slide element
-                        target_slide = None
-                        for slide_elem in elements:
-                            if (slide_elem["element_type"] == "slide" and
-                                    slide_elem.get("metadata", {}).get("number") == slide_num):
-                                target_slide = slide_elem
-                                break
-
-                        if target_slide:
-                            # Add link
-                            links.append({
-                                "source_id": element_id,
-                                "link_text": f"Slide {slide_num}",
-                                "link_target": target_slide["element_id"],
-                                "link_type": "slide_reference"
-                            })
-                    except (ValueError, IndexError):
-                        pass
-
-        return links
-
     @staticmethod
     def _get_slide_title(slide: Slide) -> str:
         """Get slide title text."""
@@ -1234,3 +1666,18 @@ class PptxParser(DocumentParser):
             pass
 
         return "shape"
+
+
+    @staticmethod
+    def _generate_hash(content: str) -> str:
+        """
+        Generate a hash of content for change detection.
+
+        Args:
+            content: Text content
+
+        Returns:
+            MD5 hash of content
+        """
+        import hashlib
+        return hashlib.md5(content.encode('utf-8')).hexdigest()

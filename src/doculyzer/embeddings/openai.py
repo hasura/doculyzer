@@ -96,9 +96,9 @@ class OpenAIEmbeddingGenerator(EmbeddingGenerator):
             return []
 
         # Check cache for each text
-        results = []
-        uncached_texts = []
-        uncached_indices = []
+        results = list()
+        uncached_texts = list()
+        uncached_indices = list()
 
         for i, text in enumerate(texts):
             if not text:

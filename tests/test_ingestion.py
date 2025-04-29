@@ -23,14 +23,14 @@ logger = logging.getLogger('doculyzer_test')
 def config_emb() -> (Config, EmbeddingGenerator):
     """Load test configuration as a fixture."""
     _config = Config(os.environ.get('DOCULYZER_CONFIG_PATH', 'config.yaml'))
-    _embedding_generator = get_embedding_generator(_config)
+    _embedding_generator = None
     return _config, _embedding_generator
 
 
 def test_document_ingestion(config_emb: (Config, EmbeddingGenerator)):
     """Test the full document ingestion process."""
     from doculyzer.main import ingest_documents
-    from doculyzer.content_resolver import create_content_resolver
+    from doculyzer.adapter import create_content_resolver
 
     _config, _embedding_generator = config_emb
 
@@ -56,34 +56,34 @@ def test_document_ingestion(config_emb: (Config, EmbeddingGenerator)):
         # assert stats['elements'] > 0, "No elements were processed"
 
         # If embeddings enabled, test similarity search
-        if _embedding_generator:
-            # Run a sample search
-            logger.info("Running similarity search")
-            query_text = "document management"
-            logger.debug(f"Generating embedding for query: {query_text}")
-            query_embedding = _embedding_generator.generate(query_text)
 
-            logger.debug("Searching for similar elements")
-            similar_elements = db.search_by_embedding(query_embedding)
-            logger.info(f"Found {len(similar_elements)} similar elements")
+        # Run a sample search
+        logger.info("Running similarity search")
+        query_text = "when a document is ingested it goes through the following steps. These steps involve metadata extraction, conversion to the universal document mode, and storage."
+        logger.debug(f"Generating embedding for query: {query_text}")
 
-            # Display a few results
-            for i, (element_id, similarity) in enumerate(similar_elements[:10]):
-                # Get the element
-                element = db.get_element(element_id)
-                if element:
-                    logger.info(f"Similar element {i + 1}: {element.get('element_type')}, Similarity: {similarity}")
 
-                    # Try to resolve content
-                    content_location = element.get("content_location")
-                    if content_location and content_resolver.supports_location(content_location):
-                        try:
-                            original_content = content_resolver.resolve_content(content_location)
-                            logger.info(f"Content preview: {original_content[:100]}...")
-                        except Exception as e:
-                            logger.error(f"Error resolving content: {str(e)}")
-                else:
-                    logger.warning(f"Could not find element with ID: {element_id}")
+        logger.debug("Searching for similar elements")
+        similar_elements = db.search_by_text(query_text)
+        logger.info(f"Found {len(similar_elements)} similar elements")
+
+        # Display a few results
+        for i, (element_pk, similarity) in enumerate(similar_elements[:10]):
+            # Get the element
+            element = db.get_element(element_pk)
+            if element:
+                logger.info(f"Similar element {i + 1}: {element.get('element_type')}, Similarity: {similarity}")
+
+                # Try to resolve content
+                content_location = element.get("content_location")
+                if content_location and content_resolver.supports_location(content_location):
+                    try:
+                        original_content = content_resolver.resolve_content(content_location)
+                        logger.info(f"Content: {original_content}")
+                    except Exception as e:
+                        logger.error(f"Error resolving content: {str(e)}")
+            else:
+                logger.warning(f"Could not find element with PK: {element_pk}")
 
         # Log summary
         logger.info(

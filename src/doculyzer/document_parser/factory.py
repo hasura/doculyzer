@@ -9,10 +9,15 @@ import logging
 from typing import Dict, Any, Optional
 
 from .base import DocumentParser
-from .html_parser import HtmlParser
-from .markdown_parser import MarkdownParser
+from .csv import CsvParser  # Import the new CSV parser
+from .docx import DocxParser
+from .html import HtmlParser
+from .markdown import MarkdownParser
 from .pdf import PdfParser
+from .pptx import PptxParser
+from .text import TextParser
 from .xlsx import XlsxParser
+from .xml import XmlParser
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +27,7 @@ def create_parser(doc_type: str, config: Optional[Dict[str, Any]] = None) -> Doc
     Factory function to create appropriate parser for document type.
 
     Args:
-        doc_type: Document type ('markdown', 'html', 'text', 'xlsx', 'docx', 'pdf', 'pptx')
+        doc_type: Document type ('markdown', 'html', 'text', 'xlsx', 'docx', 'pdf', 'pptx', 'xml', 'csv')
         config: Parser configuration
 
     Returns:
@@ -40,18 +45,20 @@ def create_parser(doc_type: str, config: Optional[Dict[str, Any]] = None) -> Doc
     elif doc_type == "xlsx":
         return XlsxParser(config)
     elif doc_type == "pdf":
-        return PdfParser(config)  # Added PDF support
+        return PdfParser(config)
+    elif doc_type == "xml":
+        return XmlParser(config)
+    elif doc_type == "docx":
+        return DocxParser(config)
+    elif doc_type == "pptx":
+        return PptxParser(config)
+    elif doc_type == "csv":
+        return CsvParser(config)  # Added CSV parser support
     elif doc_type == "text":
-        # For plain text, we use a simplified version of the Markdown parser
-        # that only handles paragraphs and extracts URLs
-        text_config = config.copy()
-        text_config["extract_front_matter"] = False
-        return MarkdownParser(text_config)
+        return TextParser(config)
     else:
         logger.warning(f"Unsupported document type: {doc_type}, falling back to text parser")
-        text_config = config.copy()
-        text_config["extract_front_matter"] = False
-        return MarkdownParser(text_config)
+        return TextParser(config)
 
 
 def get_parser_for_content(content: Dict[str, Any], config: Optional[Dict[str, Any]] = None) -> DocumentParser:
@@ -82,6 +89,16 @@ def get_parser_for_content(content: Dict[str, Any], config: Optional[Dict[str, A
             doc_type = "docx"
         elif filename.lower().endswith(('.pptx', '.ppt')):
             doc_type = "pptx"
+        elif filename.lower().endswith(('.xml', '.xsd', '.rdf', '.rss', '.svg', '.wsdl', '.xslt')):
+            doc_type = "xml"
+        elif filename.lower().endswith(('.csv', '.tsv')):
+            doc_type = "csv"  # Added CSV file extensions detection
+        elif filename.lower().endswith(('.md', '.markdown', '.mdown')):
+            doc_type = "markdown"
+        elif filename.lower().endswith(('.txt', '.text')):
+            doc_type = "text"
+        elif filename.lower().endswith(('.htm', '.html', '.xhtml')):
+            doc_type = "html"
         # Check content type if extension didn't give us an answer
         elif "application/pdf" in content_type.lower():
             doc_type = "pdf"
@@ -91,6 +108,16 @@ def get_parser_for_content(content: Dict[str, Any], config: Optional[Dict[str, A
             doc_type = "html"
         elif "spreadsheet" in content_type.lower() or "excel" in content_type.lower():
             doc_type = "xlsx"
+        elif "xml" in content_type.lower() or "application/xml" in content_type.lower() or "text/xml" in content_type.lower():
+            doc_type = "xml"
+        elif "csv" in content_type.lower() or "text/csv" in content_type.lower() or "text/tab-separated-values" in content_type.lower():
+            doc_type = "csv"  # Added CSV content type detection
+        elif "msword" in content_type.lower() or "officedocument.wordprocessingml" in content_type.lower():
+            doc_type = "docx"
+        elif "officedocument.presentationml" in content_type.lower() or "powerpoint" in content_type.lower():
+            doc_type = "pptx"
+        elif "text/plain" in content_type.lower():
+            doc_type = "text"
         else:
             # Default to text
             doc_type = "text"
