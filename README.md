@@ -124,38 +124,7 @@ For continuous monitoring of content sources, Doculyzer can be configured to run
 import argparse
 import logging
 import time
-from datetime import datetime
-from doculyzer import Config, ingest_documents
-
-def setup_logger():
-    logger = logging.getLogger("doculyzer_crawler")
-    logger.setLevel(logging.INFO)
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    return logger
-
-def crawl(config_path, logger):
-    logger.info(f"Starting crawl at {datetime.now()}")
-    
-    # Load configuration
-    config = Config(config_path)
-    
-    # Initialize database
-    db = config.initialize_database()
-    
-    # Ingest documents (only processes changed documents)
-    try:
-        stats = ingest_documents(config)
-        logger.info(f"Crawl completed: {stats['documents']} documents processed, "
-                   f"{stats['unchanged_documents']} unchanged, "
-                   f"{stats['elements']} elements, "
-                   f"{stats['relationships']} relationships")
-    except Exception as e:
-        logger.error(f"Error during crawl: {str(e)}")
-    finally:
-        config.close_database()
+from doculyzer import crawl
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Doculyzer Crawler")
@@ -163,11 +132,11 @@ if __name__ == "__main__":
     parser.add_argument("--interval", type=int, default=3600, help="Crawl interval in seconds")
     args = parser.parse_args()
     
-    logger = setup_logger()
+    logger = logging.getLogger("Doculyzer Crawler")
     logger.info(f"Crawler initialized with interval {args.interval} seconds")
     
     while True:
-        crawl(args.config, logger)
+        crawl(args.config, args.interval)
         logger.info(f"Sleeping for {args.interval} seconds")
         time.sleep(args.interval)
 ```

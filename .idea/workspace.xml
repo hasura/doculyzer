@@ -5,38 +5,8 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="4fd04366-fe80-41b1-b4ee-aca60de1a82e" name="Changes" comment="initial commit">
-      <change afterPath="$PROJECT_DIR$/.idea/dataSources.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/doculyzer/relationships/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/doculyzer/relationships/base.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/doculyzer/relationships/composite.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/doculyzer/relationships/explicit.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/doculyzer/relationships/semantic.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/doculyzer/relationships/structural.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/doculyzer/search.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/doculyzer/storage/element_relationship.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/doculyzer/crawler.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/doculyzer/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/doculyzer/__init__.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/doculyzer/adapter/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/doculyzer/adapter/__init__.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/doculyzer/adapter/factory.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/doculyzer/adapter/factory.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/doculyzer/document_parser/document_type_detector.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/doculyzer/document_parser/document_type_detector.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/doculyzer/document_parser/docx.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/doculyzer/document_parser/docx.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/doculyzer/document_parser/json.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/doculyzer/document_parser/json.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/doculyzer/document_parser/pdf.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/doculyzer/document_parser/pdf.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/doculyzer/document_parser/pptx.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/doculyzer/document_parser/pptx.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/doculyzer/document_parser/text.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/doculyzer/document_parser/text.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/doculyzer/document_parser/xlsx.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/doculyzer/document_parser/xlsx.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/doculyzer/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/doculyzer/main.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/doculyzer/relationship_detector.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/doculyzer/relationships/factory.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/doculyzer/storage/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/doculyzer/storage/__init__.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/doculyzer/storage/base.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/doculyzer/storage/base.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/doculyzer/storage/file.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/doculyzer/storage/file.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/doculyzer/storage/mongodb.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/doculyzer/storage/mongodb.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/doculyzer/storage/postgres.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/doculyzer/storage/postgres.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/doculyzer/storage/sqlalchemy.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/doculyzer/storage/sqlalchemy.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/doculyzer/storage/sqlite.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/doculyzer/storage/sqlite.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/config.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/tests/config.yaml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_ingestion.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_ingestion.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -105,11 +75,11 @@
       <recent name="$PROJECT_DIR$/utilities" />
     </key>
     <key name="MoveFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/src/doculyzer/relationships" />
       <recent name="$PROJECT_DIR$/src/doculyzer/content_resolver" />
       <recent name="$PROJECT_DIR$/src/doculyzer/document_parser" />
       <recent name="$PROJECT_DIR$/src/doculyzer/embeddings" />
       <recent name="$PROJECT_DIR$/src/doculyzer/storage" />
-      <recent name="$PROJECT_DIR$/src/doculyzer/content_source" />
     </key>
   </component>
   <component name="RunManager" selected="Python.generate_init">
@@ -225,7 +195,7 @@
       <workItem from="1745970005844" duration="700000" />
       <workItem from="1745970737915" duration="846000" />
       <workItem from="1745971591740" duration="82000" />
-      <workItem from="1745972011204" duration="8619000" />
+      <workItem from="1745972011204" duration="10466000" />
     </task>
     <task id="LOCAL-00001" summary="initial commit">
       <option name="closed" value="true" />
@@ -251,7 +221,15 @@
       <option name="project" value="LOCAL" />
       <updated>1745943528721</updated>
     </task>
-    <option name="localTasksCounter" value="4" />
+    <task id="LOCAL-00004" summary="initial commit">
+      <option name="closed" value="true" />
+      <created>1745980810147</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1745980810147</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -281,12 +259,12 @@
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/src/doculyzer/storage/sqlalchemy.py</url>
-          <line>496</line>
+          <line>501</line>
           <option name="timeStamp" value="93" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/src/doculyzer/storage/sqlalchemy.py</url>
-          <line>484</line>
+          <line>489</line>
           <option name="timeStamp" value="94" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
