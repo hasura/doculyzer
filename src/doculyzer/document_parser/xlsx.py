@@ -589,7 +589,7 @@ class XlsxParser(DocumentParser):
             row_id = self._generate_id(f"row_{row_idx}_")
 
             # Skip entirely empty rows if requested
-            # Checking if there is any cell in the row that has a value
+            # Checking is there is any cell in the row that has a value
             row_has_value = False
             for col_idx in range(1, max_col + 1):
                 cell = sheet.cell(row=row_idx, column=col_idx)

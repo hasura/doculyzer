@@ -440,13 +440,13 @@ def search_by_text(self, search_text: str, limit: int = 10,
 
     try:
         # Import necessary modules
-        from doculyzer.embeddings import get_embedding_generator
+        from ..embeddings import get_embedding_generator
 
         # Get config from the connection parameters or load from path
         config = self.config
         if not config:
             try:
-                from doculyzer.config import Config
+                from ..config import Config
                 config = Config(os.environ.get("DOCULYZER_CONFIG_PATH", "./config.yaml"))
             except Exception as e:
                 logger.warning(f"Error loading config: {str(e)}. Using default config.")
@@ -1402,13 +1402,13 @@ def search_by_text(self, search_text: str, limit: int = 10,
 
         try:
             # Import necessary modules
-            from doculyzer.embeddings import get_embedding_generator
+            from ..embeddings import get_embedding_generator
 
             # Get config from the connection parameters or load from path
             config = self.config
             if not config:
                 try:
-                    from doculyzer.config import Config
+                    from ..config import Config
                     config = Config(os.environ.get("DOCULYZER_CONFIG_PATH", "./config.yaml"))
                 except Exception as e:
                     logger.warning(f"Error loading config: {str(e)}. Using default config.")

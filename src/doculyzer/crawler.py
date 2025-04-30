@@ -3,7 +3,8 @@ import os
 import time
 from datetime import datetime
 
-from doculyzer import Config, ingest_documents
+from .main import ingest_documents
+from .config import Config
 
 
 def _setup_logger():
@@ -23,7 +24,7 @@ def _ingest(config_path, logger):
     config = Config(config_path)
 
     # Initialize database
-    db = config.initialize_database()
+    config.initialize_database()
 
     # Ingest documents (only processes changed documents)
     try:
@@ -43,7 +44,7 @@ def crawl(config_path: str = None, interval: int = None):
     interval = interval if interval is not None else int(os.environ.get("CRAWLER_INTERVAL", "86400"))
 
     logger = _setup_logger()
-    logger.info(f"Crawler initialized with interval {args.interval} seconds")
+    logger.info(f"Crawler initialized with interval {interval} seconds")
 
     while True:
         _ingest(config, logger)

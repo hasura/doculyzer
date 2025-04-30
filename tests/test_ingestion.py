@@ -60,7 +60,7 @@ def test_document_ingestion(config_emb: (Config, EmbeddingGenerator)):
 
         # Run a sample search
         logger.info("Running similarity search")
-        query_text = "when a document is ingested it goes through the following steps. These steps involve metadata extraction, conversion to the universal document mode, and storage."
+        query_text = "document management"
         logger.debug(f"Generating embedding for query: {query_text}")
 
 

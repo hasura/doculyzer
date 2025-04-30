@@ -97,7 +97,7 @@ class MarkdownParser(DocumentParser):
 
         Args:
             location_data: Content location data
-            source_content: Optional pre-loaded source content
+            source_content: Optional preloaded source content
 
         Returns:
             Resolved content string

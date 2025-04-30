@@ -37,7 +37,7 @@ class JSONParser(DocumentParser):
 
         Args:
             location_data: Content location data
-            source_content: Optional pre-loaded source content
+            source_content: Optional preloaded source content
 
         Returns:
             Resolved content string
@@ -520,7 +520,7 @@ class JSONParser(DocumentParser):
 
     @staticmethod
     def _get_type(data: Any) -> str:
-        """Get the type of a JSON value."""
+        """Get the type of JSON value."""
         if isinstance(data, dict):
             return "object"
         elif isinstance(data, list):

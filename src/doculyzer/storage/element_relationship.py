@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, Any, Optional, List
+from pydantic import BaseModel
 
 
 class RelationshipCategory(Enum):
@@ -11,8 +12,7 @@ class RelationshipCategory(Enum):
     UNKNOWN = "UNKNOWN"  # Unknown or custom relationship types
 
 
-@dataclass
-class ElementRelationship:
+class ElementRelationship(BaseModel):
     """
     Class for representing relationships between elements.
     Designed to avoid name collisions with SQLAlchemy's Relationship class.

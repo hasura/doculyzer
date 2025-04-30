@@ -680,7 +680,7 @@ class ConfluenceAdapter(ContentSourceAdapter):
             # Return full content (default to view format)
             content = page_data.get("body", {}).get("view", {}).get("value", "")
 
-        # If no content was found but we have the page data
+        # If no content was found, but we have the page data
         if content is None:
             # Fall back to the complete page data
             content = page_data

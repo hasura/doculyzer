@@ -5,7 +5,7 @@ Markdown~=3.8
 requests~=2.32.3
 SQLAlchemy~=2.0.40
 torch~=2.7.0
-numpy~=2.2.5
+numpy~=2.0.2
 sentence-transformers~=4.1.0
 sqlean.py~=3.47.0;platform_system=="Darwin"
 

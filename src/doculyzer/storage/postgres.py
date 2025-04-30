@@ -348,7 +348,7 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
 
         try:
             # Import necessary modules
-            from doculyzer.embeddings import get_embedding_generator
+            from ..embeddings import get_embedding_generator
 
             # Initialize embedding generator if not already done
             if self.embedding_generator is None:
@@ -356,7 +356,7 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
                 # This assumes config is accessible, otherwise it would need to be passed in
                 config_obj = self.conn_params.get('config')
                 if not config_obj:
-                    from doculyzer.config import Config
+                    from ..config import Config
                     config_obj = Config(os.environ.get("DOCULYZER_CONFIG_PATH", "./config.yaml"))
 
                 self.embedding_generator = get_embedding_generator(config_obj)

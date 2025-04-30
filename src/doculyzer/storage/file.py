@@ -656,7 +656,7 @@ class FileDocumentDatabase(DocumentDatabase):
         """
         try:
             if self.embedding_generator is None:
-                from doculyzer.embeddings import get_embedding_generator
+                from ..embeddings import get_embedding_generator
                 self.embedding_generator = get_embedding_generator(config)
 
             # Generate embedding for the search text

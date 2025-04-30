@@ -315,7 +315,7 @@ class CsvParser(DocumentParser):
     @staticmethod
     def _detect_column_type(values: List[str]) -> str:
         """
-        Detect the data type of a column.
+        Detect the data type of column.
 
         Args:
             values: List of values in the column

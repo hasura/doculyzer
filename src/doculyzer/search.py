@@ -1,7 +1,8 @@
 import logging
 import os
-from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
+
+from pydantic import BaseModel, Field
 
 from .adapter import create_content_resolver
 from .config import Config
@@ -12,26 +13,69 @@ logger = logging.getLogger(__name__)
 _config = Config(os.environ.get('DOCULYZER_CONFIG_PATH', 'config.yaml'))
 
 
-@dataclass
-class SearchResult:
-    """Class for storing search result data in a flat structure with relationships."""
+class SearchResultItem(BaseModel):
+    """Pydantic model for a single search result item."""
+    element_pk: int
+    similarity: float
+
+
+class SearchResults(BaseModel):
+    """Pydantic model for search results collection."""
+    results: List[SearchResultItem] = Field(default_factory=list)
+    total_results: int = 0
+    query: Optional[str] = None
+    filter_criteria: Optional[Dict[str, Any]] = None
+    search_type: str = "embedding"  # Can be "embedding", "text", "content"
+    min_confidence: float = 0.0  # Minimum confidence threshold used
+
+    @classmethod
+    def from_tuples(cls, tuples: List[Tuple[int, float]], query: Optional[str] = None,
+                   filter_criteria: Optional[Dict[str, Any]] = None,
+                   search_type: str = "embedding",
+                   min_confidence: float = 0.0) -> "SearchResults":
+        """
+        Create a SearchResults object from a list of (element_pk, similarity) tuples.
+
+        Args:
+            tuples: List of (element_pk, similarity) tuples
+            query: Optional query string that produced these results
+            filter_criteria: Optional dictionary of filter criteria
+            search_type: Type of search performed
+            min_confidence: Minimum confidence threshold used
+
+        Returns:
+            SearchResults object
+        """
+        results = [SearchResultItem(element_pk=pk, similarity=similarity) for pk, similarity in tuples]
+        return cls(
+            results=results,
+            total_results=len(results),
+            query=query,
+            filter_criteria=filter_criteria,
+            search_type=search_type,
+            min_confidence=min_confidence
+        )
+
+
+class SearchResult(BaseModel):
+    """Pydantic model for storing search result data in a flat structure with relationships."""
     # Similarity score
     similarity: float
 
     # Element fields
-    element_pk: int
-    element_id: str
-    element_type: str
-    content_preview: str
-    content_location: str
+    element_pk: int = Field(default=-1, title="Element primary key, used to get additional information about an element.")
+    element_id: str = Field(default="", title="Element natural key.")
+    element_type: str = Field(default="", title="Element type.", examples=["body","div","header","table","table_row"])
+    content_preview: str | None = Field(default=None, title="Short version of the element's content, used for previewing.")
+    content_location: str | None = Field(default=None, title="URI to the location of element's content, if available.")
 
     # Document fields
-    doc_id: str
-    doc_type: str
-    source: str
+    doc_id: str = Field(default="", title="Document natural key.")
+    doc_type: str = Field(default="", title="Document type.", examples=["pdf", "docx", "html", "text", "markdown"])
+    source: str | None = Field(default=None, title="URI to the original document source, if available.")
 
     # Outgoing relationships
-    outgoing_relationships: List[ElementRelationship] = field(default_factory=list)
+    outgoing_relationships: List[ElementRelationship] = Field(default_factory=list)
 
     # Resolved content
     resolved_content: Optional[str] = None
@@ -108,13 +152,59 @@ class SearchHelper:
         return cls._content_resolver
 
     @classmethod
+    def search_by_text(
+            cls,
+            query_text: str,
+            limit: int = 10,
+            filter_criteria: Dict[str, Any] = None,
+            min_confidence: float = 0.7
+    ) -> SearchResults:
+        """
+        Search for elements similar to the query text and return raw results.
+
+        Args:
+            query_text: The text to search for
+            limit: Maximum number of results to return
+            filter_criteria: Optional filtering criteria for the search
+            min_confidence: Minimum similarity score threshold (default 0.7)
+
+        Returns:
+            SearchResults object with element_pk and similarity scores
+        """
+        # Ensure database is initialized
+        db = cls.get_database()
+
+        logger.debug(f"Searching for text: {query_text} with min_confidence: {min_confidence}")
+
+        # Perform the search
+        similar_elements = db.search_by_text(query_text, limit=limit * 2, filter_criteria=filter_criteria)
+        logger.info(f"Found {len(similar_elements)} similar elements before confidence filtering")
+
+        # Filter by minimum confidence
+        filtered_elements = [elem for elem in similar_elements if elem[1] >= min_confidence]
+        logger.info(f"Found {len(filtered_elements)} elements after confidence filtering (threshold: {min_confidence})")
+
+        # Apply limit after filtering
+        filtered_elements = filtered_elements[:limit]
+
+        # Convert to SearchResults
+        return SearchResults.from_tuples(
+            tuples=filtered_elements,
+            query=query_text,
+            filter_criteria=filter_criteria,
+            search_type="text",
+            min_confidence=min_confidence
+        )
+
+    @classmethod
     def search_with_content(
             cls,
             query_text: str,
             limit: int = 10,
             filter_criteria: Dict[str, Any] = None,
             resolve_content: bool = True,
-            include_relationships: bool = True
+            include_relationships: bool = True,
+            min_confidence: float = 0.7
     ) -> List[SearchResult]:
         """
         Search for elements similar to the query text and return enriched results.
@@ -125,6 +215,7 @@ class SearchHelper:
             filter_criteria: Optional filtering criteria for the search
             resolve_content: Whether to resolve the original content
             include_relationships: Whether to include outgoing relationships
+            min_confidence: Minimum similarity score threshold (default 0.7)
 
         Returns:
             List of SearchResult objects with element, document, and content information
@@ -133,11 +224,17 @@ class SearchHelper:
         db = cls.get_database()
         content_resolver = cls.get_content_resolver()
 
-        logger.debug(f"Searching for text: {query_text}")
+        logger.debug(f"Searching for text: {query_text} with min_confidence: {min_confidence}")
 
-        # Perform the search
-        similar_elements = db.search_by_text(query_text, limit=limit, filter_criteria=filter_criteria)
-        logger.info(f"Found {len(similar_elements)} similar elements")
+        # Perform the search - get raw results first
+        search_results = cls.search_by_text(
+            query_text,
+            limit=limit,
+            filter_criteria=filter_criteria,
+            min_confidence=min_confidence
+        )
+        similar_elements = [(item.element_pk, item.similarity) for item in search_results.results]
+        logger.info(f"Found {len(similar_elements)} similar elements after confidence filtering")
 
         results = []
 
@@ -211,7 +308,8 @@ def search_with_content(
         limit: int = 10,
         filter_criteria: Dict[str, Any] = None,
         resolve_content: bool = True,
-        include_relationships: bool = True
+        include_relationships: bool = True,
+        min_confidence: float = 0.7
 ) -> List[SearchResult]:
     """
     Search for elements similar to the query text and return enriched results.
@@ -223,6 +321,7 @@ def search_with_content(
         filter_criteria: Optional filtering criteria for the search
         resolve_content: Whether to resolve the original content
         include_relationships: Whether to include outgoing relationships
+        min_confidence: Minimum similarity score threshold (default 0.7)
 
     Returns:
         List of SearchResult objects with element, document, and content information
@@ -232,14 +331,43 @@ def search_with_content(
         limit=limit,
         filter_criteria=filter_criteria,
         resolve_content=resolve_content,
-        include_relationships=include_relationships
+        include_relationships=include_relationships,
+        min_confidence=min_confidence
+    )
+
+
+# Convenience function that uses the singleton helper for raw search results
+def search_by_text(
+        query_text: str,
+        limit: int = 10,
+        filter_criteria: Dict[str, Any] = None,
+        min_confidence: float = 0.7
+) -> SearchResults:
+    """
+    Search for elements similar to the query text and return raw results.
+    Uses singleton instances of database.
+
+    Args:
+        query_text: The text to search for
+        limit: Maximum number of results to return
+        filter_criteria: Optional filtering criteria for the search
+        min_confidence: Minimum similarity score threshold (default 0.7)
+
+    Returns:
+        SearchResults object with element_pk and similarity scores
+    """
+    return SearchHelper.search_by_text(
+        query_text=query_text,
+        limit=limit,
+        filter_criteria=filter_criteria,
+        min_confidence=min_confidence
     )
 
 
 # Example usage:
 """
-# Using the singleton-based convenience function
-results = search_with_content("search query")
+# Using the singleton-based convenience function with confidence threshold
+results = search_with_content("search query", min_confidence=0.7)
 
 # Print results with relationship information
 for i, result in enumerate(results):
@@ -267,12 +395,19 @@ for i, result in enumerate(results):
         print(f"Content: {result.resolved_content[:100]}...")
     print("---")
 
-# Search with filters, content resolution, but no relationships
+# Raw search results with higher confidence threshold
+search_results = search_by_text("search query", limit=5, min_confidence=0.8)
+print(f"Found {search_results.total_results} results for '{search_results.query}' with confidence >= {search_results.min_confidence}")
+for item in search_results.results:
+    print(f"Element PK: {item.element_pk}, Similarity: {item.similarity:.4f}")
+
+# Search with filters and lower confidence threshold
 results = search_with_content(
     "search query",
     limit=20,
     filter_criteria={"element_type": ["header", "paragraph"]},
     resolve_content=True,
-    include_relationships=False
+    include_relationships=False,
+    min_confidence=0.5  # Lower threshold to get more results
 )
 """

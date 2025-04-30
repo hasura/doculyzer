@@ -43,7 +43,7 @@ class DocumentParser(ABC):
 
         Args:
             content_location: JSON-formatted content location pointer
-            source_content: Optional pre-loaded source content
+            source_content: Optional preloaded source content
 
         Returns:
             Resolved content as string
@@ -96,7 +96,7 @@ class DocumentParser(ABC):
 
         Args:
             location_data: Content location data
-            source_content: Optional pre-loaded source content
+            source_content: Optional preloaded source content
 
         Returns:
             Resolved content string

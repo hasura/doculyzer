@@ -1,15 +1,17 @@
 import logging
+import os
 
 from dotenv import load_dotenv
 
 from .config import Config
 from .embeddings import EmbeddingGenerator
-from .storage.mongodb import config
 
 # Load environment variables from .env file
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+_config = Config(os.environ.get("DOCULYZER_CONFIG_PATH", "./config.yaml"))
 
 
 def ingest_documents(config: Config, source_configs=None, max_link_depth=None):
@@ -26,9 +28,9 @@ def ingest_documents(config: Config, source_configs=None, max_link_depth=None):
     Returns:
         Dictionary with statistics about ingested documents
     """
-    from doculyzer.content_source.factory import get_content_source
-    from doculyzer.embeddings import get_embedding_generator
-    from doculyzer.relationship_detector import create_relationship_detector
+    from .content_source.factory import get_content_source
+    from .embeddings import get_embedding_generator
+    from .relationships import create_relationship_detector
 
     logger.debug("Starting document ingestion process")
 
@@ -168,7 +170,7 @@ def _ingest_document_recursively(source, doc_id, db, relationship_detector,
         global_visited_docs: Global set of all visited document IDs
         current_depth: Current depth in the recursion
     """
-    from doculyzer.document_parser.factory import get_parser_for_content
+    from .document_parser.factory import get_parser_for_content
 
     logger.debug(f"Recursively ingesting document: {doc_id} (depth: {current_depth}/{max_depth})")
 
@@ -334,7 +336,7 @@ def _compute_cross_document_container_relationships(db, processed_doc_ids):
 
     # Container element types we're interested in
     container_types = ["body", "div", "list", "header", "section", "title", "h1", "h2", "h3", "h4", "h5", "h6"]
-    similarity_threshold = (config.config.get('relationship_detection', {})
+    similarity_threshold = (_config.config.get('relationship_detection', {})
                             .get('cross_document_semantic', {}).get('similarity_threshold'))
     if similarity_threshold is None:
         return
