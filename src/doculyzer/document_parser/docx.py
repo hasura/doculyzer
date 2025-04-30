@@ -145,7 +145,7 @@ class DocxParser(DocumentParser):
                     logger.warning(f"Failed to delete temporary file {binary_path}: {str(e)}")
 
     def _resolve_element_content(self, location_data: Dict[str, Any],
-                                source_content: Optional[Union[str, bytes]]) -> str:
+                                 source_content: Optional[Union[str, bytes]]) -> str:
         """
         Resolve content for specific DOCX element types.
 
@@ -558,7 +558,8 @@ class DocxParser(DocumentParser):
             "doc_id": doc_id,
             "element_type": "paragraph",
             "parent_id": parent_id,
-            "content_preview": text[:self.max_content_preview] + ("..." if len(text) > self.max_content_preview else ""),
+            "content_preview": text[:self.max_content_preview] + (
+                "..." if len(text) > self.max_content_preview else ""),
             "content_location": json.dumps({
                 "source": source_id,
                 "type": "paragraph",
@@ -675,7 +676,8 @@ class DocxParser(DocumentParser):
                     "doc_id": doc_id,
                     "element_type": "table_cell",
                     "parent_id": row_id,
-                    "content_preview": cell_text[:self.max_content_preview] + ("..." if len(cell_text) > self.max_content_preview else ""),
+                    "content_preview": cell_text[:self.max_content_preview] + (
+                        "..." if len(cell_text) > self.max_content_preview else ""),
                     "content_location": json.dumps({
                         "source": source_id,
                         "type": "table_cell",
@@ -770,7 +772,8 @@ class DocxParser(DocumentParser):
                                 "doc_id": doc_id,
                                 "element_type": "header",
                                 "parent_id": headers_id,
-                                "content_preview": header_text[:self.max_content_preview] + ("..." if len(header_text) > self.max_content_preview else ""),
+                                "content_preview": header_text[:self.max_content_preview] + (
+                                    "..." if len(header_text) > self.max_content_preview else ""),
                                 "content_location": json.dumps({
                                     "source": source_id,
                                     "type": "header",
@@ -804,7 +807,8 @@ class DocxParser(DocumentParser):
                                 "doc_id": doc_id,
                                 "element_type": "footer",
                                 "parent_id": footers_id,
-                                "content_preview": footer_text[:self.max_content_preview] + ("..." if len(footer_text) > self.max_content_preview else ""),
+                                "content_preview": footer_text[:self.max_content_preview] + (
+                                    "..." if len(footer_text) > self.max_content_preview else ""),
                                 "content_location": json.dumps({
                                     "source": source_id,
                                     "type": "footer",
@@ -885,7 +889,8 @@ class DocxParser(DocumentParser):
                                             "doc_id": doc_id,
                                             "element_type": "comment",
                                             "parent_id": comments_id,
-                                            "content_preview": text[:self.max_content_preview] + ("..." if len(text) > self.max_content_preview else ""),
+                                            "content_preview": text[:self.max_content_preview] + (
+                                                "..." if len(text) > self.max_content_preview else ""),
                                             "content_location": json.dumps({
                                                 "source": source_id,
                                                 "type": "comment",

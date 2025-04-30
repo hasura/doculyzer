@@ -8,8 +8,8 @@ import hashlib
 import json
 import logging
 import os
-import uuid
 import re
+import uuid
 from typing import Dict, Any, List, Optional, Union
 
 from .base import DocumentParser
@@ -31,7 +31,7 @@ class JSONParser(DocumentParser):
         self.temp_dir = self.config.get("temp_dir", os.path.join(os.path.dirname(__file__), 'temp'))
 
     def _resolve_element_content(self, location_data: Dict[str, Any],
-                                source_content: Optional[Union[str, bytes]] = None) -> str:
+                                 source_content: Optional[Union[str, bytes]] = None) -> str:
         """
         Resolve content for specific JSON element types.
 
@@ -161,7 +161,8 @@ class JSONParser(DocumentParser):
         except (json.JSONDecodeError, TypeError):
             return False
 
-    def _resolve_json_path(self, data: Any, path: str) -> Any:
+    @staticmethod
+    def _resolve_json_path(data: Any, path: str) -> Any:
         """
         Resolve a JSON path to find the targeted element.
 

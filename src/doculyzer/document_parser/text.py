@@ -33,7 +33,7 @@ class TextParser(DocumentParser):
         self.temp_dir = self.config.get("temp_dir", os.path.join(os.path.dirname(__file__), 'temp'))
 
     def _resolve_element_content(self, location_data: Dict[str, Any],
-                                source_content: Optional[Union[str, bytes]] = None) -> str:
+                                 source_content: Optional[Union[str, bytes]] = None) -> str:
         """
         Resolve content for specific text document element types.
 
@@ -164,7 +164,8 @@ class TextParser(DocumentParser):
             if os.path.exists(source) and os.path.isfile(source):
                 _, ext = os.path.splitext(source.lower())
                 # Support common text file extensions
-                return ext in ['.txt', '.text', '.md', '.markdown', '.log', '.csv', '.tsv', '.json', '.xml', '.html', '.htm', '.css', '.js', '.py', '.sh', '.bat', '.ini', '.cfg', '']
+                return ext in ['.txt', '.text', '.md', '.markdown', '.log', '.csv', '.tsv', '.json', '.xml', '.html',
+                               '.htm', '.css', '.js', '.py', '.sh', '.bat', '.ini', '.cfg', '']
 
             # For non-file sources, check if we have the appropriate element type
             element_type = location_data.get("type", "")

@@ -209,7 +209,7 @@ class DocumentTypeDetector:
             try:
                 mime_type = magic.from_buffer(content_bytes, mime=True)
                 doc_type = DocumentTypeDetector.MIME_TYPE_MAP.get(mime_type)
-                if doc_type:
+                if doc_type and doc_type != 'text':
                     return doc_type
             except Exception as e:
                 logger.debug(f"Error detecting content type with python-magic: {str(e)}")

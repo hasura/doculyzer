@@ -111,7 +111,7 @@ class ContentResolverFactory:
 
     @classmethod
     def create_enhanced_resolver(cls, content_sources: Dict[str, Any], path_mappings: Dict[str, str] = None,
-                                resolver_config: Dict[str, Any] = None) -> EnhancedContentResolver:
+                                 resolver_config: Dict[str, Any] = None) -> EnhancedContentResolver:
         """
         Create an enhanced content resolver with all configured components.
 

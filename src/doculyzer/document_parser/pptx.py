@@ -59,7 +59,7 @@ class PptxParser(DocumentParser):
         self.temp_dir = self.config.get("temp_dir", os.path.join(os.path.dirname(__file__), 'temp'))
 
     def _resolve_element_content(self, location_data: Dict[str, Any],
-                                source_content: Optional[Union[str, bytes]] = None) -> str:
+                                 source_content: Optional[Union[str, bytes]] = None) -> str:
         """
         Resolve content for specific PPTX element types.
 
@@ -275,7 +275,8 @@ class PptxParser(DocumentParser):
                     return f"Image shape not found at path: {shape_path}"
 
                 # Get image details
-                image_name = shape.image.filename if hasattr(shape, 'image') and hasattr(shape.image, 'filename') else "Unknown"
+                image_name = shape.image.filename if hasattr(shape, 'image') and hasattr(shape.image,
+                                                                                         'filename') else "Unknown"
                 alt_text = shape.alt_text if hasattr(shape, 'alt_text') else ""
 
                 return f"Image: {image_name}\nAlt text: {alt_text}"
@@ -301,7 +302,8 @@ class PptxParser(DocumentParser):
                 # Get chart details
                 chart = shape.chart
                 chart_type = str(chart.chart_type) if hasattr(chart, 'chart_type') else "Unknown"
-                chart_title = chart.chart_title.text_frame.text if hasattr(chart, 'chart_title') and hasattr(chart.chart_title, 'text_frame') else "Untitled Chart"
+                chart_title = chart.chart_title.text_frame.text if hasattr(chart, 'chart_title') and hasattr(
+                    chart.chart_title, 'text_frame') else "Untitled Chart"
 
                 # Get categories and series if available
                 categories = []
@@ -417,7 +419,8 @@ class PptxParser(DocumentParser):
 
         return links
 
-    def _extract_document_links(self, presentation, elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _extract_document_links(presentation, elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Helper method to extract hyperlinks from PowerPoint presentation.
         This is called during the parsing phase.
@@ -1666,7 +1669,6 @@ class PptxParser(DocumentParser):
             pass
 
         return "shape"
-
 
     @staticmethod
     def _generate_hash(content: str) -> str:

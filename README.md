@@ -25,7 +25,7 @@ Doculyzer is a powerful document management system that creates a universal, str
 - **Contextual Semantic Search**: Uses advanced embedding techniques that incorporate document context (hierarchy, neighbors) for more accurate semantic search
 - **Element-Level Precision**: Maintains granular accuracy to specific document elements
 - **Relationship Mapping**: Identifies connections between document elements
-- **Efficient Vector Representations**: Optimized for smaller text vectors while preserving semantic richness
+- **Configurable Vector Representations**: Support for different vector dimensions based on content needs, allowing larger vectors for technical content and smaller vectors for general content
 
 ## Supported Document Types
 
@@ -214,14 +214,31 @@ storage:
 embedding:
   enabled: true
   model: "sentence-transformers/all-MiniLM-L6-v2"
+  backend: "huggingface"  # Options: huggingface, openai, custom
   chunk_size: 512
   overlap: 128
   contextual: true  # Enable contextual embeddings
+  vector_size: 384  # Configurable based on content needs
   
   # Contextual embedding configuration
   predecessor_count: 1
   successor_count: 1
   ancestor_depth: 1
+  
+  # Content-specific configurations
+  content_types:
+    technical:
+      model: "sentence-transformers/all-mpnet-base-v2"
+      vector_size: 768  # Larger vectors for technical content
+    general:
+      model: "sentence-transformers/all-MiniLM-L6-v2"
+      vector_size: 384  # Smaller vectors for general content
+  
+  # OpenAI-specific configuration (if using OpenAI backend)
+  openai:
+    api_key: "your_api_key_here"
+    model: "text-embedding-ada-002"
+    dimensions: 1536  # Configurable embedding dimensions
 
 content_sources:
   - name: "documentation"
@@ -281,16 +298,43 @@ Doculyzer can detect various types of relationships between document elements:
 
 Doculyzer uses advanced contextual embedding techniques to generate vector representations of document elements:
 
+- **Pluggable Embedding Backends**: Choose from different embedding providers or implement your own
+  - **HuggingFace Transformers**: Use transformer-based models like BERT, RoBERTa, or Sentence Transformers
+  - **OpenAI Embeddings**: Leverage OpenAI's powerful embedding models
+  - **Custom Embeddings**: Implement your own embedding generator with the provided interfaces
 - **Contextual Embeddings**: Incorporates hierarchical relationships, predecessors, and successors into each element's embedding
 - **Element-Level Precision**: Maintains accuracy to specific document elements rather than just document-level matching
-- **Efficient Vector Size**: Optimized for smaller text vectors while preserving semantic richness
+- **Content-Optimized Vector Dimensions**: Flexibility to choose vector sizes based on content type
+  - Larger vectors for highly technical content requiring more nuanced semantic representation
+  - Smaller vectors for general content to optimize storage and query performance
+  - Select the embedding provider and model that best suits your specific use case
 - **Improved Relevance**: Context-aware embeddings produce more accurate similarity search results
 
 ```python
 from doculyzer.embeddings import get_embedding_generator
 
-# Create contextual embedding generator
+# Create contextual embedding generator with the configured backend
 embedding_generator = get_embedding_generator(config)
+
+# Use a specific embedding backend
+from doculyzer.embeddings.factory import create_embedding_generator
+from doculyzer.embeddings.hugging_face import HuggingFaceEmbedding
+
+# Create a HuggingFace embedding generator with a specific model and vector size
+embedding_generator = create_embedding_generator(
+    backend="huggingface",
+    model_name="sentence-transformers/all-mpnet-base-v2",
+    vector_size=768,  # Larger vector size for technical content
+    contextual=True
+)
+
+# Or choose a different model with smaller vectors for general content
+general_content_embedder = create_embedding_generator(
+    backend="huggingface",
+    model_name="sentence-transformers/all-MiniLM-L6-v2",
+    vector_size=384,  # Smaller vector size for general content
+    contextual=True
+)
 
 # Generate embeddings for a document
 elements = db.get_document_elements(doc_id)

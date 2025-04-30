@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional, Tuple
 
+from .element_relationship import ElementRelationship
+
 
 class DocumentDatabase(ABC):
     """Abstract base class for document database implementations."""
@@ -186,16 +188,19 @@ class DocumentDatabase(ABC):
         pass
 
     @abstractmethod
-    def search_by_embedding(self, query_embedding: List[float], limit: int = 10) -> List[Tuple[str, float]]:
+    def search_by_embedding(self, query_embedding: List[float], limit: int = 10,
+                            filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
         """
-        Search elements by embedding similarity.
+        Search elements by embedding similarity with optional filtering.
 
         Args:
             query_embedding: Query embedding vector
             limit: Maximum number of results
+            filter_criteria: Optional dictionary with criteria to filter results
+                             (e.g. {"element_type": ["header", "section"]})
 
         Returns:
-            List of (element_id, similarity_score) tuples
+            List of (element_id, similarity_score) tuples for matching elements
         """
         pass
 
@@ -213,7 +218,8 @@ class DocumentDatabase(ABC):
         pass
 
     @abstractmethod
-    def search_by_text(self, search_text: str, limit: int = 10) -> List[Tuple[str, float]]:
+    def search_by_text(self, search_text: str, limit: int = 10,
+                       filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
         """
         Search elements by semantic similarity to the provided text.
 
@@ -223,8 +229,30 @@ class DocumentDatabase(ABC):
         Args:
             search_text: Text to search for semantically
             limit: Maximum number of results
+            filter_criteria: Optional dictionary with criteria to filter results
 
         Returns:
             List of (element_id, similarity_score) tuples
+        """
+        pass
+
+    @abstractmethod
+    def get_outgoing_relationships(self, element_pk: int) -> List[ElementRelationship]:
+        """
+        Find all relationships where the specified element_pk is the source.
+
+        This method returns only the outgoing relationships - those where
+        the specified element is the source and points to other elements or references.
+
+        The returned relationships may include:
+        - Structural relationships (contains, next_sibling, etc.)
+        - Explicit links (links to other elements)
+        - Semantic similarity relationships (similar content)
+
+        Args:
+            element_pk: The primary key of the element
+
+        Returns:
+            List of ElementRelationship objects where the specified element is the source
         """
         pass

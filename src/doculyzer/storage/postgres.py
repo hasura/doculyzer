@@ -2,9 +2,10 @@ import json
 import logging
 import os
 import time
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Union
 
 from .base import DocumentDatabase
+from .element_relationship import ElementRelationship
 from ..config import Config
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,346 @@ config = Config(os.environ.get("DOCULYZER_CONFIG_PATH", "./config.yaml"))
 class PostgreSQLDocumentDatabase(DocumentDatabase):
     """PostgreSQL implementation of document database."""
 
+    """
+    Key updates to the PostgreSQL implementation:
+
+    1. Improved get_element method to handle both element_id (string) and element_pk (integer)
+    2. Enhanced get_outgoing_relationships method to use JOIN for efficiently retrieving target information
+    3. Updated search_by_embedding methods to return element_pk instead of element_id for consistency
+    """
+
+    def get_element(self, element_id_or_pk: Union[str, int]) -> Optional[Dict[str, Any]]:
+        """
+        Get element by ID or PK.
+
+        Args:
+            element_id_or_pk: Either the element_id (string) or element_pk (integer)
+
+        Returns:
+            Element data or None if not found
+        """
+        if not self.cursor:
+            raise ValueError("Database not initialized")
+
+        # Try to interpret as element_pk (integer) first
+        try:
+            element_pk = int(element_id_or_pk)
+            self.cursor.execute(
+                "SELECT * FROM elements WHERE element_pk = %s",
+                (element_pk,)
+            )
+        except (ValueError, TypeError):
+            # If not an integer, treat as element_id (string)
+            self.cursor.execute(
+                "SELECT * FROM elements WHERE element_id = %s",
+                (element_id_or_pk,)
+            )
+
+        row = self.cursor.fetchone()
+        if row is None:
+            return None
+
+        element = dict(row)
+
+        # Convert metadata from JSON
+        try:
+            element["metadata"] = json.loads(element["metadata"])
+        except (json.JSONDecodeError, TypeError):
+            element["metadata"] = {}
+
+        return element
+
+    def get_outgoing_relationships(self, element_pk: int) -> List[ElementRelationship]:
+        """
+        Find all relationships where the specified element_pk is the source.
+
+        Implementation for PostgreSQL database using JOIN to efficiently retrieve target information.
+
+        Args:
+            element_pk: The primary key of the element
+
+        Returns:
+            List of ElementRelationship objects where the specified element is the source
+        """
+        if not self.cursor:
+            raise ValueError("Database not initialized")
+
+        relationships = []
+
+        # Get the element to find its element_id and type
+        element = self.get_element(element_pk)
+        if not element:
+            logger.warning(f"Element with PK {element_pk} not found")
+            return []
+
+        element_id = element.get("element_id")
+        if not element_id:
+            logger.warning(f"Element with PK {element_pk} has no element_id")
+            return []
+
+        element_type = element.get("element_type", "")
+
+        try:
+            # Find relationships with target element information using JOIN
+            # This query joins the relationships table with the elements table
+            # to get information about target elements in one go
+            self.cursor.execute(
+                """
+                SELECT 
+                    r.*,
+                    t.element_pk as target_element_pk,
+                    t.element_type as target_element_type,
+                    t.content_preview as target_content_preview
+                FROM 
+                    relationships r
+                LEFT JOIN 
+                    elements t ON r.target_reference = t.element_id
+                WHERE 
+                    r.source_id = %s
+                """,
+                (element_id,)
+            )
+
+            for row in self.cursor.fetchall():
+                # Convert to dictionary
+                rel_dict = dict(row)
+
+                # Convert metadata from JSON if it's in string format
+                if isinstance(rel_dict.get("metadata"), str):
+                    try:
+                        rel_dict["metadata"] = json.loads(rel_dict["metadata"])
+                    except (json.JSONDecodeError, TypeError):
+                        rel_dict["metadata"] = {}
+
+                # Extract target element information from the joined query results
+                target_element_pk = rel_dict.get("target_element_pk")
+                target_element_type = rel_dict.get("target_element_type")
+                target_content_preview = rel_dict.get("target_content_preview", "")
+
+                # Create enriched relationship
+                relationship = ElementRelationship(
+                    relationship_id=rel_dict.get("relationship_id", ""),
+                    source_id=element_id,
+                    source_element_pk=element_pk,
+                    source_element_type=element_type,
+                    relationship_type=rel_dict.get("relationship_type", ""),
+                    target_reference=rel_dict.get("target_reference", ""),
+                    target_element_pk=target_element_pk,
+                    target_element_type=target_element_type,
+                    target_content_preview=target_content_preview,
+                    doc_id=rel_dict.get("doc_id"),
+                    metadata=rel_dict.get("metadata", {}),
+                    is_source=True
+                )
+
+                relationships.append(relationship)
+
+            return relationships
+
+        except Exception as e:
+            logger.error(f"Error getting outgoing relationships for element {element_pk}: {str(e)}")
+            return []
+
+    def _search_by_pgvector(self, query_embedding: List[float], limit: int = 10,
+                            filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
+        """
+        Search embeddings using pgvector similarity with filtering.
+
+        Args:
+            query_embedding: Query embedding vector
+            limit: Maximum number of results
+            filter_criteria: Optional dictionary with criteria to filter results
+
+        Returns:
+            List of (element_pk, similarity_score) tuples
+        """
+        # Convert embedding to JSON array for casting to vector
+        embedding_json = json.dumps(query_embedding)
+
+        try:
+            # Start building the query
+            sql = """
+            SELECT e.element_pk, 1 - (em.vector_embedding <=> %s::vector) as similarity
+            FROM embeddings em
+            JOIN elements e ON e.element_pk = em.element_pk
+            JOIN documents d ON e.doc_id = d.doc_id
+            """
+            params = [embedding_json]
+
+            # Add WHERE clauses if we have filter criteria
+            if filter_criteria:
+                conditions = []
+
+                for key, value in filter_criteria.items():
+                    if key == "element_type" and isinstance(value, list):
+                        # Handle list of allowed element types
+                        placeholders = ', '.join(['%s'] * len(value))
+                        conditions.append(f"e.element_type IN ({placeholders})")
+                        params.extend(value)
+                    elif key == "doc_id" and isinstance(value, list):
+                        # Handle list of document IDs to include
+                        placeholders = ', '.join(['%s'] * len(value))
+                        conditions.append(f"e.doc_id IN ({placeholders})")
+                        params.extend(value)
+                    elif key == "exclude_doc_id" and isinstance(value, list):
+                        # Handle list of document IDs to exclude
+                        placeholders = ', '.join(['%s'] * len(value))
+                        conditions.append(f"e.doc_id NOT IN ({placeholders})")
+                        params.extend(value)
+                    elif key == "exclude_doc_source" and isinstance(value, list):
+                        # Handle list of document sources to exclude
+                        placeholders = ', '.join(['%s'] * len(value))
+                        conditions.append(f"d.source NOT IN ({placeholders})")
+                        params.extend(value)
+                    else:
+                        # Simple equality filter
+                        conditions.append(f"e.{key} = %s")
+                        params.append(value)
+
+                # Add WHERE clause if we have conditions
+                if conditions:
+                    sql += " WHERE " + " AND ".join(conditions)
+
+            # Add ORDER BY and LIMIT
+            sql += """
+            ORDER BY em.vector_embedding <=> %s::vector
+            LIMIT %s
+            """
+            params.extend([embedding_json, limit])
+
+            # Execute the query
+            self.cursor.execute(sql, params)
+
+            # Return element_pk instead of element_id for consistency with changes
+            return [(row["element_pk"], row["similarity"]) for row in self.cursor.fetchall()]
+
+        except Exception as e:
+            logger.error(f"Error using pgvector for search: {str(e)}")
+            raise
+
+    def _search_by_similarity_function(self, query_embedding: List[float], limit: int = 10,
+                                       filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
+        """
+        Fall back to calculating similarity in Python with filtering.
+
+        Args:
+            query_embedding: Query embedding vector
+            limit: Maximum number of results
+            filter_criteria: Optional dictionary with criteria to filter results
+
+        Returns:
+            List of (element_pk, similarity_score) tuples
+        """
+        # Build base query to get embeddings with possible filtering
+        sql = """
+        SELECT em.element_pk, em.embedding, e.element_type, e.doc_id, d.source
+        FROM embeddings em
+        JOIN elements e ON e.element_pk = em.element_pk
+        JOIN documents d ON e.doc_id = d.doc_id
+        """
+        params = []
+
+        # Add WHERE clauses if we have filter criteria
+        if filter_criteria:
+            conditions = []
+
+            for key, value in filter_criteria.items():
+                if key == "element_type" and isinstance(value, list):
+                    # Handle list of allowed element types
+                    placeholders = ', '.join(['%s'] * len(value))
+                    conditions.append(f"e.element_type IN ({placeholders})")
+                    params.extend(value)
+                elif key == "doc_id" and isinstance(value, list):
+                    # Handle list of document IDs to include
+                    placeholders = ', '.join(['%s'] * len(value))
+                    conditions.append(f"e.doc_id IN ({placeholders})")
+                    params.extend(value)
+                elif key == "exclude_doc_id" and isinstance(value, list):
+                    # Handle list of document IDs to exclude
+                    placeholders = ', '.join(['%s'] * len(value))
+                    conditions.append(f"e.doc_id NOT IN ({placeholders})")
+                    params.extend(value)
+                elif key == "exclude_doc_source" and isinstance(value, list):
+                    # Handle list of document sources to exclude
+                    placeholders = ', '.join(['%s'] * len(value))
+                    conditions.append(f"d.source NOT IN ({placeholders})")
+                    params.extend(value)
+                else:
+                    # Simple equality filter
+                    conditions.append(f"e.{key} = %s")
+                    params.append(value)
+
+            # Add WHERE clause if we have conditions
+            if conditions:
+                sql += " WHERE " + " AND ".join(conditions)
+
+        # Execute the query
+        self.cursor.execute(sql, params)
+
+        # Process results and calculate similarity
+        embeddings = []
+        for row in self.cursor.fetchall():
+            try:
+                embedding = json.loads(row["embedding"])
+                embeddings.append((row["element_pk"], embedding))
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+        # Calculate cosine similarity for each embedding
+        similarities = []
+        for element_pk, embedding in embeddings:
+            similarity = self._cosine_similarity(query_embedding, embedding)
+            similarities.append((element_pk, similarity))
+
+        # Sort by similarity (highest first) and limit results
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        return similarities[:limit]
+
+    def search_by_text(self, search_text: str, limit: int = 10,
+                       filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
+        """
+        Search elements by semantic similarity to the provided text.
+
+        This method combines text-to-embedding conversion and embedding search
+        into a single convenient operation.
+
+        Args:
+            search_text: Text to search for semantically
+            limit: Maximum number of results
+            filter_criteria: Optional dictionary with criteria to filter results
+
+        Returns:
+            List of (element_pk, similarity_score) tuples
+        """
+        if not self.cursor:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Import necessary modules
+            from doculyzer.embeddings import get_embedding_generator
+
+            # Initialize embedding generator if not already done
+            if self.embedding_generator is None:
+                # Get config from the connection parameters
+                # This assumes config is accessible, otherwise it would need to be passed in
+                config_obj = self.conn_params.get('config')
+                if not config_obj:
+                    from doculyzer.config import Config
+                    config_obj = Config(os.environ.get("DOCULYZER_CONFIG_PATH", "./config.yaml"))
+
+                self.embedding_generator = get_embedding_generator(config_obj)
+
+            # Generate embedding for the search text
+            query_embedding = self.embedding_generator.generate(search_text)
+
+            # Use the embedding to search, passing filter criteria
+            return self.search_by_embedding(query_embedding, limit, filter_criteria)
+
+        except Exception as e:
+            logger.error(f"Error in semantic search by text: {str(e)}")
+            # Return empty list on error
+            return []
+
     def __init__(self, conn_params: Dict[str, Any]):
         """
         Initialize PostgreSQL document database.
@@ -44,6 +385,7 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
         self.cursor = None
         self.vector_extension = None
         self.vector_dimension = config.config.get('embedding', {}).get('dimensions', 384)
+        self.embedding_generator = None
 
     def initialize(self) -> None:
         """Initialize the database by connecting and creating tables if they don't exist."""
@@ -402,9 +744,15 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
         if not self.cursor:
             raise ValueError("Database not initialized")
 
+        # Modified to handle doc_id being either an actual doc_id or a source
         self.cursor.execute(
-            "SELECT * FROM elements WHERE doc_id = %s ORDER BY element_id",
-            (doc_id,)
+            """
+            SELECT e.* FROM elements e
+            JOIN documents d ON e.doc_id = d.doc_id
+            WHERE d.doc_id = %s OR d.source = %s
+            ORDER BY e.element_id
+            """,
+            (doc_id, doc_id)
         )
 
         elements = []
@@ -460,29 +808,102 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
 
         return relationships
 
-    def get_element(self, element_id: str) -> Optional[Dict[str, Any]]:
-        """Get element by ID."""
+    def store_relationship(self, relationship: Dict[str, Any]) -> None:
+        """
+        Store a relationship between elements.
+
+        Args:
+            relationship: Relationship data with source_id, relationship_type, and target_reference
+        """
         if not self.cursor:
             raise ValueError("Database not initialized")
 
-        self.cursor.execute(
-            "SELECT * FROM elements WHERE element_id = %s",
-            (element_id,)
-        )
-
-        row = self.cursor.fetchone()
-        if row is None:
-            return None
-
-        element = dict(row)
-
-        # Convert metadata from JSON
         try:
-            element["metadata"] = json.loads(element["metadata"])
-        except (json.JSONDecodeError, TypeError):
-            element["metadata"] = {}
+            # Convert metadata to JSON
+            metadata_json = json.dumps(relationship.get("metadata", {}))
 
-        return element
+            # Insert the relationship
+            self.cursor.execute(
+                """
+                INSERT INTO relationships
+                (relationship_id, source_id, relationship_type, target_reference, metadata)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (relationship_id) DO UPDATE
+                SET source_id = EXCLUDED.source_id,
+                    relationship_type = EXCLUDED.relationship_type,
+                    target_reference = EXCLUDED.target_reference,
+                    metadata = EXCLUDED.metadata
+                """,
+                (
+                    relationship["relationship_id"],
+                    relationship.get("source_id", ""),
+                    relationship.get("relationship_type", ""),
+                    relationship.get("target_reference", ""),
+                    metadata_json
+                )
+            )
+
+            # Commit the transaction
+            self.conn.commit()
+            logger.debug(f"Stored relationship {relationship['relationship_id']}")
+
+        except Exception as e:
+            # Rollback on error
+            self.conn.rollback()
+            logger.error(f"Error storing relationship: {str(e)}")
+            raise
+
+    def delete_relationships_for_element(self, element_id: str, relationship_type: str = None) -> None:
+        """
+        Delete relationships for an element.
+
+        Args:
+            element_id: Element ID
+            relationship_type: Optional relationship type to filter by
+        """
+        if not self.cursor:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Build query conditions
+            conditions = ["source_id = %s"]
+            params = [element_id]
+
+            # Add relationship type filter if provided
+            if relationship_type:
+                conditions.append("relationship_type = %s")
+                params.append(relationship_type)
+
+            # Execute delete for source relationships
+            self.cursor.execute(
+                f"DELETE FROM relationships WHERE {' AND '.join(conditions)}",
+                params
+            )
+
+            # Build query conditions for target relationships
+            conditions = ["target_reference = %s"]
+            params = [element_id]
+
+            # Add relationship type filter if provided
+            if relationship_type:
+                conditions.append("relationship_type = %s")
+                params.append(relationship_type)
+
+            # Execute delete for target relationships
+            self.cursor.execute(
+                f"DELETE FROM relationships WHERE {' AND '.join(conditions)}",
+                params
+            )
+
+            # Commit the transaction
+            self.conn.commit()
+            logger.debug(f"Deleted relationships for element {element_id}")
+
+        except Exception as e:
+            # Rollback on error
+            self.conn.rollback()
+            logger.error(f"Error deleting relationships for element {element_id}: {str(e)}")
+            raise
 
     def find_documents(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
         """Find documents matching query."""
@@ -550,6 +971,11 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
                     for meta_key, meta_value in value.items():
                         conditions.append(f"metadata->>'%s' = %s")
                         params.extend([meta_key, str(meta_value)])
+                elif key == "element_type" and isinstance(value, list):
+                    # Handle list of element types
+                    placeholders = ', '.join(['%s'] * len(value))
+                    conditions.append(f"element_type IN ({placeholders})")
+                    params.extend(value)
                 else:
                     conditions.append(f"{key} = %s")
                     params.append(value)
@@ -678,70 +1104,32 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
         except (json.JSONDecodeError, TypeError):
             return None
 
-    def search_by_embedding(self, query_embedding: List[float], limit: int = 10) -> List[Tuple[str, float]]:
-        """Search elements by embedding similarity using available method."""
+    def search_by_embedding(self, query_embedding: List[float], limit: int = 10,
+                            filter_criteria: Dict[str, Any] = None) -> list[tuple[int, float]]:
+        """
+        Search elements by embedding similarity using available method.
+
+        Args:
+            query_embedding: Query embedding vector
+            limit: Maximum number of results
+            filter_criteria: Optional dictionary with criteria to filter results
+                            (e.g. {"element_type": ["header", "section"]})
+
+        Returns:
+            List of (element_pk, similarity_score) tuples
+        """
         if not self.cursor:
             raise ValueError("Database not initialized")
 
         try:
             if self.vector_extension == "pgvector":
-                return self._search_by_pgvector(query_embedding, limit)
+                return self._search_by_pgvector(query_embedding, limit, filter_criteria)
             else:
-                return self._search_by_similarity_function(query_embedding, limit)
+                return self._search_by_similarity_function(query_embedding, limit, filter_criteria)
         except Exception as e:
             logger.error(f"Error searching by embedding: {str(e)}")
             # Fall back to non-vector search
-            return self._search_by_similarity_function(query_embedding, limit)
-
-    def _search_by_pgvector(self, query_embedding: List[float], limit: int = 10) -> List[Tuple[str, float]]:
-        """Search embeddings using pgvector similarity."""
-        # Convert embedding to JSON array for casting to vector
-        embedding_json = json.dumps(query_embedding)
-
-        try:
-            # Use cosine distance by default
-            self.cursor.execute(
-                """
-                SELECT e.element_id, 1 - (em.vector_embedding <=> %s::vector) as similarity
-                FROM embeddings em
-                JOIN elements e ON e.element_pk = em.element_pk
-                ORDER BY em.vector_embedding <=> %s::vector
-                LIMIT %s
-                """,
-                (embedding_json, embedding_json, limit)
-            )
-
-            return [(row["element_id"], row["similarity"]) for row in self.cursor.fetchall()]
-        except Exception as e:
-            logger.error(f"Error using pgvector for search: {str(e)}")
-            raise
-
-    def _search_by_similarity_function(self, query_embedding: List[float], limit: int = 10) -> List[Tuple[str, float]]:
-        """Fall back to calculating similarity in Python."""
-        # Get all embeddings
-        self.cursor.execute("""
-            SELECT em.element_pk, em.embedding, e.element_id
-            FROM embeddings em
-            JOIN elements e ON e.element_pk = em.element_pk
-        """)
-
-        embeddings = []
-        for row in self.cursor.fetchall():
-            try:
-                embedding = json.loads(row["embedding"])
-                embeddings.append((row["element_id"], embedding))
-            except (json.JSONDecodeError, TypeError):
-                continue
-
-        # Calculate cosine similarity for each embedding
-        similarities = []
-        for element_id, embedding in embeddings:
-            similarity = self._cosine_similarity(query_embedding, embedding)
-            similarities.append((element_id, similarity))
-
-        # Sort by similarity (highest first) and limit results
-        similarities.sort(key=lambda x: x[1], reverse=True)
-        return similarities[:limit]
+            return self._search_by_similarity_function(query_embedding, limit, filter_criteria)
 
     def delete_document(self, doc_id: str) -> bool:
         """Delete a document and all associated elements and relationships."""
@@ -951,45 +1339,3 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
 
         # Calculate cosine similarity
         return float(dot_product / (norm1 * norm2))
-
-    def search_by_text(self, search_text: str, limit: int = 10) -> List[Tuple[str, float]]:
-        """
-        Search elements by semantic similarity to the provided text.
-
-        This method combines text-to-embedding conversion and embedding search
-        into a single convenient operation.
-
-        Args:
-            search_text: Text to search for semantically
-            limit: Maximum number of results
-
-        Returns:
-            List of (element_id, similarity_score) tuples
-        """
-        if not self.cursor:
-            raise ValueError("Database not initialized")
-
-        try:
-            # Import necessary modules
-            from doculyzer.embeddings import get_embedding_generator
-
-            # Get config from the connection parameters
-            # This assumes config is accessible, otherwise it would need to be passed in
-            config = self.conn_params.get('config')
-            if not config:
-                from doculyzer import Config
-                config = Config()
-
-            # Get the embedding generator
-            embedding_generator = get_embedding_generator(config)
-
-            # Generate embedding for the search text
-            query_embedding = embedding_generator.generate(search_text)
-
-            # Use the embedding to search
-            return self.search_by_embedding(query_embedding, limit)
-
-        except Exception as e:
-            logger.error(f"Error in semantic search by text: {str(e)}")
-            # Return empty list on error
-            return []

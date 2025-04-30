@@ -1,9 +1,9 @@
 import logging
 import os
 import time
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Union
 
-from ..config import Config
+from .element_relationship import ElementRelationship
 
 # Try to import MongoDB library
 try:
@@ -25,11 +25,118 @@ from .base import DocumentDatabase
 
 logger = logging.getLogger(__name__)
 
-config = Config(os.environ.get("DOCULYZER_CONFIG_PATH", "./config.yaml"))
+# Try to import the config the same way SQLite does
+try:
+    from ..config import Config
+
+    config = Config(os.environ.get("DOCULYZER_CONFIG_PATH", "./config.yaml"))
+except Exception as e:
+    logger.warning(f"Error configuring MongoDB provider: {str(e)}")
+    config = None
 
 
 class MongoDBDocumentDatabase(DocumentDatabase):
     """MongoDB implementation of document database."""
+
+    def get_outgoing_relationships(self, element_pk: int) -> List[ElementRelationship]:
+        """
+        Find all relationships where the specified element_pk is the source.
+
+        Implementation for MongoDB database using aggregation pipeline to efficiently
+        retrieve target element information.
+
+        Args:
+            element_pk: The primary key of the element
+
+        Returns:
+            List of ElementRelationship objects where the specified element is the source
+        """
+        if not self.db:
+            raise ValueError("Database not initialized")
+
+        relationships = []
+
+        # Get the element to find its element_id and type
+        element = self.get_element(element_pk)
+        if not element:
+            logger.warning(f"Element with PK {element_pk} not found")
+            return []
+
+        element_id = element.get("element_id")
+        if not element_id:
+            logger.warning(f"Element with PK {element_pk} has no element_id")
+            return []
+
+        element_type = element.get("element_type", "")
+
+        try:
+            # Use aggregation pipeline to join relationships with elements
+            # This is similar to a SQL JOIN but using MongoDB's aggregation framework
+            pipeline = [
+                # Match relationships where this element is the source
+                {"$match": {"source_id": element_id}},
+
+                # Lookup target elements
+                {"$lookup": {
+                    "from": "elements",
+                    "localField": "target_reference",
+                    "foreignField": "element_id",
+                    "as": "target_element"
+                }},
+
+                # Unwind target_element array (or preserve null with preserveNullAndEmptyArrays)
+                {"$unwind": {
+                    "path": "$target_element",
+                    "preserveNullAndEmptyArrays": True
+                }}
+            ]
+
+            # Execute the aggregation pipeline
+            results = list(self.db.relationships.aggregate(pipeline))
+
+            # Process results
+            for result in results:
+                # Remove MongoDB's _id field
+                if "_id" in result:
+                    del result["_id"]
+
+                # Extract target element information if available
+                target_element_pk = None
+                target_element_type = None
+                target_content_preview = None  # Added this field
+
+                if "target_element" in result and result["target_element"]:
+                    target_element = result["target_element"]
+                    target_element_pk = target_element.get("element_pk")
+                    target_element_type = target_element.get("element_type")
+                    target_content_preview = target_element.get("content_preview", "")  # Added this field
+
+                    # Remove the target_element object from the result
+                    del result["target_element"]
+
+                # Create enriched relationship
+                relationship = ElementRelationship(
+                    relationship_id=result.get("relationship_id", ""),
+                    source_id=element_id,
+                    source_element_pk=element_pk,
+                    source_element_type=element_type,
+                    relationship_type=result.get("relationship_type", ""),
+                    target_reference=result.get("target_reference", ""),
+                    target_element_pk=target_element_pk,
+                    target_element_type=target_element_type,
+                    target_content_preview=target_content_preview,  # Added this field
+                    doc_id=result.get("doc_id"),
+                    metadata=result.get("metadata", {}),
+                    is_source=True
+                )
+
+                relationships.append(relationship)
+
+            return relationships
+
+        except Exception as e:
+            logger.error(f"Error getting outgoing relationships for element {element_pk}: {str(e)}")
+            return []
 
     def __init__(self, conn_params: Dict[str, Any]):
         """
@@ -39,12 +146,16 @@ class MongoDBDocumentDatabase(DocumentDatabase):
             conn_params: Connection parameters for MongoDB
                 (host, port, username, password, db_name)
         """
-        self.config = None
         self.conn_params = conn_params
         self.client = None
         self.db = None
         self.vector_search = False
-        self.vector_dimension = config.config.get('embedding', {}).get('dimensions', 384)
+        self.embedding_generator = None
+        self.vector_dimension = None
+        if config:
+            self.vector_dimension = config.config.get('embedding', {}).get('dimensions', 384)
+        else:
+            self.vector_dimension = 384  # Default if config not available
 
     def initialize(self) -> None:
         """Initialize the database by connecting and creating collections if they don't exist."""
@@ -128,12 +239,13 @@ class MongoDBDocumentDatabase(DocumentDatabase):
         self.db.documents.create_index("doc_id", unique=True)
         self.db.documents.create_index("source")
 
-        # Elements collection
+        # Elements collection - Updated to match SQLite schema
         if "elements" not in self.db.list_collection_names():
             self.db.create_collection("elements")
 
         # Create indexes for elements collection
         self.db.elements.create_index("element_id", unique=True)
+        self.db.elements.create_index("element_pk", unique=True)
         self.db.elements.create_index("doc_id")
         self.db.elements.create_index("parent_id")
         self.db.elements.create_index("element_type")
@@ -147,12 +259,12 @@ class MongoDBDocumentDatabase(DocumentDatabase):
         self.db.relationships.create_index("source_id")
         self.db.relationships.create_index("relationship_type")
 
-        # Embeddings collection
+        # Embeddings collection - Update to match SQLite schema
         if "embeddings" not in self.db.list_collection_names():
             self.db.create_collection("embeddings")
 
         # Create indexes for embeddings collection
-        self.db.embeddings.create_index("element_id", unique=True)
+        self.db.embeddings.create_index("element_pk", unique=True)
 
         # Processing history collection
         if "processing_history" not in self.db.list_collection_names():
@@ -160,6 +272,13 @@ class MongoDBDocumentDatabase(DocumentDatabase):
 
         # Create indexes for processing history collection
         self.db.processing_history.create_index("source_id", unique=True)
+
+        # Ensure counters collection exists for auto-incrementing element_pk
+        if "counters" not in self.db.list_collection_names():
+            self.db.create_collection("counters")
+            # Initialize element_pk counter if it doesn't exist
+            if not self.db.counters.find_one({"_id": "element_pk"}):
+                self.db.counters.insert_one({"_id": "element_pk", "seq": 0})
 
         logger.info("Created MongoDB collections and indexes")
 
@@ -238,7 +357,7 @@ class MongoDBDocumentDatabase(DocumentDatabase):
         content_hash = document.get("content_hash", "")
 
         # Check if document already exists with this source
-        existing_doc = self.db.documents.find_one({"source": source})
+        existing_doc = self.db.documents.find_one({"source": source}) if source else None
 
         if existing_doc:
             # Document exists, update it
@@ -265,11 +384,25 @@ class MongoDBDocumentDatabase(DocumentDatabase):
 
             self.db.documents.insert_one(document_with_timestamps)
 
-            # Process elements
+            # Process elements with element_pk
             elements_to_insert = []
-            for element in elements:
-                # Generate MongoDB compatible representation
+            for i, element in enumerate(elements):
+                # Generate MongoDB compatible representation with element_pk
                 mongo_element = {**element}
+
+                # Generate a unique element_pk if not present
+                if "element_pk" not in mongo_element:
+                    # Use an auto-incrementing counter similar to SQLite
+                    counter = self.db.counters.find_one_and_update(
+                        {"_id": "element_pk"},
+                        {"$inc": {"seq": 1}},
+                        upsert=True,
+                        return_document=True
+                    )
+                    mongo_element["element_pk"] = counter["seq"]
+                    # Store it back into the original element for reference
+                    element["element_pk"] = mongo_element["element_pk"]
+
                 elements_to_insert.append(mongo_element)
 
             # Store elements in bulk if there are any
@@ -311,16 +444,19 @@ class MongoDBDocumentDatabase(DocumentDatabase):
             if "created_at" not in document and "created_at" in existing_doc:
                 document["created_at"] = existing_doc["created_at"]
 
-            # Delete all existing relationships related to this document's elements
+            # Get all element IDs for this document
             element_ids = [element["element_id"] for element in
                            self.db.elements.find({"doc_id": doc_id}, {"element_id": 1})]
 
+            # Delete all existing relationships related to this document's elements
             if element_ids:
                 self.db.relationships.delete_many({"source_id": {"$in": element_ids}})
 
             # Delete all existing embeddings for this document's elements
-            if element_ids:
-                self.db.embeddings.delete_many({"element_id": {"$in": element_ids}})
+            element_pks = [element["element_pk"] for element in
+                           self.db.elements.find({"doc_id": doc_id}, {"element_pk": 1})]
+            if element_pks:
+                self.db.embeddings.delete_many({"element_pk": {"$in": element_pks}})
 
             # Delete all existing elements for this document
             self.db.elements.delete_many({"doc_id": doc_id})
@@ -328,9 +464,30 @@ class MongoDBDocumentDatabase(DocumentDatabase):
             # Replace the document
             self.db.documents.replace_one({"doc_id": doc_id}, document)
 
+            # Process elements with element_pk
+            elements_to_insert = []
+            for element in elements:
+                # Generate MongoDB compatible representation
+                mongo_element = {**element}
+
+                # Generate a unique element_pk if not present
+                if "element_pk" not in mongo_element:
+                    # Use auto-incrementing counter
+                    counter = self.db.counters.find_one_and_update(
+                        {"_id": "element_pk"},
+                        {"$inc": {"seq": 1}},
+                        upsert=True,
+                        return_document=True
+                    )
+                    mongo_element["element_pk"] = counter["seq"]
+                    # Store it back for reference
+                    element["element_pk"] = mongo_element["element_pk"]
+
+                elements_to_insert.append(mongo_element)
+
             # Insert new elements
-            if elements:
-                self.db.elements.insert_many(elements)
+            if elements_to_insert:
+                self.db.elements.insert_many(elements_to_insert)
 
             # Insert new relationships
             if relationships:
@@ -366,9 +523,19 @@ class MongoDBDocumentDatabase(DocumentDatabase):
         return document
 
     def get_document_elements(self, doc_id: str) -> List[Dict[str, Any]]:
-        """Get elements for a document."""
+        """Get elements for a document, by doc_id or source."""
         if not self.db:
             raise ValueError("Database not initialized")
+
+        # First try to get document by doc_id
+        document = self.db.documents.find_one({"doc_id": doc_id})
+
+        if not document:
+            # If not found, try by source
+            document = self.db.documents.find_one({"source": doc_id})
+            if not document:
+                return []
+            doc_id = document["doc_id"]
 
         elements = list(self.db.elements.find({"doc_id": doc_id}))
 
@@ -401,12 +568,25 @@ class MongoDBDocumentDatabase(DocumentDatabase):
 
         return relationships
 
-    def get_element(self, element_id: str) -> Optional[Dict[str, Any]]:
-        """Get element by ID."""
+    def get_element(self, element_id_or_pk: Union[str, int]) -> Optional[Dict[str, Any]]:
+        """
+        Get element by ID or PK.
+
+        Args:
+            element_id_or_pk: Either the element_id (string) or element_pk (integer)
+        """
         if not self.db:
             raise ValueError("Database not initialized")
 
-        element = self.db.elements.find_one({"element_id": element_id})
+        element = None
+
+        # Try to interpret as element_pk (integer) first
+        try:
+            element_pk = int(element_id_or_pk)
+            element = self.db.elements.find_one({"element_pk": element_pk})
+        except (ValueError, TypeError):
+            # If not an integer, treat as element_id (string)
+            element = self.db.elements.find_one({"element_id": element_id_or_pk})
 
         if not element:
             return None
@@ -458,6 +638,12 @@ class MongoDBDocumentDatabase(DocumentDatabase):
                     # Handle metadata queries
                     for meta_key, meta_value in value.items():
                         mongo_query[f"metadata.{meta_key}"] = meta_value
+                elif key == "element_type" and isinstance(value, list):
+                    # Handle list of element types
+                    mongo_query["element_type"] = {"$in": value}
+                elif isinstance(value, list):
+                    # Handle other list values (like doc_id list)
+                    mongo_query[key] = {"$in": value}
                 else:
                     mongo_query[key] = value
 
@@ -488,15 +674,17 @@ class MongoDBDocumentDatabase(DocumentDatabase):
 
         return elements
 
-    def store_embedding(self, element_id: str, embedding: List[float]) -> None:
-        """Store embedding for an element."""
+    def store_embedding(self, element_pk: int, embedding: List[float]) -> None:
+        """
+        Store embedding for an element.
+        """
         if not self.db:
             raise ValueError("Database not initialized")
 
         # Verify element exists
-        element = self.db.elements.find_one({"element_id": element_id})
+        element = self.db.elements.find_one({"element_pk": element_pk})
         if not element:
-            raise ValueError(f"Element not found: {element_id}")
+            raise ValueError(f"Element not found: {element_pk}")
 
         # Update vector dimension based on actual data
         self.vector_dimension = max(self.vector_dimension, len(embedding))
@@ -504,7 +692,7 @@ class MongoDBDocumentDatabase(DocumentDatabase):
         try:
             # Store or update embedding
             self.db.embeddings.update_one(
-                {"element_id": element_id},
+                {"element_pk": element_pk},
                 {
                     "$set": {
                         "embedding": embedding,
@@ -515,39 +703,47 @@ class MongoDBDocumentDatabase(DocumentDatabase):
                 upsert=True
             )
 
-            logger.debug(f"Stored embedding for element {element_id}")
+            logger.debug(f"Stored embedding for element {element_pk}")
 
         except Exception as e:
-            logger.error(f"Error storing embedding for {element_id}: {str(e)}")
+            logger.error(f"Error storing embedding for {element_pk}: {str(e)}")
             raise
 
-    def get_embedding(self, element_id: str) -> Optional[List[float]]:
-        """Get embedding for an element."""
+    def get_embedding(self, element_pk: int) -> Optional[List[float]]:
+        """
+        Get embedding for an element.
+        """
         if not self.db:
             raise ValueError("Database not initialized")
 
-        embedding_doc = self.db.embeddings.find_one({"element_id": element_id})
+        embedding_doc = self.db.embeddings.find_one({"element_pk": element_pk})
         if not embedding_doc:
             return None
 
         return embedding_doc.get("embedding")
 
-    def search_by_embedding(self, query_embedding: List[float], limit: int = 10) -> List[Tuple[str, float]]:
-        """Search elements by embedding similarity."""
+    def search_by_embedding(self, query_embedding: List[float], limit: int = 10,
+                            filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
+        """
+        Search elements by embedding similarity with optional filtering.
+        Returns (element_pk, similarity) tuples for consistency with other implementations.
+        """
         if not self.db:
             raise ValueError("Database not initialized")
 
         try:
             if self.vector_search:
-                return self._search_by_vector_index(query_embedding, limit)
+                return self._search_by_vector_index(query_embedding, limit, filter_criteria)
             else:
-                return self._search_by_cosine_similarity(query_embedding, limit)
+                return self._search_by_cosine_similarity(query_embedding, limit, filter_criteria)
         except Exception as e:
             logger.error(f"Error searching by embedding: {str(e)}")
-            return self._search_by_cosine_similarity(query_embedding, limit)
+            # Fall back to cosine similarity
+            return self._search_by_cosine_similarity(query_embedding, limit, filter_criteria)
 
-    def _search_by_vector_index(self, query_embedding: List[float], limit: int = 10) -> List[Tuple[str, float]]:
-        """Search embeddings using MongoDB Atlas Vector Search."""
+    def _search_by_vector_index(self, query_embedding: List[float], limit: int = 10,
+                                filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
+        """Search embeddings using MongoDB Atlas Vector Search with filtering."""
         try:
             # Define the vector search pipeline
             pipeline = [
@@ -557,44 +753,166 @@ class MongoDBDocumentDatabase(DocumentDatabase):
                         "path": "embedding",
                         "queryVector": query_embedding,
                         "numCandidates": limit * 5,  # Get more candidates for better results
-                        "limit": limit
+                        "limit": limit * 10  # Get more results than needed to allow for filtering
                     }
                 },
                 {
-                    "$project": {
-                        "_id": 0,
-                        "element_id": 1,
-                        "score": {"$meta": "vectorSearchScore"}
+                    "$lookup": {
+                        "from": "elements",
+                        "localField": "element_pk",
+                        "foreignField": "element_pk",
+                        "as": "element"
                     }
+                },
+                {
+                    "$unwind": "$element"
                 }
             ]
+
+            # Add document lookup to support document-level filtering
+            pipeline.append({
+                "$lookup": {
+                    "from": "documents",
+                    "localField": "element.doc_id",
+                    "foreignField": "doc_id",
+                    "as": "document"
+                }
+            })
+
+            pipeline.append({
+                "$unwind": {
+                    "path": "$document",
+                    "preserveNullAndEmptyArrays": True
+                }
+            })
+
+            # Add filter stages if criteria provided
+            if filter_criteria:
+                match_conditions = {}
+
+                for key, value in filter_criteria.items():
+                    if key == "element_type" and isinstance(value, list):
+                        # Handle list of allowed element types
+                        match_conditions["element.element_type"] = {"$in": value}
+                    elif key == "doc_id" and isinstance(value, list):
+                        # Handle list of document IDs to include
+                        match_conditions["element.doc_id"] = {"$in": value}
+                    elif key == "exclude_doc_id" and isinstance(value, list):
+                        # Handle list of document IDs to exclude
+                        match_conditions["element.doc_id"] = {"$nin": value}
+                    elif key == "exclude_doc_source" and isinstance(value, list):
+                        # Handle list of document sources to exclude
+                        match_conditions["document.source"] = {"$nin": value}
+                    else:
+                        # Simple equality filter
+                        match_conditions[f"element.{key}"] = value
+
+                if match_conditions:
+                    pipeline.append({"$match": match_conditions})
+
+            # Add projection and limit
+            pipeline.extend([
+                {
+                    "$project": {
+                        "_id": 0,
+                        "element_pk": 1,
+                        "score": {"$meta": "vectorSearchScore"}
+                    }
+                },
+                {
+                    "$limit": limit
+                }
+            ])
 
             # Execute the search
             results = list(self.db.embeddings.aggregate(pipeline))
 
-            # Format results
-            return [(doc["element_id"], doc["score"]) for doc in results]
+            # Format results as (element_pk, similarity_score)
+            return [(doc["element_pk"], doc["score"]) for doc in results]
 
         except Exception as e:
             logger.error(f"Error using vector search index: {str(e)}")
             raise
 
-    def _search_by_cosine_similarity(self, query_embedding: List[float], limit: int = 10) -> List[Tuple[str, float]]:
-        """Fall back to calculating cosine similarity in Python."""
-        # Get all embeddings from MongoDB
-        all_embeddings = list(self.db.embeddings.find({}, {"element_id": 1, "embedding": 1}))
+    def _search_by_cosine_similarity(self, query_embedding: List[float], limit: int = 10,
+                                     filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
+        """Fall back to calculating cosine similarity in Python with filtering."""
+        # Begin building a pipeline for embeddings with element and document data
+        pipeline = [
+            {
+                "$lookup": {
+                    "from": "elements",
+                    "localField": "element_pk",
+                    "foreignField": "element_pk",
+                    "as": "element"
+                }
+            },
+            {
+                "$unwind": "$element"
+            },
+            {
+                "$lookup": {
+                    "from": "documents",
+                    "localField": "element.doc_id",
+                    "foreignField": "doc_id",
+                    "as": "document"
+                }
+            },
+            {
+                "$unwind": {
+                    "path": "$document",
+                    "preserveNullAndEmptyArrays": True
+                }
+            }
+        ]
+
+        # Add filter criteria if provided
+        if filter_criteria:
+            match_conditions = {}
+
+            for key, value in filter_criteria.items():
+                if key == "element_type" and isinstance(value, list):
+                    # Handle list of allowed element types
+                    match_conditions["element.element_type"] = {"$in": value}
+                elif key == "doc_id" and isinstance(value, list):
+                    # Handle list of document IDs to include
+                    match_conditions["element.doc_id"] = {"$in": value}
+                elif key == "exclude_doc_id" and isinstance(value, list):
+                    # Handle list of document IDs to exclude
+                    match_conditions["element.doc_id"] = {"$nin": value}
+                elif key == "exclude_doc_source" and isinstance(value, list):
+                    # Handle list of document sources to exclude
+                    match_conditions["document.source"] = {"$nin": value}
+                else:
+                    # Simple equality filter
+                    match_conditions[f"element.{key}"] = value
+
+            if match_conditions:
+                pipeline.append({"$match": match_conditions})
+
+        # Add projection to get just what we need
+        pipeline.append({
+            "$project": {
+                "_id": 0,
+                "element_pk": 1,
+                "embedding": 1
+            }
+        })
+
+        # Execute aggregation to get filtered embeddings
+        filtered_embeddings = list(self.db.embeddings.aggregate(pipeline))
 
         # Calculate cosine similarity for each embedding
         similarities = []
         query_array = np.array(query_embedding)
 
-        for doc in all_embeddings:
-            element_id = doc["element_id"]
+        for doc in filtered_embeddings:
+            element_pk = doc["element_pk"]
             embedding = doc["embedding"]
 
             if embedding and len(embedding) == len(query_embedding):
                 similarity = self._calculate_cosine_similarity(query_array, np.array(embedding))
-                similarities.append((element_id, similarity))
+                similarities.append((element_pk, similarity))
 
         # Sort by similarity (highest first) and limit results
         similarities.sort(key=lambda x: x[1], reverse=True)
@@ -626,9 +944,13 @@ class MongoDBDocumentDatabase(DocumentDatabase):
             element_ids = [element["element_id"] for element in
                            self.db.elements.find({"doc_id": doc_id}, {"element_id": 1})]
 
+            # Get all element PKs for this document
+            element_pks = [element["element_pk"] for element in
+                           self.db.elements.find({"doc_id": doc_id}, {"element_pk": 1})]
+
             # Delete embeddings for these elements
-            if element_ids:
-                self.db.embeddings.delete_many({"element_id": {"$in": element_ids}})
+            if element_pks:
+                self.db.embeddings.delete_many({"element_pk": {"$in": element_pks}})
 
             # Delete relationships involving these elements
             if element_ids:
@@ -646,6 +968,61 @@ class MongoDBDocumentDatabase(DocumentDatabase):
         except Exception as e:
             logger.error(f"Error deleting document {doc_id}: {str(e)}")
             return False
+
+    def store_relationship(self, relationship: Dict[str, Any]) -> None:
+        """
+        Store a relationship between elements.
+
+        Args:
+            relationship: Relationship data with source_id, relationship_type, and target_reference
+        """
+        if not self.db:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Insert or update the relationship
+            self.db.relationships.update_one(
+                {"relationship_id": relationship["relationship_id"]},
+                {"$set": relationship},
+                upsert=True
+            )
+            logger.debug(f"Stored relationship {relationship['relationship_id']}")
+        except Exception as e:
+            logger.error(f"Error storing relationship: {str(e)}")
+            raise
+
+    def delete_relationships_for_element(self, element_id: str, relationship_type: str = None) -> None:
+        """
+        Delete relationships for an element.
+
+        Args:
+            element_id: Element ID
+            relationship_type: Optional relationship type to filter by
+        """
+        if not self.db:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Build query for source relationships
+            query = {"source_id": element_id}
+            if relationship_type:
+                query["relationship_type"] = relationship_type
+
+            # Delete source relationships
+            self.db.relationships.delete_many(query)
+
+            # Build query for target relationships
+            query = {"target_reference": element_id}
+            if relationship_type:
+                query["relationship_type"] = relationship_type
+
+            # Delete target relationships
+            self.db.relationships.delete_many(query)
+
+            logger.debug(f"Deleted relationships for element {element_id}")
+        except Exception as e:
+            logger.error(f"Error deleting relationships for element {element_id}: {str(e)}")
+            raise
 
     def create_vector_search_index(self) -> bool:
         """
@@ -688,18 +1065,27 @@ class MongoDBDocumentDatabase(DocumentDatabase):
             logger.error(f"Error creating vector search index: {str(e)}")
             return False
 
-    def search_by_text(self, search_text: str, limit: int = 10) -> List[Tuple[str, float]]:
-        """Search elements by semantic similarity to the provided text."""
+    def search_by_text(self, search_text: str, limit: int = 10,
+                       filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
+        """
+        Search elements by semantic similarity to the provided text.
+        Returns (element_pk, similarity) tuples for consistency with other implementations.
+        """
         if not self.db:
             raise ValueError("Database not initialized")
 
-        from doculyzer.embeddings import get_embedding_generator
+        try:
+            if self.embedding_generator is None:
+                from doculyzer.embeddings import get_embedding_generator
+                self.embedding_generator = get_embedding_generator(config)
 
-        # Get the embedding generator from config
-        embedding_generator = get_embedding_generator(self.config)
+            # Generate embedding for the search text
+            query_embedding = self.embedding_generator.generate(search_text)
 
-        # Generate embedding for the search text
-        query_embedding = embedding_generator.generate(search_text)
+            # Use the embedding to search, passing the filter criteria
+            return self.search_by_embedding(query_embedding, limit, filter_criteria)
 
-        # Use the embedding to search
-        return self.search_by_embedding(query_embedding, limit)
+        except Exception as e:
+            logger.error(f"Error in semantic search by text: {str(e)}")
+            # Return empty list on error
+            return []

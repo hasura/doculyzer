@@ -172,5 +172,5 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
-/.idea/doculyzer.iml
 /tests/data/document_db.sqlite
+/.idea/

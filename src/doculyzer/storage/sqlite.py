@@ -5,6 +5,8 @@ import os
 import time
 from typing import Optional, Dict, Any, List, Tuple
 
+from .element_relationship import ElementRelationship
+
 logger = logging.getLogger(__name__)
 
 # Try to import the preferred SQLite library based on config
@@ -60,6 +62,93 @@ class DateTimeEncoder(json.JSONEncoder):
 class SQLiteDocumentDatabase(DocumentDatabase):
     """SQLite implementation of document database."""
 
+    def get_outgoing_relationships(self, element_pk: int) -> List[ElementRelationship]:
+        """
+        Find all relationships where the specified element_pk is the source.
+
+        Implementation for SQLite database using JOIN to efficiently retrieve target information.
+
+        Args:
+            element_pk: The primary key of the element
+
+        Returns:
+            List of ElementRelationship objects where the specified element is the source
+        """
+
+        relationships = []
+
+        # Get the element to find its element_id and type
+        element = self.get_element(element_pk)
+        if not element:
+            logger.warning(f"Element with PK {element_pk} not found")
+            return []
+
+        element_id = element.get("element_id")
+        if not element_id:
+            logger.warning(f"Element with PK {element_pk} has no element_id")
+            return []
+
+        element_type = element.get("element_type", "")
+
+        # Find relationships with target element information using JOIN
+        # This query joins the relationships table with the elements table
+        # to get information about target elements in one go
+        self.cursor = self.conn.execute(
+            """
+            SELECT 
+                r.*,
+                t.element_pk as target_element_pk,
+                t.element_type as target_element_type,
+                t.content_preview as target_content_preview
+            FROM 
+                relationships r
+            LEFT JOIN 
+                elements t ON r.target_reference = t.element_id
+            WHERE 
+                r.source_id = ?
+            """,
+            (element_id,)
+        )
+
+        for row in self.cursor.fetchall():
+            # Convert to dictionary
+            rel_dict = dict(row)
+
+            # Remove SQLite's rowid if present
+            if "rowid" in rel_dict:
+                del rel_dict["rowid"]
+
+            # Convert metadata from JSON if needed
+            try:
+                if isinstance(rel_dict.get("metadata"), str):
+                    rel_dict["metadata"] = json.loads(rel_dict["metadata"])
+            except (json.JSONDecodeError, TypeError):
+                rel_dict["metadata"] = {}
+
+            # Extract target element information from the joined query results
+            target_element_pk = rel_dict.get("target_element_pk")
+            target_element_type = rel_dict.get("target_element_type")
+
+            # Create enriched relationship
+            relationship = ElementRelationship(
+                relationship_id=rel_dict.get("relationship_id", ""),
+                source_id=element_id,
+                source_element_pk=element_pk,
+                source_element_type=element_type,
+                relationship_type=rel_dict.get("relationship_type", ""),
+                target_reference=rel_dict.get("target_reference", ""),
+                target_element_pk=target_element_pk,
+                target_element_type=target_element_type,
+                target_content_preview=rel_dict.get("target_content_preview", ""),
+                doc_id=rel_dict.get("doc_id"),
+                metadata=rel_dict.get("metadata", {}),
+                is_source=True
+            )
+
+            relationships.append(relationship)
+
+        return relationships
+
     def __init__(self, db_path: str):
         """
         Initialize SQLite document database.
@@ -67,6 +156,7 @@ class SQLiteDocumentDatabase(DocumentDatabase):
         Args:
             db_path: Path to SQLite database file
         """
+        self.cursor = None
         self.db_path = db_path
         self.conn = None
         self.vector_extension = None
@@ -448,8 +538,8 @@ class SQLiteDocumentDatabase(DocumentDatabase):
             raise ValueError("Database not initialized")
 
         cursor = self.conn.execute(
-            "SELECT * FROM elements WHERE doc_id = ? ORDER BY element_id",
-            (doc_id,)
+            "select e.* from documents join main.elements e on documents.doc_id = e.doc_id WHERE documents.source = ? OR documents.doc_id = ?",
+            (doc_id, doc_id)
         )
 
         elements = []
@@ -707,14 +797,14 @@ class SQLiteDocumentDatabase(DocumentDatabase):
 
         self.conn.commit()
 
-    def get_embedding(self, element_id: str) -> Optional[List[float]]:
+    def get_embedding(self, element_pk: int) -> Optional[List[float]]:
         """Get embedding for an element."""
         if not self.conn:
             raise ValueError("Database not initialized")
 
         cursor = self.conn.execute(
-            "SELECT embedding FROM embeddings WHERE element_id = ?",
-            (element_id,)
+            "SELECT embedding FROM embeddings WHERE element_pk = ?",
+            (element_pk,)
         )
 
         row = cursor.fetchone()
@@ -723,24 +813,25 @@ class SQLiteDocumentDatabase(DocumentDatabase):
 
         return self._decode_embedding(row["embedding"])
 
-    def search_by_embedding(self, query_embedding: List[float], limit: int = 10) -> List[Tuple[str, float]]:
+    def search_by_embedding(self, query_embedding: List[float], limit: int = 10,
+                            filter_criteria: Dict[str, Any] = None) -> list[tuple[str, float]] | list[Any]:
         """Search elements by embedding similarity using available method."""
         if not self.conn:
             raise ValueError("Database not initialized")
 
         try:
             if self.vector_extension == "vec0":
-                return self._search_by_vec_extension(query_embedding, limit)
+                return self._search_by_vec_extension(query_embedding, limit, filter_criteria)
             elif self.vector_extension == "vss0":
-                return self._search_by_vss_extension(query_embedding, limit)
+                return self._search_by_vss_extension(query_embedding, limit, filter_criteria)
             else:
                 # Use native implementation
-                return self._search_by_embedding_native(query_embedding, limit)
+                return self._search_by_embedding_native(query_embedding, limit, filter_criteria)
         except Exception as e:
             logger.error(f"Error searching by embedding: {str(e)}")
             # Fall back to native implementation
             try:
-                return self._search_by_embedding_native(query_embedding, limit)
+                return self._search_by_embedding_native(query_embedding, limit, filter_criteria)
             except Exception as e2:
                 logger.error(f"Error in fallback search: {str(e2)}")
                 return []
@@ -821,6 +912,81 @@ class SQLiteDocumentDatabase(DocumentDatabase):
             self.conn.rollback()
             logger.error(f"Error deleting document {doc_id}: {str(e)}")
             return False
+
+    def store_relationship(self, relationship: Dict[str, Any]) -> None:
+        """
+        Store a relationship between elements.
+
+        Args:
+            relationship: Relationship data
+        """
+        if not self.conn:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Convert metadata to JSON
+            metadata_json = json.dumps(relationship.get("metadata", {}))
+
+            self.conn.execute(
+                """
+                INSERT OR REPLACE INTO relationships
+                (relationship_id, source_id, relationship_type, target_reference, metadata)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    relationship["relationship_id"],
+                    relationship.get("source_id", ""),
+                    relationship.get("relationship_type", ""),
+                    relationship.get("target_reference", ""),
+                    metadata_json
+                )
+            )
+
+            self.conn.commit()
+        except Exception as e:
+            logger.error(f"Error storing relationship: {str(e)}")
+            raise
+
+    def delete_relationships_for_element(self, element_id: str, relationship_type: str = None) -> None:
+        """
+        Delete relationships for an element.
+
+        Args:
+            element_id: Element ID
+            relationship_type: Optional relationship type to filter by
+        """
+        if not self.conn:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Start with basic query to delete source relationships
+            query = "DELETE FROM relationships WHERE source_id = ?"
+            params = [element_id]
+
+            # Add relationship type filter if provided
+            if relationship_type:
+                query += " AND relationship_type = ?"
+                params.append(relationship_type)
+
+            # Delete source relationships
+            self.conn.execute(query, params)
+
+            # Also delete relationships where this element is the target
+            query = "DELETE FROM relationships WHERE target_reference = ?"
+            params = [element_id]
+
+            # Add relationship type filter if provided
+            if relationship_type:
+                query += " AND relationship_type = ?"
+                params.append(relationship_type)
+
+            # Delete target relationships
+            self.conn.execute(query, params)
+
+            self.conn.commit()
+        except Exception as e:
+            logger.error(f"Error deleting relationships for element {element_id}: {str(e)}")
+            raise
 
     def _create_tables(self) -> None:
         """Create database tables if they don't exist."""
@@ -1017,78 +1183,179 @@ class SQLiteDocumentDatabase(DocumentDatabase):
         except Exception as e:
             logger.error(f"Error getting embeddings for vector tables: {str(e)}")
 
-    def _search_by_vec_extension(self, query_embedding: List[float], limit: int = 10) -> List[Tuple[str, float]]:
-        """Use the vec0 extension for vector search."""
+    def _search_by_vec_extension(self, query_embedding: List[float], limit: int = 10,
+                                 filter_criteria: Dict[str, Any] = None) -> List[Tuple[str, float]]:
+        """Use the vec0 extension for vector search with filtering."""
         # Convert embedding to JSON string
         query_json = json.dumps(query_embedding)
 
         try:
-            # Query using sqlite-vec
-            cursor = self.conn.execute(
-                """
-                SELECT
-                    e.element_id,
-                    vec_results.distance -- Assuming vec0 returns 'distance'; adjust if needed
-                FROM
-                    embeddings_vec AS vec_results
-                JOIN
-                    elements AS e ON vec_results.rowid = e.element_pk -- Join on integer PK
-                WHERE
-                    vec_results.embedding MATCH ? AND k = ? -- Specify k here
-                ORDER BY
-                    vec_results.distance -- Order by distance (closer is usually smaller)
-                -- LIMIT clause removed from here
-                """,
-                (query_json, limit)  # Pass limit for k=?
-            )
+            # Start building the query
+            query = """
+            SELECT
+                e.element_pk,
+                vec_results.distance
+            FROM
+                embeddings_vec AS vec_results
+            JOIN elements AS e ON 
+                vec_results.rowid = e.element_pk 
+            JOIN documents AS d ON
+                d.doc_id = e.doc_id
+            WHERE
+                vec_results.embedding MATCH ? AND k = ?
+            """
+            params = [query_json, limit]
 
-            return [(row["element_id"], row["distance"]) for row in cursor]
+            # Add filter criteria if provided
+            if filter_criteria:
+                for key, value in filter_criteria.items():
+                    if key == "element_type" and isinstance(value, list):
+                        # Handle list of allowed element types
+                        placeholders = ', '.join(['?'] * len(value))
+                        query += f" AND e.element_type IN ({placeholders})"
+                        params.extend(value)
+                    elif key == "doc_id" and isinstance(value, list):
+                        # Handle list of document IDs to include
+                        placeholders = ', '.join(['?'] * len(value))
+                        query += f" AND e.doc_id IN ({placeholders})"
+                        params.extend(value)
+                    elif key == "exclude_doc_id" and isinstance(value, list):
+                        # Handle list of document IDs to exclude
+                        placeholders = ', '.join(['?'] * len(value))
+                        query += f" AND e.doc_id NOT IN ({placeholders})"
+                        params.extend(value)
+                    elif key == "exclude_doc_source" and isinstance(value, list):
+                        # Handle list of document IDs to exclude
+                        placeholders = ', '.join(['?'] * len(value))
+                        query += f" AND d.source NOT IN ({placeholders})"
+                        params.extend(value)
+                    else:
+                        # Simple equality filter
+                        query += f" AND e.{key} = ?"
+                        params.append(value)
+
+            # Add order
+            query += " ORDER BY vec_results.distance"
+
+            # Execute query
+            cursor = self.conn.execute(query, params)
+
+            return [(row["element_pk"], row["distance"]) for row in cursor]
         except Exception as e:
             logger.error(f"Error using vec0 extension for search: {str(e)}")
             raise
 
-    def _search_by_vss_extension(self, query_embedding: List[float], limit: int = 10) -> List[Tuple[str, float]]:
-        """Use the vss0 extension for vector search."""
+    def _search_by_vss_extension(self, query_embedding: List[float], limit: int = 10,
+                                 filter_criteria: Dict[str, Any] = None) -> List[Tuple[str, float]]:
+        """Use the vss0 extension for vector search with filtering."""
         # Convert embedding to JSON string
         query_json = json.dumps(query_embedding)
 
         try:
-            # Query using sqlite-vss
-            cursor = self.conn.execute(
-                """
-                SELECT e.element_id, vss_search(ev.embedding, ?) AS similarity
-                FROM embeddings_vss ev
-                JOIN elements e ON e.element_id = ev.rowid
-                ORDER BY similarity DESC
-                LIMIT ?
-                """,
-                (query_json, limit)
-            )
+            # Start building the query
+            query = """
+            SELECT e.element_pk, vss_search(ev.embedding, ?) AS similarity
+            FROM embeddings_vss ev
+            JOIN elements e ON e.element_pk = ev.rowid
+            JOIN documents AS d ON
+                d.doc_id = e.doc_id
+            WHERE 1=1
+            """
+            params = [query_json]
 
-            return [(row["element_id"], row["similarity"]) for row in cursor]
+            # Add filter criteria if provided
+            if filter_criteria:
+                for key, value in filter_criteria.items():
+                    if key == "element_type" and isinstance(value, list):
+                        # Handle list of allowed element types
+                        placeholders = ', '.join(['?'] * len(value))
+                        query += f" AND e.element_type IN ({placeholders})"
+                        params.extend(value)
+                    elif key == "doc_id" and isinstance(value, list):
+                        # Handle list of document IDs to include
+                        placeholders = ', '.join(['?'] * len(value))
+                        query += f" AND e.doc_id IN ({placeholders})"
+                        params.extend(value)
+                    elif key == "exclude_doc_id" and isinstance(value, list):
+                        # Handle list of document IDs to exclude
+                        placeholders = ', '.join(['?'] * len(value))
+                        query += f" AND e.doc_id NOT IN ({placeholders})"
+                        params.extend(value)
+                    elif key == "exclude_doc_source" and isinstance(value, list):
+                        # Handle list of document IDs to exclude
+                        placeholders = ', '.join(['?'] * len(value))
+                        query += f" AND d.source NOT IN ({placeholders})"
+                        params.extend(value)
+                    else:
+                        # Simple equality filter
+                        query += f" AND e.{key} = ?"
+                        params.append(value)
+
+            # Add order and limit
+            query += " ORDER BY similarity DESC LIMIT ?"
+            params.append(limit)
+
+            # Execute query
+            cursor = self.conn.execute(query, params)
+
+            return [(row["element_pk"], row["similarity"]) for row in cursor]
         except Exception as e:
             logger.error(f"Error using vss0 extension for search: {str(e)}")
             raise
 
-    def _search_by_embedding_native(self, query_embedding: List[float], limit: int = 10) -> List[Tuple[str, float]]:
-        """Fall back to native cosine similarity implementation."""
+    def _search_by_embedding_native(self, query_embedding: List[float], limit: int = 10,
+                                    filter_criteria: Dict[str, Any] = None) -> List[Tuple[str, float]]:
+        """Fall back to native cosine similarity implementation with filtering."""
         # Register cosine similarity function if needed
         self._register_similarity_function()
 
         # Convert query embedding to blob
         query_blob = self._encode_embedding(query_embedding)
 
+        # Start building the query
+        query = """
+        SELECT e.element_pk, cosine_similarity(emb.embedding, ?) AS similarity
+        FROM embeddings emb
+        JOIN elements e ON emb.element_pk = e.element_pk
+        JOIN documents d ON e.doc_id = d.doc_id
+        WHERE emb.dimensions = ?
+        """
+        params = [query_blob, len(query_embedding)]
+
+        # Add filter criteria if provided
+        if filter_criteria:
+            for key, value in filter_criteria.items():
+                if key == "element_type" and isinstance(value, list):
+                    # Handle list of allowed element types
+                    placeholders = ', '.join(['?'] * len(value))
+                    query += f" AND e.element_type IN ({placeholders})"
+                    params.extend(value)
+                elif key == "doc_id" and isinstance(value, list):
+                    # Handle list of document IDs to include
+                    placeholders = ', '.join(['?'] * len(value))
+                    query += f" AND e.doc_id IN ({placeholders})"
+                    params.extend(value)
+                elif key == "exclude_doc_id" and isinstance(value, list):
+                    # Handle list of document IDs to exclude
+                    placeholders = ', '.join(['?'] * len(value))
+                    query += f" AND e.doc_id NOT IN ({placeholders})"
+                    params.extend(value)
+                elif key == "exclude_doc_source" and isinstance(value, list):
+                    # Handle list of document IDs to exclude
+                    placeholders = ', '.join(['?'] * len(value))
+                    query += f" AND d.source NOT IN ({placeholders})"
+                    params.extend(value)
+                else:
+                    # Simple equality filter
+                    query += f" AND e.{key} = ?"
+                    params.append(value)
+
+        # Add order and limit
+        query += " ORDER BY similarity DESC LIMIT ?"
+        params.append(limit)
+
         # Execute search query
-        cursor = self.conn.execute(
-            """
-            SELECT element_pk, cosine_similarity(embedding, ?) AS similarity
-            FROM embeddings
-            WHERE dimensions = ?
-            ORDER BY similarity DESC
-            LIMIT ?
-            """,
-            (query_blob, len(query_embedding), limit)
-        )
+        cursor = self.conn.execute(query, params)
 
         return [(row["element_pk"], row["similarity"]) for row in cursor]
 
@@ -1137,7 +1404,8 @@ class SQLiteDocumentDatabase(DocumentDatabase):
         # Convert from bytes to numpy array and then to list
         return np.frombuffer(blob, dtype=np.float32).tolist()
 
-    def search_by_text(self, search_text: str, limit: int = 10) -> List[Tuple[str, float]]:
+    def search_by_text(self, search_text: str, limit: int = 10,
+                       filter_criteria: Dict[str, Any] = None) -> List[Tuple[str, float]]:
         """
         Search elements by semantic similarity to the provided text.
 
@@ -1147,6 +1415,7 @@ class SQLiteDocumentDatabase(DocumentDatabase):
         Args:
             search_text: Text to search for semantically
             limit: Maximum number of results
+            filter_criteria: Optional dictionary with criteria to filter results
 
         Returns:
             List of (element_id, similarity_score) tuples
@@ -1162,8 +1431,8 @@ class SQLiteDocumentDatabase(DocumentDatabase):
             # Generate embedding for the search text
             query_embedding = self.embedding_generator.generate(search_text)
 
-            # Use the embedding to search
-            return self.search_by_embedding(query_embedding, limit)
+            # Use the embedding to search, passing the filter criteria
+            return self.search_by_embedding(query_embedding, limit, filter_criteria)
 
         except Exception as e:
             logger.error(f"Error in semantic search by text: {str(e)}")

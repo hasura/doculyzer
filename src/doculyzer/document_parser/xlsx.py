@@ -138,7 +138,7 @@ class XlsxParser(DocumentParser):
         }
 
     def _resolve_element_content(self, location_data: Dict[str, Any],
-                                source_content: Optional[Union[str, bytes]]) -> str:
+                                 source_content: Optional[Union[str, bytes]]) -> str:
         """
         Resolve content for specific XLSX element types.
 
@@ -239,7 +239,8 @@ class XlsxParser(DocumentParser):
                     row = location_data.get("row", 0)
                     col = location_data.get("col", 0)
 
-                    if row <= 0 or col <= 0 or row > min(sheet.max_row or 0, self.max_rows) or col > min(sheet.max_column or 0, self.max_cols):
+                    if row <= 0 or col <= 0 or row > min(sheet.max_row or 0, self.max_rows) or col > min(
+                            sheet.max_column or 0, self.max_cols):
                         return f"Cell at row {row}, column {col} is out of range"
 
                     cell = sheet.cell(row=row, column=col)
@@ -1110,7 +1111,8 @@ class XlsxParser(DocumentParser):
                     "doc_id": doc_id,
                     "element_type": "table_header_row",
                     "parent_id": table_id,
-                    "content_preview": header_text[:self.max_content_preview] + ("..." if len(header_text) > self.max_content_preview else ""),
+                    "content_preview": header_text[:self.max_content_preview] + (
+                        "..." if len(header_text) > self.max_content_preview else ""),
                     "content_location": json.dumps({
                         "source": source_id,
                         "type": "table_header_row",
@@ -1153,7 +1155,8 @@ class XlsxParser(DocumentParser):
                         "doc_id": doc_id,
                         "element_type": "table_row_headers",
                         "parent_id": table_id,
-                        "content_preview": col_header_text[:self.max_content_preview] + ("..." if len(col_header_text) > self.max_content_preview else ""),
+                        "content_preview": col_header_text[:self.max_content_preview] + (
+                            "..." if len(col_header_text) > self.max_content_preview else ""),
                         "content_location": json.dumps({
                             "source": source_id,
                             "type": "table_row_headers",
@@ -1194,7 +1197,8 @@ class XlsxParser(DocumentParser):
 
         return links
 
-    def _extract_workbook_links(self, elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _extract_workbook_links(elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Helper method to extract hyperlinks from workbook elements.
         This is called during the parsing phase.

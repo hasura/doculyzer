@@ -1,5 +1,6 @@
 import logging
 import os
+from typing import List
 
 import pytest
 from dotenv import load_dotenv
@@ -8,7 +9,7 @@ from doculyzer.embeddings import EmbeddingGenerator, get_embedding_generator
 
 # Load environment variables from .env file
 load_dotenv()
-from doculyzer import Config
+from doculyzer import Config, search_with_content, SearchResult
 
 # Configure logging
 logging.basicConfig(
@@ -64,26 +65,12 @@ def test_document_ingestion(config_emb: (Config, EmbeddingGenerator)):
 
 
         logger.debug("Searching for similar elements")
-        similar_elements = db.search_by_text(query_text)
-        logger.info(f"Found {len(similar_elements)} similar elements")
+        results: List[SearchResult] = search_with_content(query_text)
+        logger.info(f"Found {len(results)} similar elements")
 
         # Display a few results
-        for i, (element_pk, similarity) in enumerate(similar_elements[:10]):
-            # Get the element
-            element = db.get_element(element_pk)
-            if element:
-                logger.info(f"Similar element {i + 1}: {element.get('element_type')}, Similarity: {similarity}")
-
-                # Try to resolve content
-                content_location = element.get("content_location")
-                if content_location and content_resolver.supports_location(content_location):
-                    try:
-                        original_content = content_resolver.resolve_content(content_location)
-                        logger.info(f"Content: {original_content}")
-                    except Exception as e:
-                        logger.error(f"Error resolving content: {str(e)}")
-            else:
-                logger.warning(f"Could not find element with PK: {element_pk}")
+        for i, result in enumerate(results[:10]):
+            print(result)
 
         # Log summary
         logger.info(

@@ -56,7 +56,7 @@ class PdfParser(DocumentParser):
         self.min_table_cols = self.config.get("min_table_cols", 2)
 
     def _resolve_element_content(self, location_data: Dict[str, Any],
-                                source_content: Optional[Union[str, bytes]] = None) -> str:
+                                 source_content: Optional[Union[str, bytes]] = None) -> str:
         """
         Resolve content for specific PDF element types.
 
