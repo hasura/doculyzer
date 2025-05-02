@@ -41,14 +41,14 @@ def get_embedding_generator(config: Config) -> EmbeddingGenerator:
         api_key = embeddings.get("api_key", None)
 
         # Create OpenAI generator
-        base_generator = OpenAIEmbeddingGenerator(model, api_key, dimensions)
+        base_generator = OpenAIEmbeddingGenerator(config, model, api_key, dimensions)
         logger.info(f"Created OpenAI embedding generator with model {model}")
     else:
         # Default to Hugging Face
         model = embeddings.get("model", "sentence-transformers/all-MiniLM-L6-v2")
 
         # Create Hugging Face generator
-        base_generator = HuggingFaceEmbeddingGenerator(model)
+        base_generator = HuggingFaceEmbeddingGenerator(config, model)
         logger.info(f"Created Hugging Face embedding generator with model {model}")
 
     # Add contextual embedding if configured
@@ -60,6 +60,7 @@ def get_embedding_generator(config: Config) -> EmbeddingGenerator:
         ancestor_depth = embeddings.get("ancestor_depth", 1)
 
         contextual_generator = ContextualEmbeddingGenerator(
+            config,
             base_generator,
             window_size,
             overlap_size,

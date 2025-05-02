@@ -5,7 +5,7 @@ This module provides access to documents from the local file system,
 supporting various file formats that can be handled by document parsers.
 """
 
-import glob
+import wcmatch.glob as glob
 import logging
 import mimetypes
 import os
@@ -176,11 +176,13 @@ class FileContentSource(ContentSource):
         if self.recursive:
             pattern = os.path.join(self.base_path, self.file_pattern)
             logger.debug(f"Searching for files with recursive pattern: {pattern}")
-            files = glob.glob(pattern, recursive=True)
+            flags = glob.BRACE | glob.GLOBSTAR
+            files = glob.glob(pattern, flags=flags)
         else:
             pattern = os.path.join(self.base_path, self.file_pattern)
+            flags = glob.BRACE
             logger.debug(f"Searching for files with non-recursive pattern: {pattern}")
-            files = glob.glob(pattern, recursive=False)
+            files = glob.glob(pattern, flags=flags)
 
         logger.debug(f"Found {len(files)} files initially")
 

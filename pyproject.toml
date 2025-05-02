@@ -28,6 +28,7 @@ classifiers = [
 dependencies = [
     "sqlean.py~=3.47.0; platform_system == 'Darwin'",
     "sqlean.py~=3.47.0; platform_system == 'Linux' and platform_machine == 'x86_64'",
+    "glob2~=0.7",
     "PyYAML~=6.0.2",
     "beautifulsoup4~=4.13.4",
     "Markdown~=3.8",

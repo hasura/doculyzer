@@ -1141,7 +1141,7 @@ class SQLiteDocumentDatabase(DocumentDatabase):
                 return
 
             # Get all embeddings
-            cursor = self.conn.execute("SELECT element_id, embedding FROM embeddings")
+            cursor = self.conn.execute("SELECT element_pk, embedding FROM embeddings")
 
             # Begin transaction
             self.conn.execute("BEGIN TRANSACTION")
@@ -1149,26 +1149,44 @@ class SQLiteDocumentDatabase(DocumentDatabase):
             try:
                 # Process each embedding
                 for row in cursor:
-                    element_id = row["element_id"]
+                    element_pk = row["element_pk"]
                     embedding_blob = row["embedding"]
                     embedding = self._decode_embedding(embedding_blob)
                     embedding_json = json.dumps(embedding)
 
                     if self.vector_extension == "vec0":
-                        self.conn.execute(
-                            """
-                            INSERT OR REPLACE INTO embeddings_vec (rowid, embedding)
-                            VALUES (?, ?)
-                            """,
-                            (element_id, embedding_json)
+                        # First check if a row with this rowid already exists
+                        check_cursor = self.conn.execute(
+                            "SELECT rowid FROM embeddings_vec WHERE rowid = ?",
+                            (element_pk,)
                         )
+
+                        if check_cursor.fetchone():
+                            # Update existing record
+                            self.conn.execute(
+                                """
+                                UPDATE embeddings_vec 
+                                SET embedding = ?
+                                WHERE rowid = ?
+                                """,
+                                (embedding_json, element_pk)
+                            )
+                        else:
+                            # Insert new record
+                            self.conn.execute(
+                                """
+                                INSERT INTO embeddings_vec (rowid, embedding)
+                                VALUES (?, ?)
+                                """,
+                                (element_pk, embedding_json)
+                            )
                     elif self.vector_extension == "vss0":
                         self.conn.execute(
                             """
                             INSERT OR REPLACE INTO embeddings_vss (rowid, embedding)
                             VALUES (?, ?)
                             """,
-                            (element_id, embedding_json)
+                            (element_pk, embedding_json)
                         )
 
                 # Commit transaction
@@ -1240,7 +1258,7 @@ class SQLiteDocumentDatabase(DocumentDatabase):
             # Execute query
             cursor = self.conn.execute(query, params)
 
-            return [(row["element_pk"], row["distance"]) for row in cursor]
+            return [(row["element_pk"], 1 - row["distance"]) for row in cursor]
         except Exception as e:
             logger.error(f"Error using vec0 extension for search: {str(e)}")
             raise

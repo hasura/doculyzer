@@ -35,6 +35,21 @@ class CsvParser(DocumentParser):
         self.detect_dialect = self.config.get("detect_dialect", True)
         self.strip_whitespace = self.config.get("strip_whitespace", True)
 
+    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]]) -> str:
+        """
+        Resolve the plain text representation of a CSV element.
+
+        Args:
+            location_data: Content location data
+            source_content: Optional preloaded source content
+
+        Returns:
+            Plain text representation of the element
+        """
+        # For CSV data, we can mostly use the existing resolve_element_content method
+        # as it already returns the data in a reasonable text format
+        return self._resolve_element_content(location_data, source_content)
+
     def parse(self, doc_content: Dict[str, Any]) -> Dict[str, Any]:
         """Parse a CSV document into structured elements."""
         content = doc_content["content"]

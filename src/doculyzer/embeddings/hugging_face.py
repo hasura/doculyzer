@@ -3,6 +3,7 @@ import logging
 from typing import List, Dict, Any
 
 from .base import EmbeddingGenerator
+from ..config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -10,13 +11,14 @@ logger = logging.getLogger(__name__)
 class HuggingFaceEmbeddingGenerator(EmbeddingGenerator):
     """Embedding generator using Hugging Face Sentence Transformers."""
 
-    def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
+    def __init__(self, _config: Config, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
         """
         Initialize the Hugging Face embedding generator.
 
         Args:
             model_name: Name of the Sentence Transformers model
         """
+        super().__init__(_config)
         self.model_name = model_name
         self.model = None
         self.cache = {}  # Simple cache for embeddings
@@ -45,7 +47,7 @@ class HuggingFaceEmbeddingGenerator(EmbeddingGenerator):
 
             # Generate embedding
             with torch.no_grad():
-                embedding = self.model.encode(text)
+                embedding = self.model.encode(text, normalize_embeddings=True, show_progress_bar=True,)
 
             # Convert to list
             if isinstance(embedding, torch.Tensor):
@@ -102,7 +104,7 @@ class HuggingFaceEmbeddingGenerator(EmbeddingGenerator):
 
                 # Generate embeddings
                 with torch.no_grad():
-                    embeddings = self.model.encode(uncached_texts)
+                    embeddings = self.model.encode(uncached_texts, normalize_embeddings=True, show_progress_bar=True,)
 
                 # Convert to lists
                 if isinstance(embeddings, torch.Tensor):

@@ -43,6 +43,111 @@ class XmlParser(DocumentParser):
             except ImportError:
                 logger.warning("lxml not available. Install with 'pip install lxml' to enable XPath support")
 
+    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]]) -> str:
+        """
+        Resolve the plain text representation of an XML element.
+
+        Args:
+            location_data: Content location data
+            source_content: Optional preloaded source content
+
+        Returns:
+            Plain text representation of the element
+        """
+        source = location_data.get("source", "")
+        element_type = location_data.get("type", "")
+        path = location_data.get("path", "")
+
+        # Load content if not provided
+        content = source_content
+        if content is None:
+            if os.path.exists(source):
+                try:
+                    with open(source, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                except UnicodeDecodeError:
+                    # Try different encodings
+                    try:
+                        with open(source, 'rb') as f:
+                            content = f.read()
+                            content = content.decode('latin1')
+                    except UnicodeDecodeError:
+                        return "Binary content (cannot be displayed as text)"
+            else:
+                return f"Source file not found: {source}"
+
+        # Ensure content is string (not bytes)
+        if isinstance(content, bytes):
+            try:
+                content = content.decode('utf-8')
+            except UnicodeDecodeError:
+                try:
+                    content = content.decode('latin1')
+                except UnicodeDecodeError:
+                    return "Binary content (cannot be displayed as text)"
+
+        # Parse XML
+        soup = BeautifulSoup(content, self.parser_features)
+
+        # Add paths to elements if they don't exist
+        if not hasattr(soup.find(), '_path'):
+            self._add_paths(soup)
+
+        # Find element by path
+        element = None
+        if path:
+            for tag in soup.find_all():
+                if hasattr(tag, '_path') and tag['_path'] == path:
+                    element = tag
+                    break
+
+        # Get element name from path
+        element_name = path.split('/')[-1] if '/' in path else path
+        # Remove index if present in path (e.g., "item[1]" -> "item")
+        if '[' in element_name:
+            element_name = element_name.split('[')[0]
+
+        # Handle element types
+        if element_type == "xml_text":
+            # For text nodes, just return the text
+            if element and element.string:
+                return element.string.strip()
+            return ""
+
+        elif element_type == "xml_element":
+            if element:
+                # For elements with just text content, return "element_name: text_content"
+                if element.string and element.string.strip():
+                    return f"{element_name}: {element.string.strip()}"
+
+                # For elements with attributes, include them in a readable format
+                elif element.attrs and self.extract_attributes:
+                    attrs_text = ", ".join(f"{k}='{v}'" for k, v in element.attrs.items()
+                                           if not k.startswith('_'))
+                    return f"{element_name} ({attrs_text})"
+
+                # For elements with children, just return the name
+                else:
+                    return element_name
+            else:
+                # Element not found
+                return element_name if element_name else path
+
+        # Default case
+        if element:
+            # Try to represent the element meaningfully
+            if element.string and element.string.strip():
+                return f"{element_name}: {element.string.strip()}"
+            elif element.attrs and self.extract_attributes:
+                attrs_text = ", ".join(f"{k}='{v}'" for k, v in element.attrs.items()
+                                       if not k.startswith('_'))
+                return f"{element_name} ({attrs_text})"
+            else:
+                return element_name
+
+        # Fallback if element not found
+        return element_name if element_name else path
+
     def parse(self, doc_content: Dict[str, Any]) -> Dict[str, Any]:
         """Parse an XML document into structured elements."""
         content = doc_content["content"]
@@ -447,14 +552,14 @@ class XmlParser(DocumentParser):
     def _resolve_element_content(self, location_data: Dict[str, Any],
                                  source_content: Optional[Union[str, bytes]]) -> str:
         """
-        Resolve content for specific XML element types.
+        Resolve content for specific XML element types, returning valid XML.
 
         Args:
             location_data: Content location data
-            source_content: Optional pre-loaded source content
+            source_content: Optional preloaded source content
 
         Returns:
-            Resolved content string
+            Resolved content as properly formatted XML
         """
         source = location_data.get("source", "")
         element_type = location_data.get("type", "")
@@ -471,6 +576,13 @@ class XmlParser(DocumentParser):
                     # Try binary mode if text mode fails
                     with open(source, 'rb') as f:
                         content = f.read()
+                        try:
+                            content = content.decode('utf-8')
+                        except UnicodeDecodeError:
+                            try:
+                                content = content.decode('latin1')
+                            except UnicodeDecodeError:
+                                raise ValueError("Cannot decode binary content as XML")
             else:
                 raise ValueError(f"Source file not found: {source}")
 
@@ -484,62 +596,40 @@ class XmlParser(DocumentParser):
                 except UnicodeDecodeError:
                     raise ValueError("Cannot decode binary content as XML")
 
-        # If XPath support is enabled and lxml is available, use it for more accurate resolution
-        if self.xpath_support and self.lxml_available and path:
-            try:
-                # noinspection PyUnresolvedReferences,PyPackageRequirements
-                import lxml.etree as ET
-
-                # Parse XML with lxml
-                root = ET.fromstring(content.encode('utf-8'))
-
-                # Use XPath to find element
-                # Note: lxml's XPath doesn't handle namespaces automatically
-                # For production code, you'd need to handle namespace resolution
-                results = root.xpath(path)
-
-                if results:
-                    result = results[0]
-
-                    if element_type == "xml_text":
-                        # Return text content
-                        return result.text if result.text else ""
-                    elif element_type == "xml_element":
-                        # Return element as XML string
-                        return ET.tostring(result, encoding='unicode')
-                    else:
-                        # Return default representation
-                        return ET.tostring(result, encoding='unicode')
-
-                return ""
-
-            except ImportError:
-                logger.warning("lxml not available for XPath resolution")
-            except Exception as e:
-                logger.warning(f"Error resolving content with XPath: {str(e)}")
-
-        # Fall back to BeautifulSoup for simpler path resolution
+        # Parse XML
         soup = BeautifulSoup(content, self.parser_features)
 
         # Add paths to elements
         self._add_paths(soup)
 
-        # Find element by path
-        if path:
-            for tag in soup.find_all():
-                if hasattr(tag, '_path') and tag['_path'] == path:
-                    if element_type == "xml_text":
-                        return tag.string.strip() if tag.string else ""
-                    elif element_type == "xml_element":
-                        return str(tag)
-                    else:
-                        return str(tag)
+        # If root path or no path, return full document
+        if not path or path == "/":
+            if element_type == "root":
+                return str(soup)
+            else:
+                # Get the root element
+                root = soup.find()
+                if root:
+                    return str(root)
+                else:
+                    return "<empty/>"
 
-        # If no path or element not found, return appropriate content
-        if element_type == "xml_text":
-            return ""
-        else:
-            return str(soup)
+        # Find element by path
+        for tag in soup.find_all():
+            if hasattr(tag, '_path') and tag['_path'] == path:
+                if element_type == "xml_text":
+                    # For text nodes, wrap in a simple container to maintain XML validity
+                    text = tag.string.strip() if tag.string else ""
+                    return f"<text>{text}</text>"
+                elif element_type == "xml_element":
+                    # Return the element as XML
+                    return str(tag)
+                else:
+                    # Default to returning the element
+                    return str(tag)
+
+        # If element not found, return an error indicator as valid XML
+        return f'<error path="{path}">Element not found</error>'
 
     def supports_location(self, content_location: str) -> bool:
         """

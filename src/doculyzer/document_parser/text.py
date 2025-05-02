@@ -32,6 +32,50 @@ class TextParser(DocumentParser):
         self.normalize_whitespace = self.config.get("normalize_whitespace", True)
         self.temp_dir = self.config.get("temp_dir", os.path.join(os.path.dirname(__file__), 'temp'))
 
+    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]]) -> str:
+        """
+        Resolve the plain text representation of a text document element.
+
+        Args:
+            location_data: Content location data
+            source_content: Optional preloaded source content
+
+        Returns:
+            Plain text representation of the element
+        """
+        # For plain text documents, the content is already in text form
+        # So we can leverage the existing _resolve_element_content method
+        content = self._resolve_element_content(location_data, source_content)
+
+        # For plain text, we don't need to do much transformation
+        # The element is already in text format without markup
+        element_type = location_data.get("type", "")
+
+        # Handle different element types
+        if element_type == "root" or not element_type:
+            # For the full document, we might want to clean it up
+            if self.normalize_whitespace:
+                # Normalize line endings and reduce excessive whitespace
+                content = re.sub(r'\r\n', '\n', content)
+                content = re.sub(r'\r', '\n', content)
+                content = re.sub(r'\n{3,}', '\n\n', content)  # Reduce excessive blank lines
+            return content.strip() if self.strip_whitespace else content
+
+        elif element_type == "paragraph":
+            # For paragraphs, just return the text (already clean)
+            return content.strip() if self.strip_whitespace else content
+
+        elif element_type == "line":
+            # For a single line, just return it
+            return content.strip() if self.strip_whitespace else content
+
+        elif element_type == "range" or element_type == "substring":
+            # For text ranges or substrings, return as is
+            return content.strip() if self.strip_whitespace else content
+
+        # Default case: return the content as is
+        return content.strip() if self.strip_whitespace else content
+
     def _resolve_element_content(self, location_data: Dict[str, Any],
                                  source_content: Optional[Union[str, bytes]] = None) -> str:
         """

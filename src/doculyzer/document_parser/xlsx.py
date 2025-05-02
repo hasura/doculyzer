@@ -52,6 +52,57 @@ class XlsxParser(DocumentParser):
         self.min_table_rows = self.config.get("min_table_rows", 2)  # Minimum rows for table detection
         self.min_table_cols = self.config.get("min_table_cols", 2)  # Minimum columns for table detection
 
+    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]]) -> str:
+        """
+        Resolve the plain text representation of an Excel element.
+
+        Args:
+            location_data: Content location data
+            source_content: Optional preloaded source content
+
+        Returns:
+            Plain text representation of the element
+        """
+        # Get the content using the existing method
+        content = self._resolve_element_content(location_data, source_content)
+        element_type = location_data.get("type", "")
+
+        # Handle specific element types
+        if element_type == "workbook":
+            # For workbook, return a simple summary
+            return content.strip()
+
+        elif element_type == "sheet":
+            # For sheets, return basic sheet information
+            return content.strip()
+
+        elif element_type == "table_row":
+            # For rows, the content is already tab-separated values
+            return content.strip()
+
+        elif element_type == "table_cell" or element_type == "table_header":
+            # For cells, just return the cell value
+            return content.strip()
+
+        elif element_type == "data_table":
+            # For data tables, preserve the structure but remove any Excel-specific formatting
+            # The _resolve_element_content method already returns structured text
+            return content.strip()
+
+        elif element_type == "comment":
+            # For comments, extract just the comment text without the author info
+            if "Comment by " in content:
+                # Extract comment text after the author prefix
+                return content.split(": ", 1)[1].strip()
+            return content.strip()
+
+        elif element_type == "merged_cell":
+            # For merged cells, return just the cell value
+            return content.strip()
+
+        # Default: return the content as is
+        return content.strip()
+
     def parse(self, doc_content: Dict[str, Any]) -> Dict[str, Any]:
         """
         Parse an XLSX document into structured elements.
@@ -506,9 +557,7 @@ class XlsxParser(DocumentParser):
             "title": sheet.title,
             "max_row": max_row,
             "max_column": max_col,
-            "sheet_state": sheet.sheet_state,  # visible, hidden, or veryHidden
-            "tab_color": sheet.sheet_properties.tabColor.rgb if hasattr(sheet.sheet_properties,
-                                                                        'tabColor') and sheet.sheet_properties.tabColor else None,
+            "sheet_state": sheet.sheet_state
         }
 
         # Check if sheet has autofilter

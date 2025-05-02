@@ -58,6 +58,57 @@ class PptxParser(DocumentParser):
         self.extract_templates = self.config.get("extract_templates", False)
         self.temp_dir = self.config.get("temp_dir", os.path.join(os.path.dirname(__file__), 'temp'))
 
+    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]]) -> str:
+        """
+        Resolve the plain text representation of a PPTX element.
+
+        Args:
+            location_data: Content location data
+            source_content: Optional preloaded source content
+
+        Returns:
+            Plain text representation of the element
+        """
+        # Get the content using the improved _resolve_element_content method
+        content = self._resolve_element_content(location_data, source_content)
+        element_type = location_data.get("type", "")
+
+        # Handle specific element types
+        if element_type == "presentation_body":
+            return content.strip()
+
+        elif element_type == "slide":
+            return content.strip()
+
+        elif element_type == "text_box" or element_type == "paragraph":
+            return content.strip()
+
+        elif element_type == "table" or element_type == "table_cell":
+            # The improved _resolve_element_content already formats tables properly
+            return content.strip()
+
+        elif element_type == "slide_notes":
+            return content.strip()
+
+        elif element_type == "comment":
+            # For comments, extract just the comment text without metadata
+            if ": " in content:
+                return content.split(": ", 1)[1].strip()
+            return content.strip()
+
+        elif element_type == "image":
+            if "Alt text: " in content:
+                return content.split("Alt text: ", 1)[1].strip()
+            return "Image"
+
+        elif element_type == "chart":
+            if "Chart: " in content and "\n" in content:
+                return content.split("\n")[0].replace("Chart: ", "").strip()
+            return content.strip()
+
+        # Default
+        return content.strip()
+
     def _resolve_element_content(self, location_data: Dict[str, Any],
                                  source_content: Optional[Union[str, bytes]] = None) -> str:
         """
@@ -176,6 +227,43 @@ class PptxParser(DocumentParser):
                     return f"Invalid paragraph index: {paragraph_index}"
 
                 return shape.text_frame.paragraphs[paragraph_index].text
+
+            elif element_type == "table":
+                # Extract table content with proper formatting
+                shape_path = location_data.get("shape_path", "")
+
+                # Check if slide index is valid
+                if slide_index < 0 or slide_index >= len(presentation.slides):
+                    return f"Invalid slide index: {slide_index}"
+
+                # Get the slide
+                slide = presentation.slides[slide_index]
+
+                # Parse shape path to locate the shape
+                shape_indices = shape_path.split('/')
+                shape = self._find_shape_by_path(slide.shapes, shape_indices)
+
+                if not shape or not hasattr(shape, 'has_table') or not shape.has_table:
+                    return f"Table shape not found at path: {shape_path}"
+
+                # Get table object
+                table = shape.table
+
+                # Format table with consistent structure
+                rows_text = []
+
+                # Process each row
+                for row in table.rows:
+                    cells_text = []
+                    for cell in row.cells:
+                        cell_text = cell.text_frame.text.strip() if hasattr(cell, 'text_frame') else ""
+                        cells_text.append(cell_text)
+
+                    # Join cells with pipe separator
+                    rows_text.append(" | ".join(cells_text))
+
+                # Return formatted table
+                return "\n".join(rows_text)
 
             elif element_type == "table_cell":
                 # Extract cell content from a table

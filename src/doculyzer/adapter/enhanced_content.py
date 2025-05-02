@@ -47,12 +47,13 @@ class EnhancedContentResolver(ContentResolver):
         self.max_cache_size = self.config.get("max_cache_size", 1000)
         self.cache_ttl = self.config.get("cache_ttl", 3600)  # 1 hour in seconds
 
-    def resolve_content(self, content_location: str) -> str:
+    def resolve_content(self, content_location: str, text: bool = True) -> str:
         """
         Resolve content using appropriate adapter and parser.
 
         Args:
             content_location: JSON-formatted content location pointer
+            text: Returns the semantic text representation if True else the native content representation
 
         Returns:
             Resolved content as string
@@ -63,7 +64,7 @@ class EnhancedContentResolver(ContentResolver):
 
         # Check cache if enabled
         if self.cache_enabled:
-            cache_key = self._get_cache_key(content_location)
+            cache_key = self._get_cache_key(content_location, text)
             if cache_key in self.cache:
                 return self.cache[cache_key]
 
@@ -125,7 +126,10 @@ class EnhancedContentResolver(ContentResolver):
                     return f"No parser available for content type: {content_type}"
 
             # Use parser to resolve specific element
-            resolved_content = parser._resolve_element_content(location_data, content)
+            if text:
+                resolved_content = parser._resolve_element_text(location_data, content)
+            else:
+                resolved_content = parser._resolve_element_content(location_data, content)
 
             # Cache result if enabled
             if self.cache_enabled:
@@ -359,7 +363,7 @@ class EnhancedContentResolver(ContentResolver):
                 del self.cache[k]
 
     @staticmethod
-    def _get_cache_key(content_location: str) -> str:
+    def _get_cache_key(content_location: str, text: bool) -> str:
         """
         Generate cache key for content location.
 
@@ -369,4 +373,4 @@ class EnhancedContentResolver(ContentResolver):
         Returns:
             Cache key
         """
-        return content_location
+        return content_location + ("-text" if text else "-native")

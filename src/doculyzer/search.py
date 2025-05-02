@@ -79,6 +79,7 @@ class SearchResult(BaseModel):
 
     # Resolved content
     resolved_content: Optional[str] = None
+    resolved_text: Optional[str] = None
 
     # Error information (if content resolution fails)
     resolution_error: Optional[str] = None
@@ -185,6 +186,7 @@ class SearchHelper:
         logger.info(f"Found {len(filtered_elements)} elements after confidence filtering (threshold: {min_confidence})")
 
         # Apply limit after filtering
+        # filtered_elements.reverse()
         filtered_elements = filtered_elements[:limit]
 
         # Convert to SearchResults
@@ -284,6 +286,7 @@ class SearchHelper:
 
                 # Default values for content fields
                 resolved_content=None,
+                resolved_text=None,
                 resolution_error=None
             )
 
@@ -292,7 +295,8 @@ class SearchHelper:
                 content_location = element.get("content_location")
                 if content_location and content_resolver.supports_location(content_location):
                     try:
-                        result.resolved_content = content_resolver.resolve_content(content_location)
+                        result.resolved_content = content_resolver.resolve_content(content_location, text=False)
+                        result.resolved_text = content_resolver.resolve_content(content_location, text=True)
                     except Exception as e:
                         logger.error(f"Error resolving content: {str(e)}")
                         result.resolution_error = str(e)

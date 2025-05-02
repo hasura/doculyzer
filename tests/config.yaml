@@ -55,12 +55,12 @@ content_sources:
 #    # API settings
 #    expand_macros: true
 #    limit: 500
-#  - name: "file-docs"
-#    type: "file"
-#    base_path: "./assets"
-#    file_pattern: "**/*.md"
-#    watch_for_changes: true
-#    max_link_depth: 2
+  - name: "file-docs"
+    type: "file"
+    base_path: "./assets"
+    file_pattern: "**/*.{md,docx,xlsx}"
+    watch_for_changes: true
+    max_link_depth: 2
   - name: "wikipedia"
     type: "web"
     base_url: "https://en.wikipedia.org"

@@ -19,6 +19,116 @@ logger = logging.getLogger(__name__)
 class HtmlParser(DocumentParser):
     """Parser for HTML documents."""
 
+    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]]) -> str:
+        """
+        Resolve the plain text representation of an HTML element.
+
+        Args:
+            location_data: Content location data
+            source_content: Optional preloaded source content
+
+        Returns:
+            Plain text representation of the element
+        """
+        # First, get the HTML content of the element
+        html_content = self._resolve_element_content(location_data, source_content)
+        if not html_content:
+            return ""
+
+        # Parse the HTML fragment
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        element_type = location_data.get("type", "")
+
+        # Handle specific element types
+        if element_type == "header":
+            # For headers, just return the text
+            return soup.get_text().strip()
+
+        elif element_type == "paragraph":
+            # For paragraphs, return the text
+            return soup.get_text().strip()
+
+        elif element_type == "list":
+            # For lists, format each item on a new line with a bullet or number
+            list_type = location_data.get("list_type", "unordered")
+            items = soup.find_all('li')
+            result = []
+
+            for i, item in enumerate(items):
+                if list_type == "ordered":
+                    result.append(f"{i + 1}. {item.get_text().strip()}")
+                else:
+                    result.append(f"• {item.get_text().strip()}")
+
+            return "\n".join(result)
+
+        elif element_type == "list_item":
+            # For a single list item, return the text
+            return soup.get_text().strip()
+
+        elif element_type in ["table", "table_row", "table_cell", "table_header"]:
+            if element_type == "table":
+                # For a complete table, return a structured representation
+                rows = soup.find_all('tr')
+                result = []
+
+                # Check if table has headers
+                headers = soup.find_all('th')
+                if headers:
+                    header_texts = [h.get_text().strip() for h in headers]
+                    result.append(" | ".join(header_texts))
+                    result.append("-" * (sum(len(h) + 3 for h in header_texts)))
+
+                # Process rows
+                for row in rows:
+                    # Skip header row if we already processed headers
+                    if row.find('th') and headers:
+                        continue
+
+                    cells = row.find_all(['td', 'th'])
+                    row_text = " | ".join(cell.get_text().strip() for cell in cells)
+                    if row_text.strip():  # Skip empty rows
+                        result.append(row_text)
+
+                return "\n".join(result)
+
+            elif element_type == "table_row":
+                # For a table row, return cells separated by |
+                cells = soup.find_all(['td', 'th'])
+                return " | ".join(cell.get_text().strip() for cell in cells)
+
+            elif element_type in ["table_cell", "table_header"]:
+                # For a single cell, just return the text
+                return soup.get_text().strip()
+
+        elif element_type == "image":
+            # For an image, return the alt text or a description
+            img = soup.find('img')
+            if img and img.get('alt'):
+                return f"Image: {img.get('alt')}"
+            elif img and img.get('src'):
+                return f"Image: {img.get('src').split('/')[-1]}"
+            else:
+                return "Image"
+
+        elif element_type == "code_block":
+            # For code blocks, preserve formatting but remove the tags
+            code = soup.find('code') or soup
+            text = code.get_text()
+            language = location_data.get("language", "")
+            if language:
+                return f"Code ({language}):\n{text}"
+            return f"Code:\n{text}"
+
+        elif element_type == "blockquote":
+            # For blockquotes, prefix each line with >
+            lines = soup.get_text().strip().split('\n')
+            return '\n'.join(f"> {line}" for line in lines)
+
+        # Default case: return all text content
+        return soup.get_text().strip()
+
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """Initialize the HTML parser."""
         super().__init__(config)

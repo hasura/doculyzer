@@ -55,6 +55,60 @@ class PdfParser(DocumentParser):
         self.min_table_rows = self.config.get("min_table_rows", 2)
         self.min_table_cols = self.config.get("min_table_cols", 2)
 
+    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]]) -> str:
+        """
+        Resolve the plain text representation of a PDF element.
+
+        Args:
+            location_data: Content location data
+            source_content: Optional preloaded source content
+
+        Returns:
+            Plain text representation of the element
+        """
+        # Get the content using the existing method
+        content = self._resolve_element_content(location_data, source_content)
+        element_type = location_data.get("type", "")
+
+        # Handle specific element types
+        if element_type == "content":
+            # For the document content, just return a simple summary
+            return content.strip()
+
+        elif element_type == "page":
+            # For full pages, the content is already just text
+            return content.strip()
+
+        elif element_type == "paragraph" or element_type == "text_block":
+            # For paragraphs, just return the text content directly
+            return content.strip()
+
+        elif element_type == "header":
+            # For headers, return the text without any formatting
+            return content.strip()
+
+        elif element_type == "table":
+            # For tables, preserve the tabular structure but remove any PDF-specific formatting
+            # The _resolve_element_content method already returns tabular text
+            return content.strip()
+
+        elif element_type == "annotation":
+            # For annotations, return just the annotation text without metadata
+            return content.strip()
+
+        elif element_type == "image":
+            # For images, extract any descriptive info if available
+            if "Alt text:" in content:
+                return content.split("Alt text:", 1)[1].strip()
+            return "Image"
+
+        elif element_type == "section":
+            # For sections, return the section text
+            return content.strip()
+
+        # Default: return the content as is
+        return content.strip()
+
     def _resolve_element_content(self, location_data: Dict[str, Any],
                                  source_content: Optional[Union[str, bytes]] = None) -> str:
         """

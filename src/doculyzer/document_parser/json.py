@@ -30,17 +30,122 @@ class JSONParser(DocumentParser):
         self.max_depth = self.config.get("max_depth", 10)  # Prevent infinite recursion
         self.temp_dir = self.config.get("temp_dir", os.path.join(os.path.dirname(__file__), 'temp'))
 
-    def _resolve_element_content(self, location_data: Dict[str, Any],
-                                 source_content: Optional[Union[str, bytes]] = None) -> str:
+    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]]) -> str:
         """
-        Resolve content for specific JSON element types.
+        Resolve the plain text representation of a JSON element.
 
         Args:
             location_data: Content location data
             source_content: Optional preloaded source content
 
         Returns:
-            Resolved content string
+            Plain text representation of the element
+        """
+        # Get the raw content/data structure
+        source = location_data.get("source", "")
+        element_type = location_data.get("type", "")
+        json_path = location_data.get("path", "$")
+
+        # Load and parse the JSON data
+        json_data = None
+        if source_content is None:
+            if os.path.exists(source):
+                try:
+                    with open(source, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    json_data = json.loads(content)
+                except Exception as e:
+                    return f"Error loading JSON: {str(e)}"
+            else:
+                return f"Source file not found: {source}"
+        else:
+            # Parse JSON from provided content
+            if isinstance(source_content, bytes):
+                try:
+                    content = source_content.decode('utf-8')
+                except UnicodeDecodeError:
+                    return "Cannot decode binary content as JSON"
+            else:
+                content = source_content
+
+            try:
+                if isinstance(content, (dict, list)):
+                    json_data = content
+                else:
+                    json_data = json.loads(content)
+            except Exception as e:
+                return f"Error parsing JSON: {str(e)}"
+
+        # Resolve the JSON path to get the specific element
+        if json_path == "$":
+            target_data = json_data
+        else:
+            target_data = self._resolve_json_path(json_data, json_path)
+            if target_data is None:
+                return f"Element not found at path: {json_path}"
+
+        # Get the element name (last part of the path)
+        element_name = json_path.split('.')[-1] if '.' in json_path else json_path
+        if '[' in element_name:
+            # For array items, extract index
+            element_name = element_name.split('[')[0]
+
+        # Handle different element types with appropriate text representation
+        if element_type == "json_object" and isinstance(target_data, dict):
+            if element_name == "$":
+                return "Root object"
+            else:
+                return element_name  # Just return the object name
+
+        elif element_type == "json_array" and isinstance(target_data, list):
+            if element_name == "$":
+                return f"Array with {len(target_data)} items"
+            else:
+                return f"{element_name} (array with {len(target_data)} items)"
+
+        elif element_type == "json_field":
+            # For fields, we need to get the parent object and extract the field
+            parent_path, field_name = self._split_field_path(json_path)
+
+            # For primitive values, return "name: value"
+            if not isinstance(target_data, (dict, list)):
+                return f"{field_name}: {target_data}"
+            else:
+                # For container values, just return the name
+                return field_name
+
+        elif element_type == "json_item" and json_path.endswith("]"):
+            # For array items, return value or type indication
+            if isinstance(target_data, (dict, list)):
+                item_type = "object" if isinstance(target_data, dict) else "array"
+                return f"Item {json_path.split('[')[-1].rstrip(']')} ({item_type})"
+            else:
+                # For primitive values in an array, return the value
+                return str(target_data)
+
+        # Default case: try to provide a meaningful representation
+        if isinstance(target_data, dict):
+            return element_name if element_name != "$" else "Root object"
+        elif isinstance(target_data, list):
+            return f"{element_name} (array)" if element_name != "$" else "Array"
+        else:
+            # For primitive values, include the name if available
+            if element_name != "$":
+                return f"{element_name}: {target_data}"
+            else:
+                return str(target_data)
+
+    def _resolve_element_content(self, location_data: Dict[str, Any],
+                                 source_content: Optional[Union[str, bytes]] = None) -> str:
+        """
+        Resolve content for specific JSON element types, returning valid JSON.
+
+        Args:
+            location_data: Content location data
+            source_content: Optional preloaded source content
+
+        Returns:
+            Resolved content as properly formatted JSON
         """
         source = location_data.get("source", "")
         element_type = location_data.get("type", "")
@@ -71,69 +176,62 @@ class JSONParser(DocumentParser):
 
             try:
                 json_data = json.loads(content)
-            except json.JSONDecodeError as e:
+            except json.JSONDecodeError:
                 # If content is already a Python dict or list, use it directly
                 if isinstance(content, (dict, list)):
                     json_data = content
                 else:
-                    raise ValueError(f"Error parsing JSON content: {str(e)}")
+                    raise ValueError(f"Error parsing JSON content")
+
+        # Extract the element name from the path
+        element_name = json_path.split('.')[-1] if '.' in json_path else json_path
+        if '[' in element_name:
+            # For array items, use the array name
+            element_name = element_name.split('[')[0]
+        if element_name == "$":
+            element_name = "root"
 
         # Resolve the JSON path to get the specific element
         if json_path == "$":
-            # Return the entire document if root path
-            if element_type == "root":
-                return json.dumps(json_data, indent=2)
-            else:
-                target_data = json_data
+            # Root element, return the entire JSON
+            target_data = json_data
+            return json.dumps(target_data, indent=2)
         else:
             # Parse the JSON path to navigate to the specific element
             target_data = self._resolve_json_path(json_data, json_path)
 
             if target_data is None:
-                return f"Element not found at path: {json_path}"
+                return json.dumps({"error": f"Element not found at path: {json_path}"})
 
         # Handle specific element types
         if element_type == "json_object" and isinstance(target_data, dict):
-            return json.dumps(target_data, indent=2)
+            # Return object with its name as key
+            return json.dumps({element_name: target_data}, indent=2)
 
         elif element_type == "json_array" and isinstance(target_data, list):
-            return json.dumps(target_data, indent=2)
+            # Return array with its name as key
+            return json.dumps({element_name: target_data}, indent=2)
 
         elif element_type == "json_field":
-            # For fields, we need to get the parent object and extract the field
+            # For fields, extract the field name and return as a named object
             parent_path, field_name = self._split_field_path(json_path)
-            parent_data = self._resolve_json_path(json_data, parent_path)
-
-            if isinstance(parent_data, dict) and field_name in parent_data:
-                field_value = parent_data[field_name]
-                if isinstance(field_value, (dict, list)):
-                    return json.dumps(field_value, indent=2)
-                else:
-                    return str(field_value)
-            else:
-                return f"Field '{field_name}' not found in parent object at path: {parent_path}"
+            return json.dumps({field_name: target_data}, indent=2)
 
         elif element_type == "json_item" and json_path.endswith("]"):
-            # For array items, we need to parse the array index
+            # For array items, extract the index
             match = re.search(r'\[(\d+)\]$', json_path)
             if match:
                 try:
                     index = int(match.group(1))
-                    # Already resolved with json_path, so just format the result
-                    if isinstance(target_data, (dict, list)):
-                        return json.dumps(target_data, indent=2)
-                    else:
-                        return str(target_data)
+                    # Return as a named object with index
+                    return json.dumps({f"{element_name}[{index}]": target_data}, indent=2)
                 except (ValueError, IndexError):
-                    return f"Invalid array index in path: {json_path}"
+                    return json.dumps({"error": f"Invalid array index in path: {json_path}"})
             else:
-                return f"Invalid array item path: {json_path}"
+                return json.dumps({"error": f"Invalid array item path: {json_path}"})
 
-        # Default: return formatted JSON for the element
-        if isinstance(target_data, (dict, list)):
-            return json.dumps(target_data, indent=2)
-        else:
-            return str(target_data)
+        # Default: return as a named object
+        return json.dumps({element_name: target_data}, indent=2)
 
     def supports_location(self, content_location: str) -> bool:
         """

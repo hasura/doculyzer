@@ -103,6 +103,22 @@ class DocumentParser(ABC):
         """
         pass
 
+
+    @abstractmethod
+    def _resolve_element_text(self, location_data: Dict[str, Any],
+                                 source_content: Optional[Union[str, bytes]]) -> str:
+        """
+        Resolve content for specific element types.
+
+        Args:
+            location_data: Content location data
+            source_content: Optional preloaded source content
+
+        Returns:
+            Resolved content string
+        """
+        pass
+
     @abstractmethod
     def supports_location(self, content_location: str) -> bool:
         """

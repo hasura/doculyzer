@@ -4,6 +4,7 @@ import os
 from typing import List, Dict, Any, Optional
 
 from .base import EmbeddingGenerator
+from ..config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ class OpenAIEmbeddingGenerator(EmbeddingGenerator):
         "text-embedding-3-large": 3072
     }
 
-    def __init__(self, model_name: str = "text-embedding-3-small",
+    def __init__(self, _config: Config, model_name: str = "text-embedding-3-small",
                  api_key: Optional[str] = None,
                  dimensions: Optional[int] = None):
         """
@@ -39,6 +40,7 @@ class OpenAIEmbeddingGenerator(EmbeddingGenerator):
             api_key: OpenAI API key (optional, can also be set via OPENAI_API_KEY env var)
             dimensions: Override dimensions (optional)
         """
+        super().__init__(_config)
         if not OPENAI_AVAILABLE:
             raise ImportError("OpenAI library is required for OpenAI embeddings")
 

@@ -55,6 +55,48 @@ class DocxParser(DocumentParser):
         self.temp_dir = self.config.get("temp_dir", os.path.join(os.path.dirname(__file__), 'temp'))
         self.max_content_preview = self.config.get("max_content_preview", 100)
 
+    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]]) -> str:
+        """
+        Resolve the plain text representation of a DOCX element.
+
+        Args:
+            location_data: Content location data
+            source_content: Optional preloaded source content
+
+        Returns:
+            Plain text representation of the element
+        """
+        # DOCX content is already text-based, so we can leverage the existing _resolve_element_content method
+        # We just need to clean up the returned content for certain element types
+
+        # First, get the content using the existing method
+        content = self._resolve_element_content(location_data, source_content)
+
+        # For DOCX, the element content is already in text form without any markup
+        element_type = location_data.get("type", "")
+
+        # For most element types, the content is already in the desired plain text format
+        # But we might need special handling for some types
+        if element_type == "table" or element_type == "table_row":
+            # For tables, content from _resolve_element_content uses | as separators
+            # We'll keep this format as it's already a good text representation
+            return content
+
+        elif element_type == "table_cell" or element_type == "table_header":
+            # For cells, just return the text content
+            return content.strip()
+
+        elif element_type == "header" or element_type == "paragraph" or element_type == "list_item":
+            # For text elements, just return the content
+            return content.strip()
+
+        elif element_type == "comment":
+            # For comments, extract just the text without metadata
+            return content.strip()
+
+        # For other element types, just return the content as is
+        return content.strip()
+
     def parse(self, doc_content: Dict[str, Any]) -> Dict[str, Any]:
         """
         Parse a DOCX document into structured elements.
@@ -617,12 +659,13 @@ class DocxParser(DocumentParser):
         table_id = self._generate_id("table_")
 
         # Create table element
+        table_preview = self._get_table_preview(table)
         table_element = {
             "element_id": table_id,
             "doc_id": doc_id,
             "element_type": "table",
             "parent_id": parent_id,
-            "content_preview": f"Table with {len(table.rows)} rows and {len(table.columns)} columns",
+            "content_preview": table_preview,  # This can be empty if we couldn't extract meaningful content
             "content_location": json.dumps({
                 "source": source_id,
                 "type": "table",
@@ -1055,3 +1098,51 @@ class DocxParser(DocumentParser):
             Word count
         """
         return sum(len(paragraph.text.split()) for paragraph in doc.paragraphs)
+
+    def _get_table_preview(self, table: Table) -> str:
+        """Generate a meaningful content preview for a table."""
+        cell_texts = []
+
+        # Try different methods to extract text from the table
+        try:
+            # First attempt: direct iteration (preferred when it works)
+            for row in table.rows:
+                for cell in row.cells:
+                    text = " ".join(p.text for p in cell.paragraphs).strip()
+                    if text:
+                        cell_texts.append(text)
+        except Exception:
+            try:
+                # Second attempt: index-based access
+                for i in range(len(table.rows)):
+                    row = table.rows[i]
+                    for j in range(len(row.cells)):
+                        cell = row.cells[j]
+                        text = " ".join(p.text for p in cell.paragraphs).strip()
+                        if text:
+                            cell_texts.append(text)
+            except Exception:
+                # Third attempt: direct XML access as last resort
+                try:
+                    tbl_element = table._tbl
+                    for text_elem in tbl_element.xpath('.//w:t'):
+                        if text_elem.text and text_elem.text.strip():
+                            cell_texts.append(text_elem.text.strip())
+                except Exception:
+                    # Give up and return empty string
+                    return ""
+
+        # If we have no text, return empty string
+        if not cell_texts:
+            return ""
+
+        # Generate preview from collected texts
+        preview = " | ".join(cell_texts[:5])
+        if len(cell_texts) > 5:
+            preview += "..."
+
+        # Truncate if needed
+        if len(preview) > self.max_content_preview:
+            preview = preview[:self.max_content_preview] + "..."
+
+        return preview

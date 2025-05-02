@@ -160,12 +160,13 @@ class ContentResolver(ABC):
     """Abstract base class for content resolvers."""
 
     @abstractmethod
-    def resolve_content(self, content_location: str) -> str:
+    def resolve_content(self, content_location: str, text: bool) -> str:
         """
         Resolve a content pointer to actual content.
 
         Args:
             content_location: Content location pointer in JSON format
+            text: if True returns the semantic text representation, else the native content representation
 
         Returns:
             Resolved content as string

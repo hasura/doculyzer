@@ -60,12 +60,12 @@ def test_document_ingestion(config_emb: (Config, EmbeddingGenerator)):
 
         # Run a sample search
         logger.info("Running similarity search")
-        query_text = "document management"
+        query_text = "document systems analysis and purchasing decision making"
         logger.debug(f"Generating embedding for query: {query_text}")
 
 
         logger.debug("Searching for similar elements")
-        results: List[SearchResult] = search_with_content(query_text)
+        results: List[SearchResult] = search_with_content(query_text, min_confidence=-1.0)
         logger.info(f"Found {len(results)} similar elements")
 
         # Display a few results

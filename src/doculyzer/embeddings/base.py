@@ -1,9 +1,22 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any
 
+from ..config import Config
+
 
 class EmbeddingGenerator(ABC):
     """Abstract base class for embedding generators."""
+
+    _config: Config
+
+    def __init__(self, _config: Config):
+        """
+        Initialize the base class with a config.
+
+        Args:
+            _config: The Config
+        """
+        self._config = _config  # New field added to the base class
 
     @abstractmethod
     def generate(self, text: str) -> List[float]:

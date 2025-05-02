@@ -746,45 +746,38 @@ class MongoDBDocumentDatabase(DocumentDatabase):
         """Search embeddings using MongoDB Atlas Vector Search with filtering."""
         try:
             # Define the vector search pipeline
-            pipeline = [
-                {
-                    "$vectorSearch": {
-                        "index": "embeddings_vector_index",
-                        "path": "embedding",
-                        "queryVector": query_embedding,
-                        "numCandidates": limit * 5,  # Get more candidates for better results
-                        "limit": limit * 10  # Get more results than needed to allow for filtering
-                    }
-                },
-                {
-                    "$lookup": {
-                        "from": "elements",
-                        "localField": "element_pk",
-                        "foreignField": "element_pk",
-                        "as": "element"
-                    }
-                },
-                {
-                    "$unwind": "$element"
+            pipeline = [{
+                "$vectorSearch": {
+                    "index": "embeddings_vector_index",
+                    "path": "embedding",
+                    "queryVector": query_embedding,
+                    "numCandidates": limit * 5,  # Get more candidates for better results
+                    "limit": limit * 10  # Get more results than needed to allow for filtering
                 }
-            ]
-
-            # Add document lookup to support document-level filtering
-            pipeline.append({
+            }, {
+                "$lookup": {
+                    "from": "elements",
+                    "localField": "element_pk",
+                    "foreignField": "element_pk",
+                    "as": "element"
+                }
+            }, {
+                "$unwind": "$element"
+            }, {
                 "$lookup": {
                     "from": "documents",
                     "localField": "element.doc_id",
                     "foreignField": "doc_id",
                     "as": "document"
                 }
-            })
-
-            pipeline.append({
+            }, {
                 "$unwind": {
                     "path": "$document",
                     "preserveNullAndEmptyArrays": True
                 }
-            })
+            }]
+
+            # Add document lookup to support document-level filtering
 
             # Add filter stages if criteria provided
             if filter_criteria:

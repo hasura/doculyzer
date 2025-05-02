@@ -1,6 +1,8 @@
 from typing import Optional, List, Dict, Any
 
 from .base import EmbeddingGenerator
+from ..adapter import create_content_resolver
+from ..config import Config
 
 
 class ContextualEmbeddingGenerator(EmbeddingGenerator):
@@ -11,12 +13,15 @@ class ContextualEmbeddingGenerator(EmbeddingGenerator):
     creating overlapping context windows to improve semantic search quality.
     """
 
-    def __init__(self, base_generator: EmbeddingGenerator,
+    def __init__(self,
+                 _config: Config,
+                 base_generator: EmbeddingGenerator,
                  window_size: int = 3,
                  overlap_size: int = 1,
                  predecessor_count: int = 1,
                  successor_count: int = 1,
-                 ancestor_depth: int = 1):
+                 ancestor_depth: int = 1,
+                 child_count: int = 1):
         """
         Initialize the contextual embedding generator.
 
@@ -28,12 +33,14 @@ class ContextualEmbeddingGenerator(EmbeddingGenerator):
             successor_count: Number of following elements to include
             ancestor_depth: Number of ancestral levels to include
         """
+        super().__init__(_config)
         self.base_generator = base_generator
         self.window_size = window_size
         self.overlap_size = overlap_size
         self.predecessor_count = predecessor_count
         self.successor_count = successor_count
         self.ancestor_depth = ancestor_depth
+        self.child_count = child_count
 
     def generate(self, text: str, context: Optional[List[str]] = None) -> List[float]:
         """
@@ -120,6 +127,7 @@ class ContextualEmbeddingGenerator(EmbeddingGenerator):
         """Generate contextual embeddings for document elements."""
         # Build element hierarchy
         hierarchy = self._build_element_hierarchy(elements)
+        resolver = create_content_resolver(self._config)
 
         # Generate embeddings with context
         embeddings = {}
@@ -142,7 +150,7 @@ class ContextualEmbeddingGenerator(EmbeddingGenerator):
             # Get context contents from previews
             context_contents = []
             for ctx_element in context_elements:
-                ctx_content = ctx_element.get("content_preview", "")
+                ctx_content = resolver.resolve_content(ctx_element.get('content_location'), text=True)
                 if ctx_content:
                     context_contents.append(ctx_content)
 
@@ -184,11 +192,10 @@ class ContextualEmbeddingGenerator(EmbeddingGenerator):
         Get context elements for an element.
 
         This includes:
-        - Ancestors up to configured depth
-        - Siblings (elements with same parent)
-        - Children (immediately nested elements)
+        - Ancestors up to configured depth (skipping those with blank content)
         - Meaningful predecessors (elements that come before in document order)
         - Meaningful successors (elements that come after in document order)
+        - A limited number of meaningful children (directly nested elements)
 
         Args:
             element: Element to get context for
@@ -201,41 +208,38 @@ class ContextualEmbeddingGenerator(EmbeddingGenerator):
         element_id = element["element_id"]
         context_ids = set()
 
+        # Build a mapping from element_id to element for quicker lookups
+        id_to_element = {e["element_id"]: e for e in all_elements}
+
         # Add ancestors up to configured depth
         current_element = element
         current_depth = 0
+        ancestors_added = 0
 
-        while current_depth < self.ancestor_depth:
+        while ancestors_added < self.ancestor_depth:
             parent_id = current_element.get("parent_id")
             if not parent_id:
                 break  # No more ancestors
 
-            context_ids.add(parent_id)
-
             # Find parent element to continue up the hierarchy
-            parent_element = None
-            for e in all_elements:
-                if e["element_id"] == parent_id:
-                    parent_element = e
-                    break
-
+            parent_element = id_to_element.get(parent_id)
             if not parent_element:
                 break  # Parent not found
 
+            # Only include parent if it has content and is not an empty container
+            if (parent_element.get("content_preview") and
+                    parent_element["element_type"] != "root" and
+                    not self._is_empty_container(parent_element)):
+                context_ids.add(parent_id)
+                ancestors_added += 1
+
+            # Move up to the next level, even if we skipped this parent
             current_element = parent_element
             current_depth += 1
 
-        # Add siblings (elements with same parent)
-        parent_id = element.get("parent_id")
-        if parent_id and parent_id in hierarchy:
-            for sibling_id in hierarchy[parent_id]:
-                if sibling_id != element_id:  # Skip self
-                    context_ids.add(sibling_id)
-
-        # Add children
-        if element_id in hierarchy:
-            for child_id in hierarchy[element_id]:
-                context_ids.add(child_id)
+            # Safety check - don't go too far up (avoid infinite loops)
+            if current_depth > 10:  # Arbitrary depth limit
+                break
 
         # Find meaningful predecessors and successors
         current_index = -1
@@ -280,10 +284,24 @@ class ContextualEmbeddingGenerator(EmbeddingGenerator):
 
                 i += 1
 
+        # Add a limited number of meaningful children
+        if element_id in hierarchy and self.child_count > 0:
+            children_added = 0
+
+            for child_id in hierarchy[element_id]:
+                # Apply same filtering as for predecessors/successors
+                child_element = id_to_element.get(child_id)
+                if (child_element and
+                        child_element["element_type"] != "root" and
+                        child_element.get("content_preview") and
+                        not self._is_empty_container(child_element)):
+                    context_ids.add(child_id)
+                    children_added += 1
+                    if children_added >= self.child_count:
+                        break
+
         # Convert IDs to elements
         context_elements = []
-        id_to_element = {e["element_id"]: e for e in all_elements}
-
         for context_id in context_ids:
             if context_id in id_to_element:
                 context_elements.append(id_to_element[context_id])

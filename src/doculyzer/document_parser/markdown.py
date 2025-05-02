@@ -34,6 +34,100 @@ class MarkdownParser(DocumentParser):
             r'\[([^\]]+)\]\(([^)]+)\)'  # Markdown links [text](url)
         ]
 
+    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]]) -> str:
+        """
+        Resolve the plain text representation of a Markdown element.
+
+        Args:
+            location_data: Content location data
+            source_content: Optional preloaded source content
+
+        Returns:
+            Plain text representation of the element
+        """
+        # First, get the content of the element using the content resolver
+        raw_content = self._resolve_element_content(location_data, source_content)
+        if not raw_content:
+            return ""
+
+        element_type = location_data.get("type", "")
+
+        # Handle specific element types
+        if element_type == "header":
+            # For headers, remove markdown formatting (#) and return text
+            return re.sub(r'^#+\s*', '', raw_content).strip()
+
+        elif element_type == "paragraph":
+            # For paragraphs, just return the text (already clean in Markdown)
+            return raw_content.strip()
+
+        elif element_type == "list":
+            # For lists, format each item on a new line with appropriate marker
+            list_type = location_data.get("list_type", "unordered")
+
+            if list_type == "ordered":
+                # Extract items with their numbers
+                items = re.findall(r'^\s*(\d+\.\s+.*)$', raw_content, re.MULTILINE)
+            else:
+                # Extract unordered items and normalize markers
+                items = re.findall(r'^\s*[\*\-\+]\s+(.*)$', raw_content, re.MULTILINE)
+                items = [f"• {item.strip()}" for item in items]
+
+            return "\n".join(items)
+
+        elif element_type == "list_item":
+            # For a single list item, remove the marker and return text
+            return re.sub(r'^\s*[\*\-\+\d+\.]\s+', '', raw_content).strip()
+
+        elif element_type in ["table", "table_row", "table_cell", "table_header"]:
+            if element_type == "table":
+                # For a table, convert to a readable text format
+                rows = raw_content.strip().split('\n')
+
+                # Remove separator row if present (contains only dashes and pipes)
+                rows = [r for r in rows if not re.match(r'^\s*\|[\s\-\|]+\|\s*$', r)]
+
+                # Process each row
+                result = []
+                for row in rows:
+                    # Split by pipe and clean cells
+                    cells = re.findall(r'\|(.*?)(?=\||$)', row)
+                    cells = [cell.strip() for cell in cells if cell.strip()]
+
+                    # Join cells with proper spacing
+                    result.append(" | ".join(cells))
+
+                return "\n".join(result)
+
+            elif element_type == "table_row":
+                # For a table row, return cells separated by |
+                cells = re.findall(r'\|(.*?)(?=\||$)', raw_content)
+                cells = [cell.strip() for cell in cells if cell.strip()]
+                return " | ".join(cells)
+
+            elif element_type in ["table_cell", "table_header"]:
+                # For a single cell, just return the text
+                return raw_content.strip().strip('|')
+
+        elif element_type == "code_block":
+            # For code blocks, remove backticks and language identifier
+            cleaned = re.sub(r'^```\w*\s*\n', '', raw_content)
+            cleaned = re.sub(r'\n```$', '', cleaned)
+
+            language = location_data.get("language", "")
+            if language:
+                return f"Code ({language}):\n{cleaned}"
+            return f"Code:\n{cleaned}"
+
+        elif element_type == "blockquote":
+            # For blockquotes, remove > markers
+            lines = raw_content.split('\n')
+            cleaned_lines = [re.sub(r'^\s*>\s?', '', line) for line in lines]
+            return "\n".join(cleaned_lines).strip()
+
+        # Default case: return content as is (already text in Markdown)
+        return raw_content.strip()
+
     def parse(self, doc_content: Dict[str, Any]) -> Dict[str, Any]:
         """Parse a Markdown document into structured elements."""
         content = doc_content["content"]
