@@ -58,7 +58,8 @@ content_sources:
   - name: "file-docs"
     type: "file"
     base_path: "./assets"
-    file_pattern: "**/*.{md,docx,xlsx}"
+#    file_pattern: "**/*.{md,docx,xlsx,pptx,pdf,csv,xml,json}"
+    file_pattern: "**/*.xml"
     watch_for_changes: true
     max_link_depth: 2
   - name: "wikipedia"

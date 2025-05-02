@@ -74,6 +74,10 @@ def get_parser_for_content(content: Dict[str, Any], config: Optional[Dict[str, A
     """
     doc_type = content.get("doc_type")
     metadata = content.get("metadata", {})
+    if doc_type == 'text' and metadata.get('content_type', '').lower().startswith('text/'):
+        doc_type = metadata.get('content_type', '').lower().replace("text/", "")
+    if doc_type == 'text' and metadata.get('content_type', '').lower().startswith('application/'):
+        doc_type = metadata.get('content_type', '').lower().replace("application/", "")
 
     # If doc_type is not specified, check metadata
     if not doc_type:

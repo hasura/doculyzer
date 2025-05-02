@@ -123,6 +123,22 @@ class ContextualEmbeddingGenerator(EmbeddingGenerator):
 
         return combined
 
+    @staticmethod
+    def is_number(value: str) -> bool:
+        """
+        Check if the given string represents an integer or a float.
+
+        Args:
+            value: The string to check.
+        Returns:
+            True if the string is an int or a float, False otherwise.
+        """
+        try:
+            float(value)  # Try converting to float (handles integers too)
+            return True
+        except ValueError:
+            return False
+
     def generate_from_elements(self, elements: List[Dict[str, Any]]) -> Dict[str, List[float]]:
         """Generate contextual embeddings for document elements."""
         # Build element hierarchy
@@ -141,7 +157,7 @@ class ContextualEmbeddingGenerator(EmbeddingGenerator):
 
             # Get content from preview
             content = element.get("content_preview", "")
-            if not content:
+            if not content and not self.is_number(content):
                 continue
 
             # Get context elements
@@ -151,7 +167,7 @@ class ContextualEmbeddingGenerator(EmbeddingGenerator):
             context_contents = []
             for ctx_element in context_elements:
                 ctx_content = resolver.resolve_content(ctx_element.get('content_location'), text=True)
-                if ctx_content:
+                if ctx_content and not self.is_number(ctx_content):
                     context_contents.append(ctx_content)
 
             # Generate embedding with context

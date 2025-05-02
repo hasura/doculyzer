@@ -1,0 +1,1199 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<library xmlns="http://example.org/library" 
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://example.org/library library.xsd">
+  <catalog lastUpdated="2025-04-28T14:32:10">
+    <name>Metropolitan Public Library</name>
+    <address>
+      <street>123 Reading Avenue</street>
+      <city>Bookville</city>
+      <state>LT</state>
+      <zip>12345</zip>
+      <country>United States</country>
+    </address>
+    <contact>
+      <phone>(555) 123-4567</phone>
+      <email>info@metrolibrary.org</email>
+      <website>https://www.metrolibrary.org</website>
+    </contact>
+    <hours>
+      <weekday day="Monday">9:00-19:00</weekday>
+      <weekday day="Tuesday">9:00-19:00</weekday>
+      <weekday day="Wednesday">9:00-19:00</weekday>
+      <weekday day="Thursday">9:00-19:00</weekday>
+      <weekday day="Friday">9:00-17:00</weekday>
+      <weekday day="Saturday">10:00-16:00</weekday>
+      <weekday day="Sunday">12:00-16:00</weekday>
+    </hours>
+  </catalog>
+  
+  <categories>
+    <category id="CAT001">
+      <name>Fiction</name>
+      <subcategories>
+        <subcategory id="SUBCAT001">
+          <name>Science Fiction</name>
+          <description>Books that explore speculative and futuristic concepts such as advanced science and technology, space exploration, time travel, parallel universes, and extraterrestrial life.</description>
+        </subcategory>
+        <subcategory id="SUBCAT002">
+          <name>Fantasy</name>
+          <description>Books featuring magical and supernatural elements that are usually set in imaginary worlds.</description>
+        </subcategory>
+        <subcategory id="SUBCAT003">
+          <name>Mystery</name>
+          <description>Books centered around solving a crime, typically a murder, theft, or disappearance.</description>
+        </subcategory>
+        <subcategory id="SUBCAT004">
+          <name>Historical Fiction</name>
+          <description>Fictional stories that take place in the past, often inspired by real historical events.</description>
+        </subcategory>
+        <subcategory id="SUBCAT005">
+          <name>Romance</name>
+          <description>Books that focus on the romantic relationship between characters.</description>
+        </subcategory>
+        <subcategory id="SUBCAT006">
+          <name>Thriller</name>
+          <description>Books designed to keep readers in suspense, often featuring elements of danger, chase, and high stakes.</description>
+        </subcategory>
+        <subcategory id="SUBCAT007">
+          <name>Horror</name>
+          <description>Books intended to frighten, scare, or startle readers by inducing feelings of horror and terror.</description>
+        </subcategory>
+      </subcategories>
+    </category>
+    <category id="CAT002">
+      <name>Non-Fiction</name>
+      <subcategories>
+        <subcategory id="SUBCAT008">
+          <name>Biography</name>
+          <description>Books that tell the story of a person's life, written by someone else.</description>
+        </subcategory>
+        <subcategory id="SUBCAT009">
+          <name>History</name>
+          <description>Books that document and analyze past events, people, and societies.</description>
+        </subcategory>
+        <subcategory id="SUBCAT010">
+          <name>Science</name>
+          <description>Books that explain scientific concepts, discoveries, and theories.</description>
+        </subcategory>
+        <subcategory id="SUBCAT011">
+          <name>Philosophy</name>
+          <description>Books that explore fundamental questions about existence, knowledge, ethics, and reasoning.</description>
+        </subcategory>
+        <subcategory id="SUBCAT012">
+          <name>Self-Help</name>
+          <description>Books designed to guide readers in improving aspects of their lives.</description>
+        </subcategory>
+        <subcategory id="SUBCAT013">
+          <name>Travel</name>
+          <description>Books that provide information about destinations, cultures, and travel experiences.</description>
+        </subcategory>
+        <subcategory id="SUBCAT014">
+          <name>Cooking</name>
+          <description>Books containing recipes and information about food preparation.</description>
+        </subcategory>
+      </subcategories>
+    </category>
+    <category id="CAT003">
+      <name>Reference</name>
+      <subcategories>
+        <subcategory id="SUBCAT015">
+          <name>Dictionaries</name>
+          <description>Books containing definitions of words and terms.</description>
+        </subcategory>
+        <subcategory id="SUBCAT016">
+          <name>Encyclopedias</name>
+          <description>Books containing general knowledge on various subjects.</description>
+        </subcategory>
+        <subcategory id="SUBCAT017">
+          <name>Atlases</name>
+          <description>Books containing maps and geographical information.</description>
+        </subcategory>
+      </subcategories>
+    </category>
+  </categories>
+  
+  <authors>
+    <author id="AUTH001">
+      <name>
+        <firstName>Jane</firstName>
+        <lastName>Doe</lastName>
+      </name>
+      <biography>Jane Doe is a bestselling science fiction author known for her innovative world-building and complex character development. Born in Seattle in 1975, she has published over twenty novels and has been awarded numerous literary prizes including the Hugo and Nebula awards.</biography>
+      <country>United States</country>
+      <birthDate>1975-03-15</birthDate>
+      <bibliography>
+        <book id="BOOK001" />
+        <book id="BOOK002" />
+        <book id="BOOK003" />
+      </bibliography>
+    </author>
+    <author id="AUTH002">
+      <name>
+        <firstName>John</firstName>
+        <lastName>Smith</lastName>
+      </name>
+      <biography>John Smith is a former journalist who turned to historical fiction writing in the early 2000s. His meticulous research and engaging storytelling have earned him a dedicated following. Smith lives in Edinburgh with his wife and two children.</biography>
+      <country>United Kingdom</country>
+      <birthDate>1968-09-22</birthDate>
+      <bibliography>
+        <book id="BOOK004" />
+        <book id="BOOK005" />
+      </bibliography>
+    </author>
+    <author id="AUTH003">
+      <name>
+        <firstName>Maria</firstName>
+        <lastName>Garcia</lastName>
+      </name>
+      <biography>Maria Garcia is a renowned biologist and science communicator. Her books on evolutionary biology have been translated into more than 25 languages and are used in universities worldwide. Garcia is a professor at the University of Barcelona.</biography>
+      <country>Spain</country>
+      <birthDate>1962-11-04</birthDate>
+      <bibliography>
+        <book id="BOOK006" />
+        <book id="BOOK007" />
+      </bibliography>
+    </author>
+    <author id="AUTH004">
+      <name>
+        <firstName>Akira</firstName>
+        <lastName>Tanaka</lastName>
+      </name>
+      <biography>Akira Tanaka is a mystery novelist whose detective series has been adapted into several successful TV shows. Before becoming a writer, Tanaka worked as a police officer in Tokyo for fifteen years, which informs the realistic procedural elements in his books.</biography>
+      <country>Japan</country>
+      <birthDate>1970-06-30</birthDate>
+      <bibliography>
+        <book id="BOOK008" />
+        <book id="BOOK009" />
+        <book id="BOOK010" />
+      </bibliography>
+    </author>
+    <author id="AUTH005">
+      <name>
+        <firstName>Elena</firstName>
+        <lastName>Petrova</lastName>
+      </name>
+      <biography>Elena Petrova is a philosopher and essayist whose work explores the intersection of technology and human consciousness. Her writing has been praised for its clarity and depth. Petrova teaches at Moscow State University and is a frequent speaker at technology conferences.</biography>
+      <country>Russia</country>
+      <birthDate>1980-01-12</birthDate>
+      <bibliography>
+        <book id="BOOK011" />
+      </bibliography>
+    </author>
+    <author id="AUTH006">
+      <name>
+        <firstName>Samuel</firstName>
+        <lastName>Johnson</lastName>
+      </name>
+      <biography>Samuel Johnson is a cookbook author and celebrity chef with restaurants in New York, London, and Paris. His approach to cooking emphasizes simple ingredients and traditional techniques. Johnson hosts a popular cooking show and has published six bestselling cookbooks.</biography>
+      <country>United States</country>
+      <birthDate>1985-07-19</birthDate>
+      <bibliography>
+        <book id="BOOK012" />
+        <book id="BOOK013" />
+      </bibliography>
+    </author>
+    <author id="AUTH007">
+      <name>
+        <firstName>Ngozi</firstName>
+        <lastName>Okonkwo</lastName>
+      </name>
+      <biography>Ngozi Okonkwo is a celebrated novelist whose stories explore themes of identity, colonialism, and family dynamics. Born in Lagos and educated at Oxford, Okonkwo's work has received international acclaim and has been adapted for stage and screen.</biography>
+      <country>Nigeria</country>
+      <birthDate>1973-04-05</birthDate>
+      <bibliography>
+        <book id="BOOK014" />
+        <book id="BOOK015" />
+      </bibliography>
+    </author>
+  </authors>
+  
+  <books>
+    <book id="BOOK001">
+      <title>Beyond the Stars</title>
+      <isbn>978-1234567890</isbn>
+      <publisher>Cosmic Press</publisher>
+      <publicationDate>2020-05-12</publicationDate>
+      <edition>1</edition>
+      <pages>432</pages>
+      <language>English</language>
+      <subcategoryRef>SUBCAT001</subcategoryRef>
+      <summary>In 2150, humanity's first interstellar expedition discovers a mysterious signal emanating from a distant star system. As the crew of the starship Horizon investigates, they encounter an ancient alien civilization and uncover secrets that challenge everything they know about the universe.</summary>
+      <reviews>
+        <review>
+          <reviewer>The Science Fiction Chronicle</reviewer>
+          <rating>4.5</rating>
+          <comment>A breathtaking exploration of first contact themes with rich character development and stunning worldbuilding.</comment>
+          <date>2020-06-15</date>
+        </review>
+        <review>
+          <reviewer>Galactic Reviews</reviewer>
+          <rating>5.0</rating>
+          <comment>Doe's masterpiece may well define space exploration fiction for the next decade. Unmissable.</comment>
+          <date>2020-06-22</date>
+        </review>
+      </reviews>
+      <copies>
+        <copy>
+          <id>CP001001</id>
+          <condition>Good</condition>
+          <location>Shelf A-15</location>
+          <status>Available</status>
+          <acquisitionDate>2020-05-20</acquisitionDate>
+        </copy>
+        <copy>
+          <id>CP001002</id>
+          <condition>Excellent</condition>
+          <location>Shelf A-15</location>
+          <status>Checked Out</status>
+          <acquisitionDate>2020-05-20</acquisitionDate>
+          <dueDate>2025-05-10</dueDate>
+        </copy>
+        <copy>
+          <id>CP001003</id>
+          <condition>Good</condition>
+          <location>Shelf A-15</location>
+          <status>Available</status>
+          <acquisitionDate>2020-05-20</acquisitionDate>
+        </copy>
+      </copies>
+    </book>
+    <book id="BOOK002">
+      <title>The Quantum Paradox</title>
+      <isbn>978-2345678901</isbn>
+      <publisher>Cosmic Press</publisher>
+      <publicationDate>2021-09-30</publicationDate>
+      <edition>1</edition>
+      <pages>512</pages>
+      <language>English</language>
+      <subcategoryRef>SUBCAT001</subcategoryRef>
+      <summary>Physicist Dr. Eliza Chen develops a revolutionary quantum technology that allows her to communicate with parallel universes. When she receives a warning message from an alternate version of herself, she must race against time to prevent a catastrophe that threatens the entire multiverse.</summary>
+      <reviews>
+        <review>
+          <reviewer>Physics Today</reviewer>
+          <rating>4.0</rating>
+          <comment>Doe blends cutting-edge quantum theory with heart-pounding suspense in this intelligent thriller.</comment>
+          <date>2021-10-05</date>
+        </review>
+        <review>
+          <reviewer>Multiverse Monthly</reviewer>
+          <rating>4.5</rating>
+          <comment>A mind-bending exploration of quantum mechanics and parallel realities that never loses sight of its human heart.</comment>
+          <date>2021-10-12</date>
+        </review>
+      </reviews>
+      <copies>
+        <copy>
+          <id>CP002001</id>
+          <condition>Excellent</condition>
+          <location>Shelf A-16</location>
+          <status>Available</status>
+          <acquisitionDate>2021-10-10</acquisitionDate>
+        </copy>
+        <copy>
+          <id>CP002002</id>
+          <condition>Good</condition>
+          <location>Shelf A-16</location>
+          <status>Available</status>
+          <acquisitionDate>2021-10-10</acquisitionDate>
+        </copy>
+      </copies>
+    </book>
+    <book id="BOOK003">
+      <title>Echoes of Earth</title>
+      <isbn>978-3456789012</isbn>
+      <publisher>Cosmic Press</publisher>
+      <publicationDate>2023-02-14</publicationDate>
+      <edition>1</edition>
+      <pages>388</pages>
+      <language>English</language>
+      <subcategoryRef>SUBCAT001</subcategoryRef>
+      <summary>Three centuries after humanity has abandoned an environmentally devastated Earth for colony worlds, a small team of scientists returns to assess whether the planet has recovered. What they find is beyond their wildest expectations: a transformed Earth with new forms of intelligence that challenge their understanding of evolution and consciousness.</summary>
+      <reviews>
+        <review>
+          <reviewer>Environmental Science Quarterly</reviewer>
+          <rating>5.0</rating>
+          <comment>A profound meditation on humanity's relationship with nature, wrapped in an engrossing science fiction narrative.</comment>
+          <date>2023-03-01</date>
+        </review>
+        <review>
+          <reviewer>The Ecological Review</reviewer>
+          <rating>4.5</rating>
+          <comment>Doe's vision of Earth's recovery is as scientifically plausible as it is philosophically challenging.</comment>
+          <date>2023-03-10</date>
+        </review>
+      </reviews>
+      <copies>
+        <copy>
+          <id>CP003001</id>
+          <condition>Excellent</condition>
+          <location>Shelf A-17</location>
+          <status>Checked Out</status>
+          <acquisitionDate>2023-02-25</acquisitionDate>
+          <dueDate>2025-05-15</dueDate>
+        </copy>
+        <copy>
+          <id>CP003002</id>
+          <condition>Good</condition>
+          <location>Shelf A-17</location>
+          <status>Available</status>
+          <acquisitionDate>2023-02-25</acquisitionDate>
+        </copy>
+        <copy>
+          <id>CP003003</id>
+          <condition>Fair</condition>
+          <location>Shelf A-17</location>
+          <status>Available</status>
+          <acquisitionDate>2023-02-25</acquisitionDate>
+        </copy>
+      </copies>
+    </book>
+    <book id="BOOK004">
+      <title>The Siege of Edinburgh</title>
+      <isbn>978-4567890123</isbn>
+      <publisher>Historical House</publisher>
+      <publicationDate>2019-11-08</publicationDate>
+      <edition>1</edition>
+      <pages>624</pages>
+      <language>English</language>
+      <subcategoryRef>SUBCAT004</subcategoryRef>
+      <summary>In 1745, Edinburgh faces the Jacobite uprising led by Bonnie Prince Charlie. Through the eyes of a local physician, a Highland soldier, and an English spy, this novel depicts the dramatic siege that shaped Scottish history.</summary>
+      <reviews>
+        <review>
+          <reviewer>Historical Fiction Quarterly</reviewer>
+          <rating>5.0</rating>
+          <comment>Smith's meticulous research brings 18th century Edinburgh vividly to life in this gripping account of a pivotal historical moment.</comment>
+          <date>2019-12-05</date>
+        </review>
+        <review>
+          <reviewer>The Scottish Review of Books</reviewer>
+          <rating>4.5</rating>
+          <comment>A masterful blend of historical fact and compelling fiction that honors the complexity of Scottish identity and politics.</comment>
+          <date>2019-12-10</date>
+        </review>
+      </reviews>
+      <copies>
+        <copy>
+          <id>CP004001</id>
+          <condition>Good</condition>
+          <location>Shelf B-22</location>
+          <status>Available</status>
+          <acquisitionDate>2019-11-20</acquisitionDate>
+        </copy>
+        <copy>
+          <id>CP004002</id>
+          <condition>Fair</condition>
+          <location>Shelf B-22</location>
+          <status>Available</status>
+          <acquisitionDate>2019-11-20</acquisitionDate>
+        </copy>
+      </copies>
+    </book>
+    <book id="BOOK005">
+      <title>Merchants of the Silk Road</title>
+      <isbn>978-5678901234</isbn>
+      <publisher>Historical House</publisher>
+      <publicationDate>2022-04-18</publicationDate>
+      <edition>1</edition>
+      <pages>582</pages>
+      <language>English</language>
+      <subcategoryRef>SUBCAT004</subcategoryRef>
+      <summary>In 13th century Asia, a diverse caravan of merchants, scholars, and adventurers travels the fabled Silk Road from Venice to Beijing. As they navigate treacherous terrain and political intrigue, their journey reveals the complex cultural exchanges that shaped medieval Eurasia.</summary>
+      <reviews>
+        <review>
+          <reviewer>Asian History Journal</reviewer>
+          <rating>4.5</rating>
+          <comment>Smith captures the vast tapestry of the Silk Road with remarkable detail and cultural sensitivity.</comment>
+          <date>2022-05-02</date>
+        </review>
+        <review>
+          <reviewer>World Literature Today</reviewer>
+          <rating>5.0</rating>
+          <comment>An epic historical novel that illuminates a pivotal period of global interconnection. Smith's diverse cast of characters offers multiple perspectives on this fascinating era.</comment>
+          <date>2022-05-15</date>
+        </review>
+      </reviews>
+      <copies>
+        <copy>
+          <id>CP005001</id>
+          <condition>Excellent</condition>
+          <location>Shelf B-23</location>
+          <status>Checked Out</status>
+          <acquisitionDate>2022-04-30</acquisitionDate>
+          <dueDate>2025-05-05</dueDate>
+        </copy>
+        <copy>
+          <id>CP005002</id>
+          <condition>Good</condition>
+          <location>Shelf B-23</location>
+          <status>Available</status>
+          <acquisitionDate>2022-04-30</acquisitionDate>
+        </copy>
+      </copies>
+    </book>
+    <book id="BOOK006">
+      <title>The Evolution Revolution</title>
+      <isbn>978-6789012345</isbn>
+      <publisher>Scientific Publications</publisher>
+      <publicationDate>2018-09-25</publicationDate>
+      <edition>2</edition>
+      <pages>384</pages>
+      <language>English</language>
+      <subcategoryRef>SUBCAT010</subcategoryRef>
+      <summary>This accessible introduction to modern evolutionary biology examines recent discoveries that have transformed our understanding of how species change over time. From genomics to epigenetics, the book explores cutting-edge research while explaining fundamental concepts for general readers.</summary>
+      <reviews>
+        <review>
+          <reviewer>Science</reviewer>
+          <rating>5.0</rating>
+          <comment>Garcia has produced that rarest of books: a scientifically rigorous yet completely accessible account of evolutionary biology's current frontiers.</comment>
+          <date>2018-10-15</date>
+        </review>
+        <review>
+          <reviewer>Nature</reviewer>
+          <rating>4.5</rating>
+          <comment>A lucid, engaging synthesis of recent advances in evolutionary theory that will enlighten both students and general readers.</comment>
+          <date>2018-10-22</date>
+        </review>
+      </reviews>
+      <copies>
+        <copy>
+          <id>CP006001</id>
+          <condition>Good</condition>
+          <location>Shelf C-11</location>
+          <status>Available</status>
+          <acquisitionDate>2018-10-05</acquisitionDate>
+        </copy>
+        <copy>
+          <id>CP006002</id>
+          <condition>Fair</condition>
+          <location>Shelf C-11</location>
+          <status>Available</status>
+          <acquisitionDate>2018-10-05</acquisitionDate>
+        </copy>
+        <copy>
+          <id>CP006003</id>
+          <condition>Poor</condition>
+          <location>Shelf C-11</location>
+          <status>Available</status>
+          <acquisitionDate>2018-10-05</acquisitionDate>
+        </copy>
+      </copies>
+    </book>
+    <book id="BOOK007">
+      <title>Biodiversity in Crisis</title>
+      <isbn>978-7890123456</isbn>
+      <publisher>Scientific Publications</publisher>
+      <publicationDate>2021-03-15</publicationDate>
+      <edition>1</edition>
+      <pages>412</pages>
+      <language>English</language>
+      <subcategoryRef>SUBCAT010</subcategoryRef>
+      <summary>This comprehensive examination of the global biodiversity crisis combines current scientific research with case studies from around the world. The book documents ecosystem collapse and species extinction while highlighting innovative conservation efforts that offer hope for the future.</summary>
+      <reviews>
+        <review>
+          <reviewer>Conservation Biology</reviewer>
+          <rating>5.0</rating>
+          <comment>Garcia's unflinching assessment of biodiversity loss is balanced by practical solutions and inspiring success stories. Essential reading for anyone concerned about our planet's future.</comment>
+          <date>2021-04-10</date>
+        </review>
+        <review>
+          <reviewer>Environmental Studies Review</reviewer>
+          <rating>4.5</rating>
+          <comment>A powerful, data-driven analysis that makes the abstract concept of biodiversity loss concrete and urgent without succumbing to despair.</comment>
+          <date>2021-04-22</date>
+        </review>
+      </reviews>
+      <copies>
+        <copy>
+          <id>CP007001</id>
+          <condition>Excellent</condition>
+          <location>Shelf C-12</location>
+          <status>Available</status>
+          <acquisitionDate>2021-03-30</acquisitionDate>
+        </copy>
+        <copy>
+          <id>CP007002</id>
+          <condition>Good</condition>
+          <location>Shelf C-12</location>
+          <status>Checked Out</status>
+          <acquisitionDate>2021-03-30</acquisitionDate>
+          <dueDate>2025-05-08</dueDate>
+        </copy>
+      </copies>
+    </book>
+    <book id="BOOK008">
+      <title>The Tokyo Detective</title>
+      <isbn>978-8901234567</isbn>
+      <publisher>Mystery House</publisher>
+      <publicationDate>2017-07-12</publicationDate>
+      <edition>1</edition>
+      <pages>368</pages>
+      <language>English</language>
+      <subcategoryRef>SUBCAT003</subcategoryRef>
+      <summary>Detective Kenji Nakamura is assigned to investigate a murder at a prestigious art gallery in Tokyo. As he delves into the victim's connections to the art world, he uncovers a complex web of forgery, rivalry, and international crime that forces him to question everything he knows about art and justice.</summary>
+      <reviews>
+        <review>
+          <reviewer>Mystery Guild</reviewer>
+          <rating>4.5</rating>
+          <comment>Tanaka's insider knowledge of police procedure gives this art-world mystery an authenticity that sets it apart from the genre.</comment>
+          <date>2017-08-05</date>
+        </review>
+        <review>
+          <reviewer>International Crime Fiction</reviewer>
+          <rating>4.0</rating>
+          <comment>A methodical, atmospheric detective novel that paints a vivid picture of contemporary Tokyo while delivering a satisfying puzzler.</comment>
+          <date>2017-08-15</date>
+        </review>
+      </reviews>
+      <copies>
+        <copy>
+          <id>CP008001</id>
+          <condition>Good</condition>
+          <location>Shelf B-07</location>
+          <status>Available</status>
+          <acquisitionDate>2017-07-30</acquisitionDate>
+        </copy>
+        <copy>
+          <id>CP008002</id>
+          <condition>Fair</condition>
+          <location>Shelf B-07</location>
+          <status>Available</status>
+          <acquisitionDate>2017-07-30</acquisitionDate>
+        </copy>
+      </copies>
+    </book>
+    <book id="BOOK009">
+      <title>Death by Deception</title>
+      <isbn>978-9012345678</isbn>
+      <publisher>Mystery House</publisher>
+      <publicationDate>2019-02-28</publicationDate>
+      <edition>1</edition>
+      <pages>392</pages>
+      <language>English</language>
+      <subcategoryRef>SUBCAT003</subcategoryRef>
+      <summary>Detective Kenji Nakamura returns to investigate the suspicious death of a technology CEO whose company was on the verge of announcing a revolutionary artificial intelligence breakthrough. As corporate espionage, family secrets, and ethical dilemmas converge, Nakamura must navigate the cutthroat world of tech innovation to expose the truth.</summary>
+      <reviews>
+        <review>
+          <reviewer>Tech Thriller Reviews</reviewer>
+          <rating>5.0</rating>
+          <comment>Tanaka skillfully blends traditional detective work with contemporary issues in artificial intelligence and corporate ethics.</comment>
+          <date>2019-03-15</date>
+        </review>
+        <review>
+          <reviewer>Asian Mystery Monthly</reviewer>
+          <rating>4.5</rating>
+          <comment>A taut, intelligent thriller that raises profound questions about technology and humanity while delivering a masterclass in detective fiction.</comment>
+          <date>2019-03-22</date>
+        </review>
+      </reviews>
+      <copies>
+        <copy>
+          <id>CP009001</id>
+          <condition>Excellent</condition>
+          <location>Shelf B-08</location>
+          <status>Available</status>
+          <acquisitionDate>2019-03-10</acquisitionDate>
+        </copy>
+        <copy>
+          <id>CP009002</id>
+          <condition>Good</condition>
+          <location>Shelf B-08</location>
+          <status>Available</status>
+          <acquisitionDate>2019-03-10</acquisitionDate>
+        </copy>
+        <copy>
+          <id>CP009003</id>
+          <condition>Good</condition>
+          <location>Shelf B-08</location>
+          <status>Checked Out</status>
+          <acquisitionDate>2019-03-10</acquisitionDate>
+          <dueDate>2025-05-20</dueDate>
+        </copy>
+      </copies>
+    </book>
+    <book id="BOOK010">
+      <title>The Kyoto Conspiracy</title>
+      <isbn>978-0123456789</isbn>
+      <publisher>Mystery House</publisher>
+      <publicationDate>2021-11-05</publicationDate>
+      <edition>1</edition>
+      <pages>418</pages>
+      <language>English</language>
+      <subcategoryRef>SUBCAT003</subcategoryRef>
+      <summary>Detective Kenji Nakamura's vacation in Kyoto is interrupted when a historian is murdered while researching a shadowy organization with roots in feudal Japan. As Nakamura investigates outside his jurisdiction, he discovers that ancient traditions and modern politics have collided in a deadly conspiracy that threatens Japan's cultural heritage.</summary>
+      <reviews>
+        <review>
+          <reviewer>Historical Mystery Review</reviewer>
+          <rating>4.5</rating>
+          <comment>Tanaka weaves Japan's rich cultural history into a thoroughly modern mystery with skill and sensitivity.</comment>
+          <date>2021-11-20</date>
+        </review>
+        <review>
+          <reviewer>Detective Fiction Weekly</reviewer>
+          <rating>5.0</rating>
+          <comment>The best Nakamura mystery yet, deepening the character while expanding the scope to embrace Japan's complex relationship with its own history.</comment>
+          <date>2021-11-30</date>
+        </review>
+      </reviews>
+      <copies>
+        <copy>
+          <id>CP010001</id>
+          <condition>Excellent</condition>
+          <location>Shelf B-09</location>
+          <status>Available</status>
+          <acquisitionDate>2021-11-15</acquisitionDate>
+        </copy>
+        <copy>
+          <id>CP010002</id>
+          <condition>Excellent</condition>
+          <location>Shelf B-09</location>
+          <status>Available</status>
+          <acquisitionDate>2021-11-15</acquisitionDate>
+        </copy>
+      </copies>
+    </book>
+    <book id="BOOK011">
+      <title>The Digital Mind: Consciousness in the Age of AI</title>
+      <isbn>978-1357924680</isbn>
+      <publisher>Philosophical Press</publisher>
+      <publicationDate>2022-08-15</publicationDate>
+      <edition>1</edition>
+      <pages>306</pages>
+      <language>English</language>
+      <subcategoryRef>SUBCAT011</subcategoryRef>
+      <summary>This philosophical exploration examines consciousness, personhood, and ethical responsibility in the context of advancing artificial intelligence. Drawing on cognitive science, computer theory, and philosophical traditions from East and West, the book challenges conventional boundaries between human and machine intelligence.</summary>
+      <reviews>
+        <review>
+          <reviewer>Philosophy Today</reviewer>
+          <rating>5.0</rating>
+          <comment>Petrova's rigorous analysis cuts through hype and fear to offer a nuanced framework for thinking about consciousness in both biological and artificial systems.</comment>
+          <date>2022-09-10</date>
+        </review>
+        <review>
+          <reviewer>AI Ethics Journal</reviewer>
+          <rating>4.5</rating>
+          <comment>A profound meditation on what it means to be conscious in an age where the line between human and machine intelligence grows increasingly blurred.</comment>
+          <date>2022-09-20</date>
+        </review>
+      </reviews>
+      <copies>
+        <copy>
+          <id>CP011001</id>
+          <condition>Excellent</condition>
+          <location>Shelf C-25</location>
+          <status>Available</status>
+          <acquisitionDate>2022-08-30</acquisitionDate>
+        </copy>
+        <copy>
+          <id>CP011002</id>
+          <condition>Good</condition>
+          <location>Shelf C-25</location>
+          <status>Checked Out</status>
+          <acquisitionDate>2022-08-30</acquisitionDate>
+          <dueDate>2025-05-18</dueDate>
+        </copy>
+      </copies>
+    </book>
+    <book id="BOOK012">
+      <title>Farm to Table: Seasonal Cooking for Every Home</title>
+      <isbn>978-2468013579</isbn>
+      <publisher>Culinary Arts</publisher>
+      <publicationDate>2020-04-10</publicationDate>
+      <edition>1</edition>
+      <pages>342</pages>
+      <language>English</language>
+      <subcategoryRef>SUBCAT014</subcategoryRef>
+      <summary>This cookbook celebrates seasonal ingredients with 120 recipes organized by season. Emphasizing local sourcing and simple preparation techniques, the book helps home cooks make the most of fresh produce while supporting sustainable agriculture.</summary>
+      <reviews>
+        <review>
+          <reviewer>Food & Wine</reviewer>
+          <rating>5.0</rating>
+          <comment>Johnson's unpretentious approach to seasonal cooking makes even the most sophisticated dishes accessible to home cooks of all skill levels.</comment>
+          <date>2020-05-05</date>
+        </review>
+        <review>
+          <reviewer>Sustainable Eating</reviewer>
+          <rating>4.5</rating>
+          <comment>More than just a cookbook, this is a thoughtful guide to rebuilding our relationship with food, farmers, and the rhythms of nature.</comment>
+          <date>2020-05-12</date>
+        </review>
+      </reviews>
+      <copies>
+        <copy>
+          <id>CP012001</id>
+          <condition>Good</condition>
+          <location>Shelf D-05</location>
+          <status>Available</status>
+          <acquisitionDate>2020-04-25</acquisitionDate>
+        </copy>
+        <copy>
+          <id>CP012002</id>
+          <condition>Fair</condition>
+          <location>Shelf D-05</location>
+          <status>Available</status>
+          <acquisitionDate>2020-04-25</acquisitionDate>
+        </copy>
+      </copies>
+    </book>
+    <book id="BOOK013">
+      <title>Global Grilling: BBQ Traditions from Around the World</title>
+      <isbn>978-3579024681</isbn>
+      <publisher>Culinary Arts</publisher>
+      <publicationDate>2022-05-20</publicationDate>
+      <edition>1</edition>
+      <pages>328</pages>
+      <language>English</language>
+      <subcategoryRef>SUBCAT014</subcategoryRef>
+      <summary>This vibrant cookbook explores grilling traditions from six continents, featuring authentic recipes, techniques, and stories. From Argentinian asado to Korean barbecue, readers will discover how different cultures have perfected the art of cooking over fire.</summary>
+      <reviews>
+        <review>
+          <reviewer>Barbecue Monthly</reviewer>
+          <rating>5.0</rating>
+          <comment>A glorious celebration of global grilling that goes beyond recipes to explore the cultural significance and communal spirit of cooking over fire.</comment>
+          <date>2022-06-10</date>
+        </review>
+        <review>
+          <reviewer>International Cuisine</reviewer>
+          <rating>4.5</rating>
+          <comment>Johnson's respectful approach to traditional techniques combined with his practical adaptations for home cooks makes this an invaluable addition to any cookbook collection.</comment>
+          <date>2022-06-18</date>
+        </review>
+      </reviews>
+      <copies>
+        <copy>
+          <id>CP013001</id>
+          <condition>Excellent</condition>
+          <location>Shelf D-06</location>
+          <status>Available</status>
+          <acquisitionDate>2022-06-05</acquisitionDate>
+        </copy>
+        <copy>
+          <id>CP013002</id>
+          <condition>Good</condition>
+          <location>Shelf D-06</location>
+          <status>Checked Out</status>
+          <acquisitionDate>2022-06-05</acquisitionDate>
+          <dueDate>2025-05-15</dueDate>
+        </copy>
+      </copies>
+    </book>
+    <book id="BOOK014">
+      <title>The River's Memory</title>
+      <isbn>978-4680135792</isbn>
+      <publisher>Global Literature</publisher>
+      <publicationDate>2019-10-08</publicationDate>
+      <edition>1</edition>
+      <pages>412</pages>
+      <language>English</language>
+      <subcategoryRef>SUBCAT001</subcategoryRef>
+      <summary>In this multigenerational saga spanning colonial times to the present, a river in West Africa becomes the silent witness to one family's journey through historical upheaval, independence, and modernization. As environmental crisis threatens the river, the youngest descendant must reconcile tradition and progress to save her heritage.</summary>
+      <reviews>
+        <review>
+          <reviewer>African Literary Review</reviewer>
+          <rating>5.0</rating>
+          <comment>Okonkwo's prose flows like the river at the heart of her story, carrying readers through time with lyrical power and historical insight.</comment>
+          <date>2019-11-05</date>
+        </review>
+        <review>
+          <reviewer>World Fiction Today</reviewer>
+          <rating>4.5</rating>
+          <comment>A magnificent achievement that weaves environmental concerns into a rich tapestry of family, memory, and national identity.</comment>
+          <date>2019-11-15</date>
+        </review>
+      </reviews>
+      <copies>
+        <copy>
+          <id>CP014001</id>
+          <condition>Good</condition>
+          <location>Shelf A-29</location>
+          <status>Available</status>
+          <acquisitionDate>2019-10-20</acquisitionDate>
+        </copy>
+        <copy>
+          <id>CP014002</id>
+          <condition>Fair</condition>
+          <location>Shelf A-29</location>
+          <status>Available</status>
+          <acquisitionDate>2019-10-20</acquisitionDate>
+        </copy>
+      </copies>
+    </book>
+    <book id="BOOK015">
+      <title>Between Two Worlds</title>
+      <isbn>978-5791346802</isbn>
+      <publisher>Global Literature</publisher>
+      <publicationDate>2021-07-15</publicationDate>
+      <edition>1</edition>
+      <pages>376</pages>
+      <language>English</language>
+      <subcategoryRef>SUBCAT001</subcategoryRef>
+      <summary>Zara, a young woman born in Nigeria but raised in London, returns to her ancestral village after her grandmother's death. As she navigates cultural expectations, family secrets, and her own divided identity, Zara discovers unexpected connections that bridge her two worlds.</summary>
+      <reviews>
+        <review>
+          <reviewer>Diaspora Literature</reviewer>
+          <rating>5.0</rating>
+          <comment>Okonkwo brilliantly captures the complexity of belonging neither here nor there, creating a protagonist whose journey will resonate with anyone who has straddled different cultures.</comment>
+          <date>2021-08-10</date>
+        </review>
+        <review>
+          <reviewer>Contemporary Fiction Review</reviewer>
+          <rating>4.5</rating>
+          <comment>A beautifully observed novel that explores identity, inheritance, and reconciliation with humor, compassion, and unflinching honesty.</comment>
+          <date>2021-08-22</date>
+        </review>
+      </reviews>
+      <copies>
+        <copy>
+          <id>CP015001</id>
+          <condition>Excellent</condition>
+          <location>Shelf A-30</location>
+          <status>Available</status>
+          <acquisitionDate>2021-07-30</acquisitionDate>
+        </copy>
+        <copy>
+          <id>CP015002</id>
+          <condition>Excellent</condition>
+          <location>Shelf A-30</location>
+          <status>Checked Out</status>
+          <acquisitionDate>2021-07-30</acquisitionDate>
+          <dueDate>2025-05-12</dueDate>
+        </copy>
+        <copy>
+          <id>CP015003</id>
+          <condition>Good</condition>
+          <location>Shelf A-30</location>
+          <status>Available</status>
+          <acquisitionDate>2021-07-30</acquisitionDate>
+        </copy>
+      </copies>
+    </book>
+  </books>
+  
+  <patrons>
+    <patron id="PAT001">
+      <name>
+        <firstName>Emily</firstName>
+        <lastName>Wilson</lastName>
+      </name>
+      <contactInfo>
+        <email>emily.wilson@example.com</email>
+        <phone>(555) 234-5678</phone>
+        <address>
+          <street>456 Oak Avenue</street>
+          <city>Bookville</city>
+          <state>LT</state>
+          <zip>12345</zip>
+        </address>
+      </contactInfo>
+      <membershipDate>2018-03-15</membershipDate>
+      <membershipType>Standard</membershipType>
+      <checkoutHistory>
+        <checkout>
+          <bookId>BOOK001</bookId>
+          <copyId>CP001002</copyId>
+          <checkoutDate>2025-04-12</checkoutDate>
+          <dueDate>2025-05-10</dueDate>
+          <status>Active</status>
+        </checkout>
+        <checkout>
+          <bookId>BOOK007</bookId>
+          <copyId>CP007002</copyId>
+          <checkoutDate>2025-04-10</checkoutDate>
+          <dueDate>2025-05-08</dueDate>
+          <status>Active</status>
+        </checkout>
+        <checkout>
+          <bookId>BOOK004</bookId>
+          <copyId>CP004001</copyId>
+          <checkoutDate>2025-01-15</checkoutDate>
+          <dueDate>2025-02-12</dueDate>
+          <status>Returned</status>
+          <returnDate>2025-02-10</returnDate>
+        </checkout>
+      </checkoutHistory>
+      <fines>
+        <fine>
+          <amount>2.50</amount>
+          <reason>Late return</reason>
+          <date>2024-11-10</date>
+          <status>Paid</status>
+          <paymentDate>2024-11-15</paymentDate>
+        </fine>
+      </fines>
+    </patron>
+    <patron id="PAT002">
+      <name>
+        <firstName>Michael</firstName>
+        <lastName>Chen</lastName>
+      </name>
+      <contactInfo>
+        <email>michael.chen@example.com</email>
+        <phone>(555) 345-6789</phone>
+        <address>
+          <street>789 Maple Street</street>
+          <city>Bookville</city>
+          <state>LT</state>
+          <zip>12345</zip>
+        </address>
+      </contactInfo>
+      <membershipDate>2019-07-22</membershipDate>
+      <membershipType>Premium</membershipType>
+      <checkoutHistory>
+        <checkout>
+          <bookId>BOOK003</bookId>
+          <copyId>CP003001</copyId>
+          <checkoutDate>2025-04-17</checkoutDate>
+          <dueDate>2025-05-15</dueDate>
+          <status>Active</status>
+        </checkout>
+        <checkout>
+          <bookId>BOOK011</bookId>
+          <copyId>CP011002</copyId>
+          <checkoutDate>2025-04-20</checkoutDate>
+          <dueDate>2025-05-18</dueDate>
+          <status>Active</status>
+        </checkout>
+        <checkout>
+          <bookId>BOOK008</bookId>
+          <copyId>CP008001</copyId>
+          <checkoutDate>2025-03-01</checkoutDate>
+          <dueDate>2025-03-29</dueDate>
+          <status>Returned</status>
+          <returnDate>2025-03-25</returnDate>
+        </checkout>
+        <checkout>
+          <bookId>BOOK006</bookId>
+          <copyId>CP006001</copyId>
+          <checkoutDate>2025-03-01</checkoutDate>
+          <dueDate>2025-03-29</dueDate>
+          <status>Returned</status>
+          <returnDate>2025-03-25</returnDate>
+        </checkout>
+      </checkoutHistory>
+      <fines>
+        <fine>
+          <amount>0.00</amount>
+          <reason>No active fines</reason>
+          <date>N/A</date>
+          <status>N/A</status>
+          <paymentDate>N/A</paymentDate>
+        </fine>
+      </fines>
+    </patron>
+    <patron id="PAT003">
+      <name>
+        <firstName>Sophia</firstName>
+        <lastName>Rodriguez</lastName>
+      </name>
+      <contactInfo>
+        <email>sophia.rodriguez@example.com</email>
+        <phone>(555) 456-7890</phone>
+        <address>
+          <street>101 Pine Lane</street>
+          <city>Bookville</city>
+          <state>LT</state>
+          <zip>12345</zip>
+        </address>
+      </contactInfo>
+      <membershipDate>2020-02-14</membershipDate>
+      <membershipType>Standard</membershipType>
+      <checkoutHistory>
+        <checkout>
+          <bookId>BOOK005</bookId>
+          <copyId>CP005001</copyId>
+          <checkoutDate>2025-04-07</checkoutDate>
+          <dueDate>2025-05-05</dueDate>
+          <status>Active</status>
+        </checkout>
+        <checkout>
+          <bookId>BOOK013</bookId>
+          <copyId>CP013002</copyId>
+          <checkoutDate>2025-04-17</checkoutDate>
+          <dueDate>2025-05-15</dueDate>
+          <status>Active</status>
+        </checkout>
+        <checkout>
+          <bookId>BOOK002</bookId>
+          <copyId>CP002001</copyId>
+          <checkoutDate>2025-02-10</checkoutDate>
+          <dueDate>2025-03-10</dueDate>
+          <status>Returned</status>
+          <returnDate>2025-03-08</returnDate>
+        </checkout>
+      </checkoutHistory>
+      <fines>
+        <fine>
+          <amount>5.00</amount>
+          <reason>Damaged book</reason>
+          <date>2024-12-05</date>
+          <status>Unpaid</status>
+          <paymentDate>N/A</paymentDate>
+        </fine>
+      </fines>
+    </patron>
+    <patron id="PAT004">
+      <name>
+        <firstName>James</firstName>
+        <lastName>Williams</lastName>
+      </name>
+      <contactInfo>
+        <email>james.williams@example.com</email>
+        <phone>(555) 567-8901</phone>
+        <address>
+          <street>222 Cedar Road</street>
+          <city>Bookville</city>
+          <state>LT</state>
+          <zip>12345</zip>
+        </address>
+      </contactInfo>
+      <membershipDate>2021-09-30</membershipDate>
+      <membershipType>Premium</membershipType>
+      <checkoutHistory>
+        <checkout>
+          <bookId>BOOK009</bookId>
+          <copyId>CP009003</copyId>
+          <checkoutDate>2025-04-22</checkoutDate>
+          <dueDate>2025-05-20</dueDate>
+          <status>Active</status>
+        </checkout>
+        <checkout>
+          <bookId>BOOK015</bookId>
+          <copyId>CP015002</copyId>
+          <checkoutDate>2025-04-14</checkoutDate>
+          <dueDate>2025-05-12</dueDate>
+          <status>Active</status>
+        </checkout>
+        <checkout>
+          <bookId>BOOK012</bookId>
+          <copyId>CP012001</copyId>
+          <checkoutDate>2025-01-20</checkoutDate>
+          <dueDate>2025-02-17</dueDate>
+          <status>Returned</status>
+          <returnDate>2025-02-15</returnDate>
+        </checkout>
+        <checkout>
+          <bookId>BOOK004</bookId>
+          <copyId>CP004002</copyId>
+          <checkoutDate>2025-01-20</checkoutDate>
+          <dueDate>2025-02-17</dueDate>
+          <status>Returned</status>
+          <returnDate>2025-02-10</returnDate>
+        </checkout>
+      </checkoutHistory>
+      <fines>
+        <fine>
+          <amount>0.00</amount>
+          <reason>No active fines</reason>
+          <date>N/A</date>
+          <status>N/A</status>
+          <paymentDate>N/A</paymentDate>
+        </fine>
+      </fines>
+    </patron>
+  </patrons>
+  
+  <events>
+    <event id="EVT001">
+      <title>Author Talk: Jane Doe</title>
+      <description>Bestselling science fiction author Jane Doe will discuss her latest novel, "Echoes of Earth," and her approach to world-building. Book signing to follow.</description>
+      <date>2025-05-15</date>
+      <time>18:30-20:00</time>
+      <location>Main Reading Room</location>
+      <capacity>75</capacity>
+      <registeredAttendees>42</registeredAttendees>
+      <contact>events@metrolibrary.org</contact>
+    </event>
+    <event id="EVT002">
+      <title>Children's Story Hour</title>
+      <description>Interactive storytelling session for children ages 3-6, featuring books about friendship and cooperation.</description>
+      <date>2025-05-10</date>
+      <time>10:30-11:30</time>
+      <location>Children's Area</location>
+      <capacity>25</capacity>
+      <registeredAttendees>18</registeredAttendees>
+      <contact>children@metrolibrary.org</contact>
+    </event>
+    <event id="EVT003">
+      <title>Digital Literacy Workshop for Seniors</title>
+      <description>Basic computer skills workshop designed for seniors. Topics include email, internet searching, and video calling with family members.</description>
+      <date>2025-05-12</date>
+      <time>14:00-16:00</time>
+      <location>Computer Lab</location>
+      <capacity>15</capacity>
+      <registeredAttendees>12</registeredAttendees>
+      <contact>workshops@metrolibrary.org</contact>
+    </event>
+    <event id="EVT004">
+      <title>Science Fiction Book Club</title>
+      <description>Monthly meeting to discuss "The Quantum Paradox" by Jane Doe. New members welcome!</description>
+      <date>2025-05-20</date>
+      <time>19:00-20:30</time>
+      <location>Group Study Room B</location>
+      <capacity>20</capacity>
+      <registeredAttendees>15</registeredAttendees>
+      <contact>bookclubs@metrolibrary.org</contact>
+    </event>
+    <event id="EVT005">
+      <title>Resume Writing Workshop</title>
+      <description>Learn effective resume writing techniques from career counselor Sarah Johnson. Attendees should bring their current resume for review.</description>
+      <date>2025-05-18</date>
+      <time>15:00-17:00</time>
+      <location>Community Room</location>
+      <capacity>30</capacity>
+      <registeredAttendees>22</registeredAttendees>
+      <contact>workshops@metrolibrary.org</contact>
+    </event>
+  </events>
+  
+  <services>
+    <service id="SRV001">
+      <name>Interlibrary Loan</name>
+      <description>Request books from other libraries when they are not available in our collection.</description>
+      <cost>2.00</cost>
+      <availableTo>All patrons</availableTo>
+      <contactEmail>ill@metrolibrary.org</contactEmail>
+    </service>
+    <service id="SRV002">
+      <name>Print and Copy Services</name>
+      <description>Black and white or color printing and photocopying services.</description>
+      <cost>0.10 (B&amp;W), 0.50 (Color)</cost>
+      <availableTo>All patrons</availableTo>
+      <contactEmail>info@metrolibrary.org</contactEmail>
+    </service>
+    <service id="SRV003">
+      <name>Study Room Reservation</name>
+      <description>Private study rooms for individuals or small groups.</description>
+      <cost>0.00 (Standard), 0.00 (Premium)</cost>
+      <availableTo>All patrons</availableTo>
+      <contactEmail>rooms@metrolibrary.org</contactEmail>
+    </service>
+    <service id="SRV004">
+      <name>Computer Access</name>
+      <description>Access to computers with internet and productivity software.</description>
+      <cost>0.00</cost>
+      <availableTo>All patrons</availableTo>
+      <contactEmail>tech@metrolibrary.org</contactEmail>
+    </service>
+    <service id="SRV005">
+      <name>Research Assistance</name>
+      <description>Professional research help from librarians for academic, professional, or personal projects.</description>
+      <cost>0.00 (Basic), 25.00/hour (Advanced)</cost>
+      <availableTo>Basic: All patrons, Advanced: Premium members</availableTo>
+      <contactEmail>research@metrolibrary.org</contactEmail>
+    </service>
+    <service id="SRV006">
+      <name>E-Book Lending</name>
+      <description>Borrow e-books and audiobooks through our digital platform.</description>
+      <cost>0.00</cost>
+      <availableTo>All patrons</availableTo>
+      <contactEmail>digital@metrolibrary.org</contactEmail>
+    </service>
+    <service id="SRV007">
+      <name>Community Meeting Space</name>
+      <description>Large meeting room rental for community events and activities.</description>
+      <cost>25.00/hour (Non-profit), 50.00/hour (For-profit)</cost>
+      <availableTo>Local organizations and community groups</availableTo>
+      <contactEmail>rooms@metrolibrary.org</contactEmail>
+    </service>
+  </services>
+</library>
