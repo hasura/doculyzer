@@ -2,8 +2,9 @@ import datetime
 import json
 import logging
 import os
-import time
 from typing import Optional, Dict, Any, List, Tuple
+
+import time
 
 from .element_relationship import ElementRelationship
 
@@ -595,14 +596,14 @@ class SQLiteDocumentDatabase(DocumentDatabase):
 
         return relationships
 
-    def get_element(self, element_pk: int) -> Optional[Dict[str, Any]]:
+    def get_element(self, element_pk: int | str) -> Optional[Dict[str, Any]]:
         """Get element by ID."""
         if not self.conn:
             raise ValueError("Database not initialized")
 
         cursor = self.conn.execute(
-            "SELECT * FROM elements WHERE element_pk = ?",
-            (element_pk,)
+            "SELECT * FROM elements WHERE element_pk = ? OR element_id = ?",
+            (element_pk if str(element_pk).isnumeric() else -1, str(element_pk))
         )
 
         row = cursor.fetchone()

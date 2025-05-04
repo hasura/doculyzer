@@ -3,5 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="Python 3.12 (doculyzer)" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="Remote Python 3.9.21 (sftp://ec2-user@ec2-18-227-49-45.us-east-2.compute.amazonaws.com:22/home/ec2-user/.virtualenvs/doculyzer/bin/python)" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.12 (doculyzer)" project-jdk-type="Python SDK" />
 </project>

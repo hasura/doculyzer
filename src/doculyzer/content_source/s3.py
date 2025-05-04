@@ -8,9 +8,10 @@ import logging
 import os
 import re
 import tempfile
-import time
 from typing import Dict, Any, List, Optional
 from urllib.parse import urlparse
+
+import time
 
 from .base import ContentSource
 from .utils import detect_content_type

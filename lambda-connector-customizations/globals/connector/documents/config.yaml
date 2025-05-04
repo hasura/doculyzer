@@ -23,7 +23,7 @@ content_sources:
 #  - name: "Company Confluence"
 #    type: "confluence"
 #    base_url: "https://your-instance.atlassian.net"
-#    username: "your-email@lambda-connector-customizations.com"
+#    username: "your-email@example.com"
 #    api_token: "your-api-token"  # Generate from Atlassian account settings
 #    # Alternatively, use password instead of api_token (not recommended)
 #    # password: "your-password"
@@ -55,14 +55,12 @@ content_sources:
 #    # API settings
 #    expand_macros: true
 #    limit: 500
-  - name: "file-docs"
-    type: "file"
-    base_path: "./assets"
-#    file_pattern: "**/*.{md,docx,xlsx,pptx,pdf,csv,xml,json}"
-    file_pattern: "**/*"
-    include_extensions: ["md", "txt", "xml", "pptx", "csv", "docx", "xlsx"]
-    watch_for_changes: true
-    max_link_depth: 2
+#  - name: "file-docs"
+#    type: "file"
+#    base_path: "./assets"
+#    file_pattern: "**/*.md"
+#    watch_for_changes: true
+#    max_link_depth: 2
   - name: "wikipedia"
     type: "web"
     base_url: "https://en.wikipedia.org"
@@ -76,7 +74,7 @@ content_sources:
       - "/Category:"
       - "/File:"
     headers:
-      User-Agent: "DoculyzerBot/1.0 (educational project; contact@lambda-connector-customizations.com)"
+      User-Agent: "DoculyzerBot/1.0 (educational project; contact@example.com)"
     max_link_depth: 1
     refresh_interval: 604800  # 7 days in seconds
 
@@ -85,7 +83,7 @@ relationship_detection:
   structural: true
   semantic: false
   cross_document_semantic:
-    similarity_threshold: 0.65
+    similarity_threshold: 0.70
 
 logging:
   level: "INFO"

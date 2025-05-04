@@ -2,6 +2,7 @@ import uuid
 from typing import Dict, Any, List, Optional
 
 from .base import RelationshipDetector
+from ..storage import ElementType
 
 
 class ExplicitLinkDetector(RelationshipDetector):
@@ -123,7 +124,7 @@ class ExplicitLinkDetector(RelationshipDetector):
 
         # Check for header text match
         for element in elements:
-            if element.get("element_type") == "header":
+            if element.get("element_type") == ElementType.HEADER.value:
                 header_text = element.get("metadata", {}).get("text", "")
 
                 if header_text and (header_text == link_text or header_text == link_target):

@@ -103,10 +103,9 @@ class DocumentParser(ABC):
         """
         pass
 
-
     @abstractmethod
     def _resolve_element_text(self, location_data: Dict[str, Any],
-                                 source_content: Optional[Union[str, bytes]]) -> str:
+                              source_content: Optional[Union[str, bytes]]) -> str:
         """
         Resolve content for specific element types.
 

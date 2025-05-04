@@ -6,11 +6,11 @@ This module provides integration with Atlassian Confluence via its REST API.
 
 import logging
 import re
-import time
 from typing import Dict, Any, List, Optional
 from urllib.parse import urljoin
 
 import requests
+import time
 
 from .base import ContentSource
 

@@ -10,6 +10,9 @@ import os
 import re
 from typing import Dict, Any, List, Optional, Union
 
+from ..relationships import RelationshipType
+from ..storage import ElementType
+
 try:
     import pptx
     # noinspection PyUnresolvedReferences
@@ -74,34 +77,34 @@ class PptxParser(DocumentParser):
         element_type = location_data.get("type", "")
 
         # Handle specific element types
-        if element_type == "presentation_body":
+        if element_type == ElementType.PRESENTATION_BODY.value:
             return content.strip()
 
-        elif element_type == "slide":
+        elif element_type == ElementType.SLIDE.value:
             return content.strip()
 
-        elif element_type == "text_box" or element_type == "paragraph":
+        elif element_type == ElementType.TEXT_BOX.value or element_type == ElementType.PARAGRAPH.value:
             return content.strip()
 
-        elif element_type == "table" or element_type == "table_cell":
+        elif element_type == ElementType.TABLE.value or element_type == ElementType.TABLE_CELL.value:
             # The improved _resolve_element_content already formats tables properly
             return content.strip()
 
-        elif element_type == "slide_notes":
+        elif element_type == ElementType.SLIDE_NOTES.value:
             return content.strip()
 
-        elif element_type == "comment":
+        elif element_type == ElementType.COMMENT.value:
             # For comments, extract just the comment text without metadata
             if ": " in content:
                 return content.split(": ", 1)[1].strip()
             return content.strip()
 
-        elif element_type == "image":
+        elif element_type == ElementType.IMAGE.value:
             if "Alt text: " in content:
                 return content.split("Alt text: ", 1)[1].strip()
             return "Image"
 
-        elif element_type == "chart":
+        elif element_type == ElementType.CHART.value:
             if "Chart: " in content and "\n" in content:
                 return content.split("\n")[0].replace("Chart: ", "").strip()
             return content.strip()
@@ -158,12 +161,12 @@ class PptxParser(DocumentParser):
                     raise ValueError(f"Error loading PPTX document: {str(e)}")
 
             # Handle different element types
-            if element_type == "presentation_body":
+            if element_type == ElementType.PRESENTATION_BODY.value:
                 # Return basic presentation information
                 slide_count = len(presentation.slides)
                 return f"Presentation with {slide_count} slides"
 
-            elif element_type == "slide":
+            elif element_type == ElementType.SLIDE.value:
                 # Check if slide index is valid
                 if slide_index < 0 or slide_index >= len(presentation.slides):
                     return f"Invalid slide index: {slide_index}. Presentation has {len(presentation.slides)} slides."
@@ -181,7 +184,7 @@ class PptxParser(DocumentParser):
 
                 return "\n\n".join(all_text)
 
-            elif element_type == "text_box":
+            elif element_type == ElementType.TEXT_BOX.value:
                 # Extract text from a text box shape
                 shape_path = location_data.get("shape_path", "")
                 if not shape_path:
@@ -203,7 +206,7 @@ class PptxParser(DocumentParser):
 
                 return shape.text_frame.text
 
-            elif element_type == "paragraph":
+            elif element_type == ElementType.PARAGRAPH.value:
                 # Extract specific paragraph from a text shape
                 shape_path = location_data.get("shape_path", "")
                 paragraph_index = location_data.get("paragraph_index", 0)
@@ -228,7 +231,7 @@ class PptxParser(DocumentParser):
 
                 return shape.text_frame.paragraphs[paragraph_index].text
 
-            elif element_type == "table":
+            elif element_type == ElementType.TABLE.value:
                 # Extract table content with proper formatting
                 shape_path = location_data.get("shape_path", "")
 
@@ -265,7 +268,7 @@ class PptxParser(DocumentParser):
                 # Return formatted table
                 return "\n".join(rows_text)
 
-            elif element_type == "table_cell":
+            elif element_type == ElementType.TABLE_CELL.value:
                 # Extract cell content from a table
                 shape_path = location_data.get("shape_path", "")
                 row = location_data.get("row", 0)
@@ -296,7 +299,7 @@ class PptxParser(DocumentParser):
                 cell = table.cell(row, col)
                 return cell.text_frame.text if hasattr(cell, 'text_frame') else ""
 
-            elif element_type == "slide_notes":
+            elif element_type == ElementType.SLIDE_NOTES.value:
                 # Extract notes from a slide
                 # Check if slide index is valid
                 if slide_index < 0 or slide_index >= len(presentation.slides):
@@ -312,7 +315,7 @@ class PptxParser(DocumentParser):
                 # Return notes text
                 return slide.notes_slide.notes_text_frame.text
 
-            elif element_type == "comment":
+            elif element_type == ElementType.COMMENT.value:
                 # Extract a specific comment
                 comment_index = location_data.get("comment_index", 0)
 
@@ -344,7 +347,7 @@ class PptxParser(DocumentParser):
                 else:
                     return f"Comment by {author}: {text}"
 
-            elif element_type == "image":
+            elif element_type == ElementType.IMAGE.value:
                 # Return information about an image
                 shape_path = location_data.get("shape_path", "")
 
@@ -369,7 +372,7 @@ class PptxParser(DocumentParser):
 
                 return f"Image: {image_name}\nAlt text: {alt_text}"
 
-            elif element_type == "chart":
+            elif element_type == ElementType.CHART.value:
                 # Return information about a chart
                 shape_path = location_data.get("shape_path", "")
 
@@ -527,7 +530,9 @@ class PptxParser(DocumentParser):
 
         # Extract hyperlinks from text shapes
         for element in elements:
-            if element["element_type"] in ["text_box", "paragraph", "table_cell"]:
+            if element["element_type"] in [ElementType.TEXT_BOX.value, ElementType.PARAGRAPH.value,
+                                           ElementType.TABLE_CELL.value, ElementType.SLIDE_NOTES.value,
+                                           ElementType.COMMENT.value]:
                 element_id = element["element_id"]
                 text = element.get("metadata", {}).get("text", "")
 
@@ -560,7 +565,7 @@ class PptxParser(DocumentParser):
                         # Find target slide element
                         target_slide = None
                         for slide_elem in elements:
-                            if (slide_elem["element_type"] == "slide" and
+                            if (slide_elem["element_type"] == ElementType.SLIDE.value and
                                     slide_elem.get("metadata", {}).get("number") == slide_num):
                                 target_slide = slide_elem
                                 break
@@ -637,8 +642,12 @@ class PptxParser(DocumentParser):
         elements = [self._create_root_element(doc_id, source_id)]
         root_id = elements[0]["element_id"]
 
-        # Parse document elements
-        elements.extend(self._parse_presentation(presentation, doc_id, root_id, source_id))
+        # Initialize relationships list
+        relationships = []
+
+        # Parse document elements and create relationships
+        new_elements = self._parse_presentation(presentation, doc_id, root_id, source_id, relationships)
+        elements.extend(new_elements)
 
         # Extract links from the document using the helper method
         links = self._extract_document_links(presentation, elements)
@@ -651,12 +660,12 @@ class PptxParser(DocumentParser):
             except Exception as e:
                 logger.warning(f"Failed to delete temporary file {binary_path}: {str(e)}")
 
-        # Return the parsed document with extracted links
+        # Return the parsed document with extracted links and relationships
         return {
             "document": document,
             "elements": elements,
             "links": links,
-            "relationships": []
+            "relationships": relationships
         }
 
     @staticmethod
@@ -712,16 +721,17 @@ class PptxParser(DocumentParser):
 
         return metadata
 
-    def _parse_presentation(self, presentation: Presentation, doc_id: str, parent_id: str, source_id: str) -> List[
-        Dict[str, Any]]:
+    def _parse_presentation(self, presentation: Presentation, doc_id: str, parent_id: str, source_id: str,
+                            relationships: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Parse PowerPoint presentation into structured elements.
+        Parse PowerPoint presentation into structured elements and create relationships.
 
         Args:
             presentation: The PPTX presentation
             doc_id: Document ID
             parent_id: Parent element ID
             source_id: Source identifier
+            relationships: List to add relationships to
 
         Returns:
             List of parsed elements
@@ -733,12 +743,12 @@ class PptxParser(DocumentParser):
         body_element = {
             "element_id": body_id,
             "doc_id": doc_id,
-            "element_type": "presentation_body",
+            "element_type": ElementType.PRESENTATION_BODY.value,
             "parent_id": parent_id,
             "content_preview": "Presentation body",
             "content_location": json.dumps({
                 "source": source_id,
-                "type": "presentation_body"
+                "type": ElementType.PRESENTATION_BODY.value
             }),
             "content_hash": "",
             "metadata": {
@@ -747,6 +757,30 @@ class PptxParser(DocumentParser):
         }
         elements.append(body_element)
 
+        # Create relationship between document root and presentation body
+        contains_relationship = {
+            "relationship_id": self._generate_id("rel_"),
+            "source_id": parent_id,
+            "target_id": body_id,
+            "relationship_type": RelationshipType.CONTAINS.value,
+            "metadata": {
+                "confidence": 1.0
+            }
+        }
+        relationships.append(contains_relationship)
+
+        # Create inverse relationship
+        contained_by_relationship = {
+            "relationship_id": self._generate_id("rel_"),
+            "source_id": body_id,
+            "target_id": parent_id,
+            "relationship_type": RelationshipType.CONTAINED_BY.value,
+            "metadata": {
+                "confidence": 1.0
+            }
+        }
+        relationships.append(contained_by_relationship)
+
         # Process slides
         for slide_idx, slide in enumerate(presentation.slides):
             # Skip hidden slides if not configured to extract them
@@ -754,18 +788,287 @@ class PptxParser(DocumentParser):
                 continue
 
             # Process this slide
-            slide_elements = self._process_slide(slide, slide_idx, doc_id, body_id, source_id)
+            slide_elements = self._process_slide(slide, slide_idx, doc_id, body_id, source_id, relationships)
             elements.extend(slide_elements)
 
         # Extract masters if configured
         if self.extract_masters and hasattr(presentation, 'slide_masters'):
-            master_elements = self._extract_slide_masters(presentation, doc_id, parent_id, source_id)
+            master_elements = self._extract_slide_masters(presentation, doc_id, parent_id, source_id, relationships)
             elements.extend(master_elements)
 
         # Extract templates if configured
         if self.extract_templates and hasattr(presentation, 'slide_layouts'):
-            template_elements = self._extract_slide_templates(presentation, doc_id, parent_id, source_id)
+            template_elements = self._extract_slide_templates(presentation, doc_id, parent_id, source_id, relationships)
             elements.extend(template_elements)
+
+        return elements
+
+    def _extract_slide_masters(self, presentation, doc_id: str, parent_id: str, source_id: str,
+                               relationships: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Extract slide masters from presentation and create relationships.
+
+        Args:
+            presentation: The PPTX presentation
+            doc_id: Document ID
+            parent_id: Parent element ID
+            source_id: Source identifier
+            relationships: List to add relationships to
+
+        Returns:
+            List of slide master elements
+        """
+        elements = []
+
+        try:
+            if not hasattr(presentation, 'slide_masters'):
+                return elements
+
+            # Create masters container element
+            masters_id = self._generate_id("masters_")
+
+            masters_element = {
+                "element_id": masters_id,
+                "doc_id": doc_id,
+                "element_type": ElementType.SLIDE_MASTERS.value,
+                "parent_id": parent_id,
+                "content_preview": "Slide Masters",
+                "content_location": json.dumps({
+                    "source": source_id,
+                    "type": ElementType.SLIDE_MASTERS.value
+                }),
+                "content_hash": "",
+                "metadata": {
+                    "master_count": len(presentation.slide_masters)
+                }
+            }
+            elements.append(masters_element)
+
+            # Create relationship from parent to masters container
+            contains_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": parent_id,
+                "target_id": masters_id,
+                "relationship_type": RelationshipType.CONTAINS.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(contains_relationship)
+
+            # Create inverse relationship
+            contained_by_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": masters_id,
+                "target_id": parent_id,
+                "relationship_type": RelationshipType.CONTAINED_BY.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(contained_by_relationship)
+
+            # Process individual masters
+            for master_idx, master in enumerate(presentation.slide_masters):
+                # Generate master ID
+                master_id = self._generate_id(f"master_{master_idx}_")
+
+                # Create master element
+                master_element = {
+                    "element_id": master_id,
+                    "doc_id": doc_id,
+                    "element_type": ElementType.SLIDE_MASTER.value,
+                    "parent_id": masters_id,
+                    "content_preview": f"Slide Master {master_idx + 1}",
+                    "content_location": json.dumps({
+                        "source": source_id,
+                        "type": ElementType.SLIDE_MASTER.value,
+                        "index": master_idx
+                    }),
+                    "content_hash": self._generate_hash(f"master_{master_idx}"),
+                    "metadata": {
+                        "index": master_idx,
+                        "layout_count": len(master.slide_layouts) if hasattr(master, 'slide_layouts') else 0
+                    }
+                }
+                elements.append(master_element)
+
+                # Create relationship from masters container to master
+                contains_master_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": masters_id,
+                    "target_id": master_id,
+                    "relationship_type": RelationshipType.CONTAINS.value,
+                    "metadata": {
+                        "confidence": 1.0,
+                        "index": master_idx
+                    }
+                }
+                relationships.append(contains_master_relationship)
+
+                # Create inverse relationship
+                master_contained_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": master_id,
+                    "target_id": masters_id,
+                    "relationship_type": RelationshipType.CONTAINED_BY.value,
+                    "metadata": {
+                        "confidence": 1.0
+                    }
+                }
+                relationships.append(master_contained_relationship)
+
+                # Process master shapes if desired
+                if self.extract_shapes and hasattr(master, 'shapes'):
+                    shape_elements = self._process_shapes(master.shapes, doc_id, master_id, source_id, -1,
+                                                          relationships, f"master_{master_idx}")
+                    elements.extend(shape_elements)
+
+        except Exception as e:
+            logger.warning(f"Error extracting slide masters: {str(e)}")
+
+        return elements
+
+    def _extract_slide_templates(self, presentation, doc_id: str, parent_id: str, source_id: str,
+                                 relationships: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Extract slide templates (layouts) from presentation and create relationships.
+
+        Args:
+            presentation: The PPTX presentation
+            doc_id: Document ID
+            parent_id: Parent element ID
+            source_id: Source identifier
+            relationships: List to add relationships to
+
+        Returns:
+            List of slide template elements
+        """
+        elements = []
+
+        try:
+            # Collect all slide layouts from all masters
+            layouts = []
+            layout_names = set()
+
+            if hasattr(presentation, 'slide_masters'):
+                for master in presentation.slide_masters:
+                    if hasattr(master, 'slide_layouts'):
+                        for layout in master.slide_layouts:
+                            # Avoid duplicates by name
+                            layout_name = layout.name if hasattr(layout, 'name') else ""
+                            if layout_name not in layout_names:
+                                layouts.append(layout)
+                                layout_names.add(layout_name)
+
+            if not layouts:
+                return elements
+
+            # Create templates container element
+            templates_id = self._generate_id("templates_")
+
+            templates_element = {
+                "element_id": templates_id,
+                "doc_id": doc_id,
+                "element_type": ElementType.SLIDE_TEMPLATES.value,
+                "parent_id": parent_id,
+                "content_preview": "Slide Templates",
+                "content_location": json.dumps({
+                    "source": source_id,
+                    "type": ElementType.SLIDE_TEMPLATES.value
+                }),
+                "content_hash": "",
+                "metadata": {
+                    "template_count": len(layouts)
+                }
+            }
+            elements.append(templates_element)
+
+            # Create relationship from parent to templates container
+            contains_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": parent_id,
+                "target_id": templates_id,
+                "relationship_type": RelationshipType.CONTAINS.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(contains_relationship)
+
+            # Create inverse relationship
+            contained_by_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": templates_id,
+                "target_id": parent_id,
+                "relationship_type": RelationshipType.CONTAINED_BY.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(contained_by_relationship)
+
+            # Process individual templates
+            for layout_idx, layout in enumerate(layouts):
+                # Generate layout ID
+                layout_id = self._generate_id(f"layout_{layout_idx}_")
+
+                # Get layout name
+                layout_name = layout.name if hasattr(layout, 'name') else f"Layout {layout_idx + 1}"
+
+                # Create layout element
+                layout_element = {
+                    "element_id": layout_id,
+                    "doc_id": doc_id,
+                    "element_type": ElementType.SLIDE_LAYOUT.value,
+                    "parent_id": templates_id,
+                    "content_preview": layout_name,
+                    "content_location": json.dumps({
+                        "source": source_id,
+                        "type": ElementType.SLIDE_LAYOUT.value,
+                        "index": layout_idx
+                    }),
+                    "content_hash": self._generate_hash(f"layout_{layout_idx}"),
+                    "metadata": {
+                        "index": layout_idx,
+                        "name": layout_name
+                    }
+                }
+                elements.append(layout_element)
+
+                # Create relationship from templates container to layout
+                contains_layout_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": templates_id,
+                    "target_id": layout_id,
+                    "relationship_type": RelationshipType.CONTAINS.value,
+                    "metadata": {
+                        "confidence": 1.0,
+                        "index": layout_idx
+                    }
+                }
+                relationships.append(contains_layout_relationship)
+
+                # Create inverse relationship
+                layout_contained_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": layout_id,
+                    "target_id": templates_id,
+                    "relationship_type": RelationshipType.CONTAINED_BY.value,
+                    "metadata": {
+                        "confidence": 1.0
+                    }
+                }
+                relationships.append(layout_contained_relationship)
+
+                # Process layout shapes if desired
+                if self.extract_shapes and hasattr(layout, 'shapes'):
+                    shape_elements = self._process_shapes(layout.shapes, doc_id, layout_id, source_id, -1,
+                                                          relationships, f"layout_{layout_idx}")
+                    elements.extend(shape_elements)
+
+        except Exception as e:
+            logger.warning(f"Error extracting slide templates: {str(e)}")
 
         return elements
 
@@ -808,10 +1111,10 @@ class PptxParser(DocumentParser):
         except (ValueError, IndexError, TypeError):
             return None
 
-    def _process_slide(self, slide: Slide, slide_idx: int, doc_id: str, parent_id: str, source_id: str) -> List[
-        Dict[str, Any]]:
+    def _process_slide(self, slide: Slide, slide_idx: int, doc_id: str, parent_id: str, source_id: str,
+                       relationships: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Process a PowerPoint slide into structured elements.
+        Process a PowerPoint slide into structured elements and create relationships.
 
         Args:
             slide: The PPTX slide
@@ -819,6 +1122,7 @@ class PptxParser(DocumentParser):
             doc_id: Document ID
             parent_id: Parent element ID
             source_id: Source identifier
+            relationships: List to add relationships to
 
         Returns:
             List of slide-related elements
@@ -835,12 +1139,12 @@ class PptxParser(DocumentParser):
         slide_element = {
             "element_id": slide_id,
             "doc_id": doc_id,
-            "element_type": "slide",
+            "element_type": ElementType.SLIDE.value,
             "parent_id": parent_id,
             "content_preview": f"Slide {slide_idx + 1}: {slide_title}" if slide_title else f"Slide {slide_idx + 1}",
             "content_location": json.dumps({
                 "source": source_id,
-                "type": "slide",
+                "type": ElementType.SLIDE.value,
                 "slide_index": slide_idx
             }),
             "content_hash": self._generate_hash(f"slide_{slide_idx}"),
@@ -855,27 +1159,53 @@ class PptxParser(DocumentParser):
         }
         elements.append(slide_element)
 
+        # Create relationship from parent to slide
+        contains_relationship = {
+            "relationship_id": self._generate_id("rel_"),
+            "source_id": parent_id,
+            "target_id": slide_id,
+            "relationship_type": RelationshipType.CONTAINS.value,
+            "metadata": {
+                "confidence": 1.0,
+                "order": slide_idx
+            }
+        }
+        relationships.append(contains_relationship)
+
+        # Create inverse relationship
+        contained_by_relationship = {
+            "relationship_id": self._generate_id("rel_"),
+            "source_id": slide_id,
+            "target_id": parent_id,
+            "relationship_type": RelationshipType.CONTAINED_BY.value,
+            "metadata": {
+                "confidence": 1.0
+            }
+        }
+        relationships.append(contained_by_relationship)
+
         # Process slide shapes
         if self.extract_shapes:
-            shape_elements = self._process_shapes(slide.shapes, doc_id, slide_id, source_id, slide_idx)
+            shape_elements = self._process_shapes(slide.shapes, doc_id, slide_id, source_id, slide_idx, relationships)
             elements.extend(shape_elements)
 
         # Process slide notes
         if self.extract_notes and slide.notes_slide and slide.notes_slide.notes_text_frame.text:
-            notes_elements = self._process_notes(slide.notes_slide, slide_idx, doc_id, slide_id, source_id)
+            notes_elements = self._process_notes(slide.notes_slide, slide_idx, doc_id, slide_id, source_id,
+                                                 relationships)
             elements.extend(notes_elements)
 
         # Process slide comments if available and configured
         if self.extract_comments and hasattr(slide, 'comments'):
-            comment_elements = self._process_comments(slide, slide_idx, doc_id, slide_id, source_id)
+            comment_elements = self._process_comments(slide, slide_idx, doc_id, slide_id, source_id, relationships)
             elements.extend(comment_elements)
 
         return elements
 
     def _process_shapes(self, shapes, doc_id: str, parent_id: str, source_id: str, slide_idx: int,
-                        shape_path: str = "") -> List[Dict[str, Any]]:
+                        relationships: List[Dict[str, Any]], shape_path: str = "") -> List[Dict[str, Any]]:
         """
-        Process PowerPoint shapes into structured elements.
+        Process PowerPoint shapes into structured elements and create relationships.
 
         Args:
             shapes: Collection of shapes
@@ -883,6 +1213,7 @@ class PptxParser(DocumentParser):
             parent_id: Parent element ID
             source_id: Source identifier
             slide_idx: Slide index
+            relationships: List to add relationships to
             shape_path: Path to the shape (for nested shapes)
 
         Returns:
@@ -903,12 +1234,12 @@ class PptxParser(DocumentParser):
                 group_element = {
                     "element_id": group_id,
                     "doc_id": doc_id,
-                    "element_type": "shape_group",
+                    "element_type": ElementType.SHAPE_GROUP.value,
                     "parent_id": parent_id,
                     "content_preview": f"Shape Group {current_shape_path}",
                     "content_location": json.dumps({
                         "source": source_id,
-                        "type": "shape_group",
+                        "type": ElementType.SHAPE_GROUP.value,
                         "slide_index": slide_idx,
                         "shape_path": current_shape_path
                     }),
@@ -923,33 +1254,58 @@ class PptxParser(DocumentParser):
                 }
                 elements.append(group_element)
 
+                # Create relationship from parent to group
+                contains_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": parent_id,
+                    "target_id": group_id,
+                    "relationship_type": RelationshipType.CONTAINS.value,
+                    "metadata": {
+                        "confidence": 1.0,
+                        "index": shape_idx
+                    }
+                }
+                relationships.append(contains_relationship)
+
+                # Create inverse relationship
+                contained_by_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": group_id,
+                    "target_id": parent_id,
+                    "relationship_type": RelationshipType.CONTAINED_BY.value,
+                    "metadata": {
+                        "confidence": 1.0
+                    }
+                }
+                relationships.append(contained_by_relationship)
+
                 # Process child shapes
                 child_elements = self._process_shapes(shape.shapes, doc_id, group_id, source_id, slide_idx,
-                                                      current_shape_path)
+                                                      relationships, current_shape_path)
                 elements.extend(child_elements)
 
             elif hasattr(shape, 'has_table') and shape.has_table and self.extract_tables:
                 # Process table shape
                 table_elements = self._process_table_shape(shape, doc_id, parent_id, source_id, slide_idx,
-                                                           current_shape_path)
+                                                           relationships, current_shape_path)
                 elements.extend(table_elements)
 
             elif hasattr(shape, 'has_chart') and shape.has_chart and self.extract_charts:
                 # Process chart shape
                 chart_elements = self._process_chart_shape(shape, doc_id, parent_id, source_id, slide_idx,
-                                                           current_shape_path)
+                                                           relationships, current_shape_path)
                 elements.extend(chart_elements)
 
             elif isinstance(shape, Picture) and self.extract_images:
                 # Process picture shape
                 picture_elements = self._process_picture_shape(shape, doc_id, parent_id, source_id, slide_idx,
-                                                               current_shape_path)
+                                                               relationships, current_shape_path)
                 elements.extend(picture_elements)
 
             elif hasattr(shape, 'has_text_frame') and shape.has_text_frame and self.extract_text_boxes:
                 # Process text shape
                 text_elements = self._process_text_shape(shape, doc_id, parent_id, source_id, slide_idx,
-                                                         current_shape_path)
+                                                         relationships, current_shape_path)
                 elements.extend(text_elements)
 
             elif self.extract_shapes:
@@ -964,12 +1320,12 @@ class PptxParser(DocumentParser):
                 shape_element = {
                     "element_id": shape_id,
                     "doc_id": doc_id,
-                    "element_type": "shape",
+                    "element_type": ElementType.SHAPE.value,
                     "parent_id": parent_id,
                     "content_preview": f"Shape: {shape_name}" if shape_name else f"Shape {current_shape_path}",
                     "content_location": json.dumps({
                         "source": source_id,
-                        "type": "shape",
+                        "type": ElementType.SHAPE.value,
                         "slide_index": slide_idx,
                         "shape_path": current_shape_path
                     }),
@@ -984,12 +1340,38 @@ class PptxParser(DocumentParser):
                 }
                 elements.append(shape_element)
 
+                # Create relationship from parent to shape
+                contains_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": parent_id,
+                    "target_id": shape_id,
+                    "relationship_type": RelationshipType.CONTAINS.value,
+                    "metadata": {
+                        "confidence": 1.0,
+                        "index": shape_idx
+                    }
+                }
+                relationships.append(contains_relationship)
+
+                # Create inverse relationship
+                contained_by_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": shape_id,
+                    "target_id": parent_id,
+                    "relationship_type": RelationshipType.CONTAINED_BY.value,
+                    "metadata": {
+                        "confidence": 1.0
+                    }
+                }
+                relationships.append(contained_by_relationship)
+
         return elements
 
     def _process_text_shape(self, shape, doc_id: str, parent_id: str, source_id: str,
-                            slide_idx: int, shape_path: str) -> List[Dict[str, Any]]:
+                            slide_idx: int, relationships: List[Dict[str, Any]],
+                            shape_path: str) -> List[Dict[str, Any]]:
         """
-        Process a text shape into structured elements.
+        Process a text shape into structured elements and create relationships.
 
         Args:
             shape: The text shape
@@ -997,6 +1379,7 @@ class PptxParser(DocumentParser):
             parent_id: Parent element ID
             source_id: Source identifier
             slide_idx: Slide index
+            relationships: List to add relationships to
             shape_path: Path to the shape
 
         Returns:
@@ -1024,12 +1407,12 @@ class PptxParser(DocumentParser):
             text_element = {
                 "element_id": text_id,
                 "doc_id": doc_id,
-                "element_type": "text_box",
+                "element_type": ElementType.TEXT_BOX.value,
                 "parent_id": parent_id,
                 "content_preview": text[:100] + ("..." if len(text) > 100 else ""),
                 "content_location": json.dumps({
                     "source": source_id,
-                    "type": "text_box",
+                    "type": ElementType.TEXT_BOX.value,
                     "slide_index": slide_idx,
                     "shape_path": shape_path
                 }),
@@ -1045,6 +1428,30 @@ class PptxParser(DocumentParser):
             }
             elements.append(text_element)
 
+            # Create relationship from parent to text box
+            contains_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": parent_id,
+                "target_id": text_id,
+                "relationship_type": RelationshipType.CONTAINS.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(contains_relationship)
+
+            # Create inverse relationship
+            contained_by_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": text_id,
+                "target_id": parent_id,
+                "relationship_type": RelationshipType.CONTAINED_BY.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(contained_by_relationship)
+
             # Process paragraphs if detailed paragraph extraction is desired
             if hasattr(text_frame, 'paragraphs') and len(text_frame.paragraphs) > 1:
                 for para_idx, paragraph in enumerate(text_frame.paragraphs):
@@ -1057,12 +1464,12 @@ class PptxParser(DocumentParser):
                     para_element = {
                         "element_id": para_id,
                         "doc_id": doc_id,
-                        "element_type": "paragraph",
+                        "element_type": ElementType.PARAGRAPH.value,
                         "parent_id": text_id,
                         "content_preview": para_text[:100] + ("..." if len(para_text) > 100 else ""),
                         "content_location": json.dumps({
                             "source": source_id,
-                            "type": "paragraph",
+                            "type": ElementType.PARAGRAPH.value,
                             "slide_index": slide_idx,
                             "shape_path": shape_path,
                             "paragraph_index": para_idx
@@ -1078,15 +1485,41 @@ class PptxParser(DocumentParser):
                     }
                     elements.append(para_element)
 
+                    # Create relationship from text box to paragraph
+                    contains_para_relationship = {
+                        "relationship_id": self._generate_id("rel_"),
+                        "source_id": text_id,
+                        "target_id": para_id,
+                        "relationship_type": RelationshipType.CONTAINS_TEXT.value,
+                        "metadata": {
+                            "confidence": 1.0,
+                            "index": para_idx
+                        }
+                    }
+                    relationships.append(contains_para_relationship)
+
+                    # Create inverse relationship
+                    para_contained_relationship = {
+                        "relationship_id": self._generate_id("rel_"),
+                        "source_id": para_id,
+                        "target_id": text_id,
+                        "relationship_type": RelationshipType.CONTAINED_BY.value,
+                        "metadata": {
+                            "confidence": 1.0
+                        }
+                    }
+                    relationships.append(para_contained_relationship)
+
         except Exception as e:
             logger.warning(f"Error processing text shape: {str(e)}")
 
         return elements
 
     def _process_picture_shape(self, shape, doc_id: str, parent_id: str, source_id: str,
-                               slide_idx: int, shape_path: str) -> List[Dict[str, Any]]:
+                               slide_idx: int, relationships: List[Dict[str, Any]],
+                               shape_path: str) -> List[Dict[str, Any]]:
         """
-        Process a picture shape into structured elements.
+        Process a picture shape into structured elements and create relationships.
 
         Args:
             shape: The picture shape
@@ -1094,6 +1527,7 @@ class PptxParser(DocumentParser):
             parent_id: Parent element ID
             source_id: Source identifier
             slide_idx: Slide index
+            relationships: List to add relationships to
             shape_path: Path to the shape
 
         Returns:
@@ -1116,12 +1550,12 @@ class PptxParser(DocumentParser):
             image_element = {
                 "element_id": image_id,
                 "doc_id": doc_id,
-                "element_type": "image",
+                "element_type": ElementType.IMAGE.value,
                 "parent_id": parent_id,
                 "content_preview": f"Image: {image_name}" if image_name else f"Image {shape_path}",
                 "content_location": json.dumps({
                     "source": source_id,
-                    "type": "image",
+                    "type": ElementType.IMAGE.value,
                     "slide_index": slide_idx,
                     "shape_path": shape_path
                 }),
@@ -1136,10 +1570,34 @@ class PptxParser(DocumentParser):
             }
             elements.append(image_element)
 
+            # Create relationship from parent to image
+            contains_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": parent_id,
+                "target_id": image_id,
+                "relationship_type": RelationshipType.CONTAINS.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(contains_relationship)
+
+            # Create inverse relationship
+            contained_by_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": image_id,
+                "target_id": parent_id,
+                "relationship_type": RelationshipType.CONTAINED_BY.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(contained_by_relationship)
+
             # Process image caption (text) if available
             if hasattr(shape, 'text_frame') and shape.text_frame.text:
                 caption_elements = self._process_text_shape(shape, doc_id, image_id, source_id, slide_idx,
-                                                            f"{shape_path}_caption")
+                                                            relationships, f"{shape_path}_caption")
                 elements.extend(caption_elements)
 
         except Exception as e:
@@ -1148,9 +1606,10 @@ class PptxParser(DocumentParser):
         return elements
 
     def _process_table_shape(self, shape, doc_id: str, parent_id: str, source_id: str,
-                             slide_idx: int, shape_path: str) -> List[Dict[str, Any]]:
+                             slide_idx: int, relationships: List[Dict[str, Any]],
+                             shape_path: str) -> List[Dict[str, Any]]:
         """
-        Process a table shape into structured elements.
+        Process a table shape into structured elements and create relationships.
 
         Args:
             shape: The table shape
@@ -1158,6 +1617,7 @@ class PptxParser(DocumentParser):
             parent_id: Parent element ID
             source_id: Source identifier
             slide_idx: Slide index
+            relationships: List to add relationships to
             shape_path: Path to the shape
 
         Returns:
@@ -1187,12 +1647,12 @@ class PptxParser(DocumentParser):
             table_element = {
                 "element_id": table_id,
                 "doc_id": doc_id,
-                "element_type": "table",
+                "element_type": ElementType.TABLE.value,
                 "parent_id": parent_id,
                 "content_preview": f"Table: {table_text[:100]}" + ("..." if len(table_text) > 100 else ""),
                 "content_location": json.dumps({
                     "source": source_id,
-                    "type": "table",
+                    "type": ElementType.TABLE.value,
                     "slide_index": slide_idx,
                     "shape_path": shape_path
                 }),
@@ -1207,6 +1667,30 @@ class PptxParser(DocumentParser):
             }
             elements.append(table_element)
 
+            # Create relationship from parent to table
+            contains_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": parent_id,
+                "target_id": table_id,
+                "relationship_type": RelationshipType.CONTAINS.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(contains_relationship)
+
+            # Create inverse relationship
+            contained_by_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": table_id,
+                "target_id": parent_id,
+                "relationship_type": RelationshipType.CONTAINED_BY.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(contained_by_relationship)
+
             # Process table rows and cells
             for row_idx, row in enumerate(table.rows):
                 # Generate row element ID
@@ -1216,12 +1700,12 @@ class PptxParser(DocumentParser):
                 row_element = {
                     "element_id": row_id,
                     "doc_id": doc_id,
-                    "element_type": "table_row",
+                    "element_type": ElementType.TABLE_ROW.value,
                     "parent_id": table_id,
                     "content_preview": f"Row {row_idx + 1}",
                     "content_location": json.dumps({
                         "source": source_id,
-                        "type": "table_row",
+                        "type": ElementType.TABLE_ROW.value,
                         "slide_index": slide_idx,
                         "shape_path": shape_path,
                         "row": row_idx
@@ -1234,6 +1718,31 @@ class PptxParser(DocumentParser):
                     }
                 }
                 elements.append(row_element)
+
+                # Create relationship from table to row
+                contains_row_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": table_id,
+                    "target_id": row_id,
+                    "relationship_type": RelationshipType.CONTAINS_TABLE_ROW.value,
+                    "metadata": {
+                        "confidence": 1.0,
+                        "row_index": row_idx
+                    }
+                }
+                relationships.append(contains_row_relationship)
+
+                # Create inverse relationship
+                row_contained_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": row_id,
+                    "target_id": table_id,
+                    "relationship_type": RelationshipType.CONTAINED_BY.value,
+                    "metadata": {
+                        "confidence": 1.0
+                    }
+                }
+                relationships.append(row_contained_relationship)
 
                 # Process cells in this row
                 for col_idx, cell in enumerate(row.cells):
@@ -1249,12 +1758,12 @@ class PptxParser(DocumentParser):
                     cell_element = {
                         "element_id": cell_id,
                         "doc_id": doc_id,
-                        "element_type": "table_cell",
+                        "element_type": ElementType.TABLE_CELL.value,
                         "parent_id": row_id,
                         "content_preview": cell_text[:100] + ("..." if len(cell_text) > 100 else ""),
                         "content_location": json.dumps({
                             "source": source_id,
-                            "type": "table_cell",
+                            "type": ElementType.TABLE_CELL.value,
                             "slide_index": slide_idx,
                             "shape_path": shape_path,
                             "row": row_idx,
@@ -1271,15 +1780,41 @@ class PptxParser(DocumentParser):
                     }
                     elements.append(cell_element)
 
+                    # Create relationship from row to cell
+                    contains_cell_relationship = {
+                        "relationship_id": self._generate_id("rel_"),
+                        "source_id": row_id,
+                        "target_id": cell_id,
+                        "relationship_type": RelationshipType.CONTAINS_TABLE_CELL.value,
+                        "metadata": {
+                            "confidence": 1.0,
+                            "col_index": col_idx
+                        }
+                    }
+                    relationships.append(contains_cell_relationship)
+
+                    # Create inverse relationship
+                    cell_contained_relationship = {
+                        "relationship_id": self._generate_id("rel_"),
+                        "source_id": cell_id,
+                        "target_id": row_id,
+                        "relationship_type": RelationshipType.CONTAINED_BY.value,
+                        "metadata": {
+                            "confidence": 1.0
+                        }
+                    }
+                    relationships.append(cell_contained_relationship)
+
         except Exception as e:
             logger.warning(f"Error processing table shape: {str(e)}")
 
         return elements
 
     def _process_chart_shape(self, shape, doc_id: str, parent_id: str, source_id: str,
-                             slide_idx: int, shape_path: str) -> List[Dict[str, Any]]:
+                             slide_idx: int, relationships: List[Dict[str, Any]],
+                             shape_path: str) -> List[Dict[str, Any]]:
         """
-        Process a chart shape into structured elements.
+        Process a chart shape into structured elements and create relationships.
 
         Args:
             shape: The chart shape
@@ -1287,6 +1822,7 @@ class PptxParser(DocumentParser):
             parent_id: Parent element ID
             source_id: Source identifier
             slide_idx: Slide index
+            relationships: List to add relationships to
             shape_path: Path to the shape
 
         Returns:
@@ -1318,12 +1854,12 @@ class PptxParser(DocumentParser):
             chart_element = {
                 "element_id": chart_id,
                 "doc_id": doc_id,
-                "element_type": "chart",
+                "element_type": ElementType.CHART.value,
                 "parent_id": parent_id,
                 "content_preview": f"Chart: {chart_title}" if chart_title else f"Chart {shape_path}",
                 "content_location": json.dumps({
                     "source": source_id,
-                    "type": "chart",
+                    "type": ElementType.CHART.value,
                     "slide_index": slide_idx,
                     "shape_path": shape_path
                 }),
@@ -1337,6 +1873,30 @@ class PptxParser(DocumentParser):
                 }
             }
             elements.append(chart_element)
+
+            # Create relationship from parent to chart
+            contains_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": parent_id,
+                "target_id": chart_id,
+                "relationship_type": RelationshipType.CONTAINS.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(contains_relationship)
+
+            # Create inverse relationship
+            contained_by_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": chart_id,
+                "target_id": parent_id,
+                "relationship_type": RelationshipType.CONTAINED_BY.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(contained_by_relationship)
 
             # Extract chart category and series names if available
             if hasattr(chart, 'plots') and chart.plots:
@@ -1365,10 +1925,10 @@ class PptxParser(DocumentParser):
 
         return elements
 
-    def _process_notes(self, notes_slide, slide_idx: int, doc_id: str, parent_id: str, source_id: str) -> List[
-        Dict[str, Any]]:
+    def _process_notes(self, notes_slide, slide_idx: int, doc_id: str, parent_id: str, source_id: str,
+                       relationships: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Process slide notes into structured elements.
+        Process slide notes into structured elements and create relationships.
 
         Args:
             notes_slide: The notes slide
@@ -1376,6 +1936,7 @@ class PptxParser(DocumentParser):
             doc_id: Document ID
             parent_id: Parent element ID
             source_id: Source identifier
+            relationships: List to add relationships to
 
         Returns:
             List of notes-related elements
@@ -1398,12 +1959,12 @@ class PptxParser(DocumentParser):
             notes_element = {
                 "element_id": notes_id,
                 "doc_id": doc_id,
-                "element_type": "slide_notes",
+                "element_type": ElementType.SLIDE_NOTES.value,
                 "parent_id": parent_id,
                 "content_preview": notes_text[:100] + ("..." if len(notes_text) > 100 else ""),
                 "content_location": json.dumps({
                     "source": source_id,
-                    "type": "slide_notes",
+                    "type": ElementType.SLIDE_NOTES.value,
                     "slide_index": slide_idx
                 }),
                 "content_hash": self._generate_hash(notes_text),
@@ -1414,15 +1975,39 @@ class PptxParser(DocumentParser):
             }
             elements.append(notes_element)
 
+            # Create relationship from parent to notes
+            contains_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": parent_id,
+                "target_id": notes_id,
+                "relationship_type": RelationshipType.CONTAINS_NOTES.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(contains_relationship)
+
+            # Create inverse relationship
+            contained_by_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": notes_id,
+                "target_id": parent_id,
+                "relationship_type": RelationshipType.CONTAINED_BY.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(contained_by_relationship)
+
         except Exception as e:
             logger.warning(f"Error processing slide notes: {str(e)}")
 
         return elements
 
-    def _process_comments(self, slide, slide_idx: int, doc_id: str, parent_id: str, source_id: str) -> List[
-        Dict[str, Any]]:
+    def _process_comments(self, slide, slide_idx: int, doc_id: str, parent_id: str, source_id: str,
+                          relationships: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Process slide comments into structured elements.
+        Process slide comments into structured elements and create relationships.
 
         Args:
             slide: The slide
@@ -1430,6 +2015,7 @@ class PptxParser(DocumentParser):
             doc_id: Document ID
             parent_id: Parent element ID
             source_id: Source identifier
+            relationships: List to add relationships to
 
         Returns:
             List of comment-related elements
@@ -1447,12 +2033,12 @@ class PptxParser(DocumentParser):
             comments_element = {
                 "element_id": comments_id,
                 "doc_id": doc_id,
-                "element_type": "comments_container",
+                "element_type": ElementType.COMMENTS_CONTAINER.value,
                 "parent_id": parent_id,
                 "content_preview": f"Comments for Slide {slide_idx + 1}",
                 "content_location": json.dumps({
                     "source": source_id,
-                    "type": "comments_container",
+                    "type": ElementType.COMMENTS_CONTAINER.value,
                     "slide_index": slide_idx
                 }),
                 "content_hash": self._generate_hash(f"comments_{slide_idx}"),
@@ -1462,6 +2048,30 @@ class PptxParser(DocumentParser):
                 }
             }
             elements.append(comments_element)
+
+            # Create relationship from parent to comments container
+            contains_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": parent_id,
+                "target_id": comments_id,
+                "relationship_type": RelationshipType.CONTAINS.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(contains_relationship)
+
+            # Create inverse relationship
+            contained_by_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": comments_id,
+                "target_id": parent_id,
+                "relationship_type": RelationshipType.CONTAINED_BY.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(contained_by_relationship)
 
             # Process individual comments
             for comment_idx, comment in enumerate(slide.comments):
@@ -1481,12 +2091,12 @@ class PptxParser(DocumentParser):
                 comment_element = {
                     "element_id": comment_id,
                     "doc_id": doc_id,
-                    "element_type": "comment",
+                    "element_type": ElementType.COMMENT.value,
                     "parent_id": comments_id,
                     "content_preview": comment_text[:100] + ("..." if len(comment_text) > 100 else ""),
                     "content_location": json.dumps({
                         "source": source_id,
-                        "type": "comment",
+                        "type": ElementType.COMMENT.value,
                         "slide_index": slide_idx,
                         "comment_index": comment_idx
                     }),
@@ -1501,273 +2111,251 @@ class PptxParser(DocumentParser):
                 }
                 elements.append(comment_element)
 
+                # Create relationship from comments container to comment
+                contains_comment_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": comments_id,
+                    "target_id": comment_id,
+                    "relationship_type": RelationshipType.CONTAINS.value,
+                    "metadata": {
+                        "confidence": 1.0,
+                        "index": comment_idx
+                    }
+                }
+                relationships.append(contains_comment_relationship)
+
+                # Create inverse relationship
+                comment_contained_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": comment_id,
+                    "target_id": comments_id,
+                    "relationship_type": RelationshipType.CONTAINED_BY.value,
+                    "metadata": {
+                        "confidence": 1.0
+                    }
+                }
+                relationships.append(comment_contained_relationship)
+
         except Exception as e:
             logger.warning(f"Error processing slide comments: {str(e)}")
 
         return elements
 
-    def _extract_slide_masters(self, presentation, doc_id: str, parent_id: str, source_id: str) -> List[Dict[str, Any]]:
-        """
-        Extract slide masters from presentation.
+    """
+    Add the missing methods to the PowerPoint parser.
+    """
 
-        Args:
-            presentation: The PPTX presentation
-            doc_id: Document ID
-            parent_id: Parent element ID
-            source_id: Source identifier
-
-        Returns:
-            List of slide master elements
-        """
-        elements = []
-
-        try:
-            if not hasattr(presentation, 'slide_masters'):
-                return elements
-
-            # Create masters container element
-            masters_id = self._generate_id("masters_")
-
-            masters_element = {
-                "element_id": masters_id,
-                "doc_id": doc_id,
-                "element_type": "slide_masters",
-                "parent_id": parent_id,
-                "content_preview": "Slide Masters",
-                "content_location": json.dumps({
-                    "source": source_id,
-                    "type": "slide_masters"
-                }),
-                "content_hash": "",
-                "metadata": {
-                    "master_count": len(presentation.slide_masters)
-                }
-            }
-            elements.append(masters_element)
-
-            # Process individual masters
-            for master_idx, master in enumerate(presentation.slide_masters):
-                # Generate master ID
-                master_id = self._generate_id(f"master_{master_idx}_")
-
-                # Create master element
-                master_element = {
-                    "element_id": master_id,
-                    "doc_id": doc_id,
-                    "element_type": "slide_master",
-                    "parent_id": masters_id,
-                    "content_preview": f"Slide Master {master_idx + 1}",
-                    "content_location": json.dumps({
-                        "source": source_id,
-                        "type": "slide_master",
-                        "index": master_idx
-                    }),
-                    "content_hash": self._generate_hash(f"master_{master_idx}"),
-                    "metadata": {
-                        "index": master_idx,
-                        "layout_count": len(master.slide_layouts) if hasattr(master, 'slide_layouts') else 0
-                    }
-                }
-                elements.append(master_element)
-
-                # Process master shapes if desired
-                if self.extract_shapes and hasattr(master, 'shapes'):
-                    shape_elements = self._process_shapes(master.shapes, doc_id, master_id, source_id, -1,
-                                                          f"master_{master_idx}")
-                    elements.extend(shape_elements)
-
-        except Exception as e:
-            logger.warning(f"Error extracting slide masters: {str(e)}")
-
-        return elements
-
-    def _extract_slide_templates(self, presentation, doc_id: str, parent_id: str, source_id: str) -> List[
-        Dict[str, Any]]:
-        """
-        Extract slide templates (layouts) from presentation.
-
-        Args:
-            presentation: The PPTX presentation
-            doc_id: Document ID
-            parent_id: Parent element ID
-            source_id: Source identifier
-
-        Returns:
-            List of slide template elements
-        """
-        elements = []
-
-        try:
-            # Collect all slide layouts from all masters
-            layouts = []
-            layout_names = set()
-
-            if hasattr(presentation, 'slide_masters'):
-                for master in presentation.slide_masters:
-                    if hasattr(master, 'slide_layouts'):
-                        for layout in master.slide_layouts:
-                            # Avoid duplicates by name
-                            layout_name = layout.name if hasattr(layout, 'name') else ""
-                            if layout_name not in layout_names:
-                                layouts.append(layout)
-                                layout_names.add(layout_name)
-
-            if not layouts:
-                return elements
-
-            # Create templates container element
-            templates_id = self._generate_id("templates_")
-
-            templates_element = {
-                "element_id": templates_id,
-                "doc_id": doc_id,
-                "element_type": "slide_templates",
-                "parent_id": parent_id,
-                "content_preview": "Slide Templates",
-                "content_location": json.dumps({
-                    "source": source_id,
-                    "type": "slide_templates"
-                }),
-                "content_hash": "",
-                "metadata": {
-                    "template_count": len(layouts)
-                }
-            }
-            elements.append(templates_element)
-
-            # Process individual templates
-            for layout_idx, layout in enumerate(layouts):
-                # Generate layout ID
-                layout_id = self._generate_id(f"layout_{layout_idx}_")
-
-                # Get layout name
-                layout_name = layout.name if hasattr(layout, 'name') else f"Layout {layout_idx + 1}"
-
-                # Create layout element
-                layout_element = {
-                    "element_id": layout_id,
-                    "doc_id": doc_id,
-                    "element_type": "slide_layout",
-                    "parent_id": templates_id,
-                    "content_preview": layout_name,
-                    "content_location": json.dumps({
-                        "source": source_id,
-                        "type": "slide_layout",
-                        "index": layout_idx
-                    }),
-                    "content_hash": self._generate_hash(f"layout_{layout_idx}"),
-                    "metadata": {
-                        "index": layout_idx,
-                        "name": layout_name
-                    }
-                }
-                elements.append(layout_element)
-
-                # Process layout shapes if desired
-                if self.extract_shapes and hasattr(layout, 'shapes'):
-                    shape_elements = self._process_shapes(layout.shapes, doc_id, layout_id, source_id, -1,
-                                                          f"layout_{layout_idx}")
-                    elements.extend(shape_elements)
-
-        except Exception as e:
-            logger.warning(f"Error extracting slide templates: {str(e)}")
-
-        return elements
+    # Add these methods to the PptxParser class
 
     @staticmethod
-    def _get_slide_title(slide: Slide) -> str:
-        """Get slide title text."""
+    def _get_slide_title(slide):
+        """
+        Extract the title from a slide.
+
+        Args:
+            slide: The slide object
+
+        Returns:
+            Title text or empty string if no title found
+        """
         try:
-            # Look for a shape with placeholder type as title
+            # Look for title placeholder
             for shape in slide.shapes:
                 if hasattr(shape, 'is_placeholder') and shape.is_placeholder:
-                    if hasattr(shape, 'placeholder_format') and shape.placeholder_format.type == 1:  # 1 = TITLE
-                        if hasattr(shape, 'text_frame') and shape.text_frame.text:
+                    if hasattr(shape, 'placeholder_format') and shape.placeholder_format.type == 1:  # Title placeholder
+                        if hasattr(shape, 'has_text_frame') and shape.has_text_frame:
                             return shape.text_frame.text
 
-            # If no title placeholder, look for first shape with text
-            for shape in slide.shapes:
-                if hasattr(shape, 'has_text_frame') and shape.has_text_frame:
-                    if shape.text_frame.text:
+                # Also check if any shape with text has a name indicating it's a title
+                if hasattr(shape, 'name') and hasattr(shape, 'has_text_frame') and shape.has_text_frame:
+                    name = shape.name.lower()
+                    if 'title' in name:
                         return shape.text_frame.text
 
-        except Exception as e:
-            logger.debug(f"Error getting slide title: {str(e)}")
+                # If there's a text shape with large text at the top of the slide, it's likely a title
+                if hasattr(shape, 'has_text_frame') and shape.has_text_frame and shape.text_frame.text:
+                    # Check if this is likely a title by position (top of slide) and text length
+                    if shape.top < (slide.slide_layout.slide_height * 0.25) and len(shape.text_frame.text) < 100:
+                        return shape.text_frame.text
 
-        return ""
+            # Fallback: Look for the first text shape with text
+            for shape in slide.shapes:
+                if hasattr(shape, 'has_text_frame') and shape.has_text_frame and shape.text_frame.text:
+                    text = shape.text_frame.text.strip()
+                    # If it's reasonable length for a title, use it
+                    if len(text) < 100:
+                        return text
+                    else:
+                        # If it's long, try to use just the first line
+                        lines = text.split('\n')
+                        if lines and len(lines[0]) < 100:
+                            return lines[0]
+
+            return ""
+        except Exception as e:
+            logger.warning(f"Error extracting slide title: {str(e)}")
+            return ""
 
     @staticmethod
-    def _get_slide_layout_name(slide: Slide) -> str:
-        """Get slide layout name."""
+    def _get_slide_layout_name(slide):
+        """
+        Get the name of the slide layout.
+
+        Args:
+            slide: The slide object
+
+        Returns:
+            Layout name or empty string if not available
+        """
         try:
             if hasattr(slide, 'slide_layout') and hasattr(slide.slide_layout, 'name'):
                 return slide.slide_layout.name
+            return ""
         except Exception as e:
-            logger.debug(f"Error getting slide layout name: {str(e)}")
-
-        return "Unknown Layout"
+            logger.warning(f"Error getting slide layout name: {str(e)}")
+            return ""
 
     @staticmethod
-    def _is_title_shape(shape) -> bool:
-        """Check if shape is a title placeholder."""
+    def _is_title_shape(shape):
+        """
+        Determine if a shape is likely a title shape.
+
+        Args:
+            shape: The shape object
+
+        Returns:
+            True if shape is likely a title, False otherwise
+        """
         try:
+            # Check if it's explicitly a title placeholder
             if hasattr(shape, 'is_placeholder') and shape.is_placeholder:
-                if hasattr(shape, 'placeholder_format') and shape.placeholder_format.type in [1,
-                                                                                              2]:  # 1 = TITLE, 2 = CENTERED_TITLE
+                if hasattr(shape, 'placeholder_format') and shape.placeholder_format.type == 1:  # Title placeholder
                     return True
-        except Exception:
-            pass
 
-        return False
+            # Check the shape name
+            if hasattr(shape, 'name'):
+                name = shape.name.lower()
+                if 'title' in name:
+                    return True
 
-    @staticmethod
-    def _get_paragraph_level(text_frame: TextFrame) -> int:
-        """Get the outline level of text frame."""
-        try:
-            if hasattr(text_frame, 'paragraphs') and text_frame.paragraphs:
-                return text_frame.paragraphs[0].level if hasattr(text_frame.paragraphs[0], 'level') else 0
-        except Exception:
-            pass
-
-        return 0
+            return False
+        except Exception as e:
+            logger.warning(f"Error checking if shape is title: {str(e)}")
+            return False
 
     @staticmethod
-    def _get_shape_type(shape) -> str:
-        """Get the type of shape."""
+    def _get_paragraph_level(text_frame):
+        """
+        Get the indentation level of paragraphs in a text frame.
+
+        Args:
+            text_frame: The text frame
+
+        Returns:
+            Indentation level (0 for top level)
+        """
         try:
+            if not hasattr(text_frame, 'paragraphs') or not text_frame.paragraphs:
+                return 0
+
+            # Get the level of the first paragraph
+            if hasattr(text_frame.paragraphs[0], 'level'):
+                return text_frame.paragraphs[0].level
+
+            return 0
+        except Exception as e:
+            logger.warning(f"Error getting paragraph level: {str(e)}")
+            return 0
+
+    @staticmethod
+    def _get_shape_type(shape):
+        """
+        Determine the type of a shape.
+
+        Args:
+            shape: The shape object
+
+        Returns:
+            String describing the shape type
+        """
+        try:
+            # Try to get shape type from various attributes
             if hasattr(shape, 'shape_type'):
                 return str(shape.shape_type)
 
-            if isinstance(shape, Picture):
-                return "picture"
-
-            if hasattr(shape, 'has_table') and shape.has_table:
-                return "table"
-
-            if hasattr(shape, 'has_chart') and shape.has_chart:
-                return "chart"
-
-            if hasattr(shape, 'has_text_frame') and shape.has_text_frame:
-                return "text"
-
+            # Check for common shape characteristics
             if isinstance(shape, GroupShape):
                 return "group"
+            elif hasattr(shape, 'has_text_frame') and shape.has_text_frame:
+                return "text"
+            elif hasattr(shape, 'has_table') and shape.has_table:
+                return "table"
+            elif hasattr(shape, 'has_chart') and shape.has_chart:
+                return "chart"
+            elif isinstance(shape, Picture):
+                return "picture"
 
-        except Exception:
-            pass
+            # Generic fallback
+            return "shape"
+        except Exception as e:
+            logger.warning(f"Error determining shape type: {str(e)}")
+            return "shape"
 
-        return "shape"
-
-    @staticmethod
-    def _generate_hash(content: str) -> str:
+    def _create_root_element(self, doc_id, source_id):
         """
-        Generate a hash of content for change detection.
+        Create the root element for the document.
 
         Args:
-            content: Text content
+            doc_id: Document ID
+            source_id: Source identifier
 
         Returns:
-            MD5 hash of content
+            Root element dictionary
+        """
+        return {
+            "element_id": self._generate_id("root_"),
+            "doc_id": doc_id,
+            "element_type": "root",
+            "parent_id": None,
+            "content_preview": "Document Root",
+            "content_location": json.dumps({
+                "source": source_id,
+                "type": "root"
+            }),
+            "content_hash": "",
+            "metadata": {}
+        }
+
+    def _generate_id(self, prefix="id_"):
+        """
+        Generate a unique ID.
+
+        Args:
+            prefix: Prefix for the ID
+
+        Returns:
+            Generated ID string
+        """
+        import uuid
+        return f"{prefix}{uuid.uuid4().hex}"
+
+    def _generate_hash(self, content):
+        """
+        Generate a hash for content.
+
+        Args:
+            content: Content to hash
+
+        Returns:
+            Hash string
         """
         import hashlib
-        return hashlib.md5(content.encode('utf-8')).hexdigest()
+
+        if isinstance(content, str):
+            content_bytes = content.encode('utf-8')
+        elif isinstance(content, bytes):
+            content_bytes = content
+        else:
+            content_bytes = str(content).encode('utf-8')
+
+        return hashlib.sha256(content_bytes).hexdigest()

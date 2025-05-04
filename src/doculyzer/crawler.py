@@ -1,10 +1,11 @@
 import logging
 import os
-import time
 from datetime import datetime
 
-from .main import ingest_documents
+import time
+
 from .config import Config
+from .main import ingest_documents
 
 
 def _setup_logger():

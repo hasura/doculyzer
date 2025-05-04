@@ -60,7 +60,7 @@ def test_document_ingestion(config_emb: (Config, EmbeddingGenerator)):
 
         # Run a sample search
         logger.info("Running similarity search")
-        query_text = "books authored by nigerians"
+        query_text = "data exchange formats"
         logger.debug(f"Generating embedding for query: {query_text}")
 
 

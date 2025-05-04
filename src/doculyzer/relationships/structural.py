@@ -1,7 +1,75 @@
 import uuid
+from enum import Enum
 from typing import Dict, Any, List
 
 from .base import RelationshipDetector
+from ..storage import ElementType
+
+
+class RelationshipType(Enum):
+    """Enumeration of structural relationship types."""
+
+    HAS_TEMPORAL_INFORMATION = "has_temporal_information"
+    TEMPORAL_RELATIONSHIP = "temporal_relationship"
+    RELATED_TO = "related_to"
+    DESCRIBED_BY = "described_by"
+    DESCRIBES = "describes"
+    NEXT_SIBLING = "next_sibling"
+    PREVIOUS_SIBLING = "previous_sibling"
+    LINK = "link"
+    REFERENCED_BY = "referenced_by"
+    SEMANTIC_SIMILARITY = "semantic_similarity"
+
+    CONTAINS = "contains"
+    CONTAINS_TABLE_HEADER = "contains_table_header"
+    CONTAINS_LIST_ITEM = "contains_list_item"
+    CONTAINS_TABLE_CELL = "contains_table_cell"
+    CONTAINS_ARRAY_ITEM = "contains_array_item"  # New type for array items
+    CONTAINS_ROW = "contains_row"
+    CONTAINS_CELL = "contains_cell"
+    CONTAINS_ITEM = "contains_item"
+    CONTAINS_TEXT = "contains_text"  # Added to handle text content
+    CONTAINS_TABLE_ROW = "contains_table_row"
+    CONTAINS_NOTES = "contains_notes"
+
+    CONTAINED_BY = "contained_by"
+
+    @classmethod
+    def is_parent_type(cls, rel_type: 'RelationshipType') -> bool:
+        """Check if this is a parent relationship type."""
+        return rel_type in [
+            cls.CONTAINS,
+            cls.CONTAINS_TABLE_HEADER,
+            cls.CONTAINS_LIST_ITEM,
+            cls.CONTAINS_TABLE_CELL,
+            cls.CONTAINS_ARRAY_ITEM,
+            cls.CONTAINS_ROW,
+            cls.CONTAINS_CELL,
+            cls.CONTAINS_ITEM,
+            cls.CONTAINS_TEXT,
+            cls.CONTAINS_TABLE_ROW,
+            cls.CONTAINS_NOTES,
+        ]
+
+    @classmethod
+    def is_child_type(cls, rel_type: 'RelationshipType') -> bool:
+        """Check if this is a child relationship type."""
+        return rel_type == cls.CONTAINED_BY
+
+    @classmethod
+    def is_sibling_type(cls, rel_type: 'RelationshipType') -> bool:
+        """Check if this is a sibling relationship type."""
+        return rel_type in [cls.NEXT_SIBLING, cls.PREVIOUS_SIBLING]
+
+    @classmethod
+    def is_semantic_type(cls, rel_type: 'RelationshipType') -> bool:
+        """Check if this is a semantic relationship type."""
+        return rel_type == cls.SEMANTIC_SIMILARITY
+
+    @classmethod
+    def is_link_type(cls, rel_type: 'RelationshipType') -> bool:
+        """Check if this is a link relationship type."""
+        return rel_type in [cls.LINK, cls.REFERENCED_BY]
 
 
 class StructuralRelationshipDetector(RelationshipDetector):
@@ -19,12 +87,12 @@ class StructuralRelationshipDetector(RelationshipDetector):
     def detect_relationships(self, document: Dict[str, Any],
                              elements: List[Dict[str, Any]],
                              links: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """Detect structural relationships between elements."""
+        """Detect structural relationships between elements not found by parser.
+        Generally, this is just creates sibling relationships between elements, or cleans up anything
+        not handled by the parser.
+        """
         relationships = []
         doc_id = document["doc_id"]
-
-        # Create element ID to element mapping for easier lookup
-        # element_map = {element["element_id"]: element for element in elements}
 
         # Create parent-child mapping
         parent_children = {}
@@ -56,7 +124,7 @@ class StructuralRelationshipDetector(RelationshipDetector):
                     "relationship_id": relationship_id,
                     "doc_id": doc_id,
                     "source_id": prev_id,
-                    "relationship_type": "next_sibling",
+                    "relationship_type": RelationshipType.NEXT_SIBLING.value,
                     "target_reference": next_id,
                     "metadata": {
                         "confidence": 1.0
@@ -72,185 +140,10 @@ class StructuralRelationshipDetector(RelationshipDetector):
                     "relationship_id": relationship_id,
                     "doc_id": doc_id,
                     "source_id": next_id,
-                    "relationship_type": "previous_sibling",
+                    "relationship_type": RelationshipType.PREVIOUS_SIBLING.value,
                     "target_reference": prev_id,
                     "metadata": {
                         "confidence": 1.0
-                    }
-                }
-
-                relationships.append(relationship)
-
-        # Create section relationships (header -> content elements)
-        # Find all headers
-        headers = [element for element in elements if element.get("element_type") == "header"]
-
-        # Sort headers by their level (h1, h2, etc.)
-        headers.sort(key=lambda h: h.get("metadata", {}).get("level", 0))
-
-        # Process each header
-        for header in headers:
-            header_id = header["element_id"]
-            header_level = header.get("metadata", {}).get("level", 0)
-
-            # Find elements that should be in this header's section
-            section_elements = self._get_section_elements(header, headers, elements)
-
-            # Create relationships from header to section elements
-            for element_id in section_elements:
-                relationship_id = self._generate_id("rel_")
-
-                relationship = {
-                    "relationship_id": relationship_id,
-                    "doc_id": doc_id,
-                    "source_id": header_id,
-                    "relationship_type": "contains",
-                    "target_reference": element_id,
-                    "metadata": {
-                        "confidence": 1.0,
-                        "section_level": header_level
-                    }
-                }
-
-                relationships.append(relationship)
-
-                # Create reverse relationship
-                relationship_id = self._generate_id("rel_")
-
-                relationship = {
-                    "relationship_id": relationship_id,
-                    "doc_id": doc_id,
-                    "source_id": element_id,
-                    "relationship_type": "contained_by",
-                    "target_reference": header_id,
-                    "metadata": {
-                        "confidence": 1.0,
-                        "section_level": header_level
-                    }
-                }
-
-                relationships.append(relationship)
-
-        # Create table relationships (table -> rows -> cells)
-        tables = [element for element in elements if element.get("element_type") == "table"]
-
-        for table in tables:
-            table_id = table["element_id"]
-
-            # Find table rows
-            rows = [element for element in elements
-                    if element.get("element_type") == "table_row" and element.get("parent_id") == table_id]
-
-            # Sort rows by index
-            rows.sort(key=lambda r: r.get("metadata", {}).get("row", 0))
-
-            # Create table -> row relationships
-            for row in rows:
-                row_id = row["element_id"]
-
-                # Create relationship
-                relationship_id = self._generate_id("rel_")
-
-                relationship = {
-                    "relationship_id": relationship_id,
-                    "doc_id": doc_id,
-                    "source_id": table_id,
-                    "relationship_type": "contains_row",
-                    "target_reference": row_id,
-                    "metadata": {
-                        "confidence": 1.0,
-                        "row_index": row.get("metadata", {}).get("row", 0)
-                    }
-                }
-
-                relationships.append(relationship)
-
-                # Find cells in this row
-                cells = [element for element in elements
-                         if element.get("element_type") in ("table_cell", "table_header")
-                         and element.get("parent_id") == row_id]
-
-                # Sort cells by column
-                cells.sort(key=lambda c: c.get("metadata", {}).get("col", 0))
-
-                # Create row -> cell relationships
-                for cell in cells:
-                    cell_id = cell["element_id"]
-
-                    # Create relationship
-                    relationship_id = self._generate_id("rel_")
-
-                    relationship = {
-                        "relationship_id": relationship_id,
-                        "doc_id": doc_id,
-                        "source_id": row_id,
-                        "relationship_type": "contains_cell",
-                        "target_reference": cell_id,
-                        "metadata": {
-                            "confidence": 1.0,
-                            "col_index": cell.get("metadata", {}).get("col", 0)
-                        }
-                    }
-
-                    relationships.append(relationship)
-
-        # Create list relationships (list -> list items)
-        lists = [element for element in elements if element.get("element_type") == "list"]
-
-        for list_element in lists:
-            list_id = list_element["element_id"]
-
-            # Find list items
-            items = [element for element in elements
-                     if element.get("element_type") == "list_item" and element.get("parent_id") == list_id]
-
-            # Sort items by index
-            items.sort(key=lambda ii: ii.get("metadata", {}).get("index", 0))
-
-            # Create list -> item relationships
-            for item in items:
-                item_id = item["element_id"]
-
-                # Create relationship
-                relationship_id = self._generate_id("rel_")
-
-                relationship = {
-                    "relationship_id": relationship_id,
-                    "doc_id": doc_id,
-                    "source_id": list_id,
-                    "relationship_type": "contains_item",
-                    "target_reference": item_id,
-                    "metadata": {
-                        "confidence": 1.0,
-                        "item_index": item.get("metadata", {}).get("index", 0),
-                        "list_type": list_element.get("metadata", {}).get("list_type", "unordered")
-                    }
-                }
-
-                relationships.append(relationship)
-
-        # Create document -> element relationships for top-level elements
-        root_elements = [element for element in elements if element.get("element_type") == "root"]
-        if root_elements:
-            root_id = root_elements[0]["element_id"]
-
-            # Find all direct children of root
-            root_children = [element["element_id"] for element in elements
-                             if element.get("parent_id") == root_id and element.get("element_type") != "root"]
-
-            for child_id in root_children:
-                # Create relationship
-                relationship_id = self._generate_id("rel_")
-
-                relationship = {
-                    "relationship_id": relationship_id,
-                    "doc_id": doc_id,
-                    "source_id": root_id,
-                    "relationship_type": "contains",
-                    "target_reference": child_id,
-                    "metadata": {
-                        "confidence": 1.0,
-                        "top_level": True
                     }
                 }
 
@@ -301,13 +194,13 @@ class StructuralRelationshipDetector(RelationshipDetector):
                 continue
 
             # Stop at next header of equal or higher level
-            if element.get("element_type") == "header":
+            if element.get("element_type") == ElementType.HEADER.value:
                 element_level = element.get("metadata", {}).get("level", 0)
                 if element_level <= header_level:
                     break
 
             # Add non-header elements to section
-            if element.get("element_type") != "header":
+            if element.get("element_type") != ElementType.HEADER.value:
                 section_element_ids.append(element_id)
 
         return section_element_ids

@@ -1,16 +1,15 @@
 """
 Document Database Module for the document pointer system.
-
 This module stores document metadata, elements, and relationships,
 while maintaining pointers to original content.
 """
-
 import logging
 from typing import Dict, Any
 
 from .base import DocumentDatabase
 from .file import FileDocumentDatabase
-from .mongodb import MongoDBDocumentDatabase  # Add import for MongoDB
+from .mongodb import MongoDBDocumentDatabase
+from .neo4j import Neo4jDocumentDatabase
 from .sqlite import SQLiteDocumentDatabase
 
 logger = logging.getLogger(__name__)
@@ -47,5 +46,22 @@ def get_document_database(config: Dict[str, Any]) -> DocumentDatabase:
                 "db_name": "doculyzer"
             }
         return MongoDBDocumentDatabase(conn_params)
+    elif backend_type == "neo4j":
+        # Extract Neo4j connection parameters from config
+        neo4j_params = config.get("neo4j", {})
+        if not neo4j_params:
+            # Default connection parameters
+            neo4j_params = {
+                "uri": "bolt://localhost:7687",
+                "username": "neo4j",
+                "password": "password",
+                "database": "neo4j"
+            }
+        return Neo4jDocumentDatabase(
+            uri=neo4j_params.get("uri", "bolt://localhost:7687"),
+            user=neo4j_params.get("username", "neo4j"),
+            password=neo4j_params.get("password", "password"),
+            database=neo4j_params.get("database", "neo4j")
+        )
     else:
         raise ValueError(f"Unsupported database backend: {backend_type}")

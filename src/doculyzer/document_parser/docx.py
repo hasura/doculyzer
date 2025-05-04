@@ -9,6 +9,9 @@ import logging
 import os
 from typing import Dict, Any, Optional, List, Union
 
+from ..relationships import RelationshipType
+from ..storage import ElementType
+
 try:
     import docx
     from docx.document import Document as DocxDocument
@@ -77,20 +80,20 @@ class DocxParser(DocumentParser):
 
         # For most element types, the content is already in the desired plain text format
         # But we might need special handling for some types
-        if element_type == "table" or element_type == "table_row":
+        if element_type == ElementType.TABLE.value or element_type == ElementType.TABLE_ROW.value:
             # For tables, content from _resolve_element_content uses | as separators
             # We'll keep this format as it's already a good text representation
             return content
 
-        elif element_type == "table_cell" or element_type == "table_header":
+        elif element_type == ElementType.TABLE_CELL.value or element_type == ElementType.TABLE_HEADER.value:
             # For cells, just return the text content
             return content.strip()
 
-        elif element_type == "header" or element_type == "paragraph" or element_type == "list_item":
+        elif element_type == ElementType.HEADER.value or element_type == ElementType.PARAGRAPH.value or element_type == ElementType.LIST_ITEM.value:
             # For text elements, just return the content
             return content.strip()
 
-        elif element_type == "comment":
+        elif element_type == ElementType.COMMENT.value:
             # For comments, extract just the text without metadata
             return content.strip()
 
@@ -165,18 +168,23 @@ class DocxParser(DocumentParser):
             elements = [self._create_root_element(doc_id, source_id)]
             root_id = elements[0]["element_id"]
 
-            # Parse document elements
-            elements.extend(self._parse_document_elements(doc, doc_id, root_id, source_id))
+            # Initialize relationships list
+            relationships = []
+
+            # Parse document elements and create relationships
+            elements_from_doc, relationships_from_doc = self._parse_document_elements(doc, doc_id, root_id, source_id)
+            elements.extend(elements_from_doc)
+            relationships.extend(relationships_from_doc)
 
             # Extract links from the document
             links = self._extract_links(doc, elements)
 
-            # Return the parsed document with extracted links
+            # Return the parsed document with extracted links and relationships
             return {
                 "document": document,
                 "elements": elements,
                 "links": links,
-                "relationships": []
+                "relationships": relationships
             }
         finally:
             # Clean up temporary file
@@ -234,14 +242,14 @@ class DocxParser(DocumentParser):
                     raise ValueError(f"Error loading DOCX document: {str(e)}")
 
             # Handle different element types
-            if element_type == "paragraph":
+            if element_type == ElementType.PARAGRAPH.value:
                 # Extract paragraph by index
                 index = location_data.get("index", 0)
                 if 0 <= index < len(doc.paragraphs):
                     return doc.paragraphs[index].text
                 return ""
 
-            elif element_type == "header":
+            elif element_type == ElementType.HEADER.value:
                 # Extract header by level and/or text
                 level = location_data.get("level")
                 text = location_data.get("text", "")
@@ -270,7 +278,7 @@ class DocxParser(DocumentParser):
                     return headers[0].text
                 return ""
 
-            elif element_type == "table":
+            elif element_type == ElementType.TABLE.value:
                 # Extract table by index
                 table_index = location_data.get("index", 0)
                 tables = [t for t in doc._body._body.iterchildren() if isinstance(t, CT_Tbl)]
@@ -287,7 +295,7 @@ class DocxParser(DocumentParser):
                     return "\n".join(result)
                 return ""
 
-            elif element_type == "table_row":
+            elif element_type == ElementType.TABLE_ROW.value:
                 # Extract table row
                 table_index = location_data.get("table_index", 0)
                 row = location_data.get("row", 0)
@@ -303,7 +311,7 @@ class DocxParser(DocumentParser):
                         return " | ".join(row_text)
                 return ""
 
-            elif element_type == "table_cell" or element_type == "table_header":
+            elif element_type == ElementType.TABLE_CELL.value or element_type == ElementType.TABLE_HEADER.value:
                 # Extract table cell
                 table_index = location_data.get("table_index", 0)
                 row = location_data.get("row", 0)
@@ -317,7 +325,7 @@ class DocxParser(DocumentParser):
                         return " ".join(p.text for p in cell.paragraphs).strip()
                 return ""
 
-            elif element_type == "header" or element_type == "footer":
+            elif element_type == ElementType.PAGE_HEADER.value or element_type == ElementType.PAGE_FOOTER.value:
                 # Extract header/footer
                 section = location_data.get("section", 0)
                 header_type = location_data.get("header_type", "")
@@ -326,20 +334,20 @@ class DocxParser(DocumentParser):
                 if 0 <= section < len(doc.sections):
                     section_obj = doc.sections[section]
 
-                    if element_type == "header" and header_type:
+                    if element_type == ElementType.PAGE_HEADER.value and header_type:
                         attr_name = header_type.replace(' ', '_')
                         header = getattr(section_obj, attr_name, None)
                         if header and header.is_linked_to_previous is False:
                             return "\n".join(p.text for p in header.paragraphs)
 
-                    elif element_type == "footer" and footer_type:
+                    elif element_type == ElementType.PAGE_FOOTER.value and footer_type:
                         attr_name = footer_type.replace(' ', '_')
                         footer = getattr(section_obj, attr_name, None)
                         if footer and footer.is_linked_to_previous is False:
                             return "\n".join(p.text for p in footer.paragraphs)
                 return ""
 
-            elif element_type == "comment":
+            elif element_type == ElementType.COMMENT.value:
                 # Extract comment by ID
                 comment_id = location_data.get("comment_id", "")
 
@@ -358,7 +366,7 @@ class DocxParser(DocumentParser):
                                                 return comment.get_text().strip()
                 return ""
 
-            elif element_type == "body":
+            elif element_type == ElementType.BODY.value:
                 # Return all paragraphs in the document body
                 return "\n".join(p.text for p in doc.paragraphs)
 
@@ -456,10 +464,10 @@ class DocxParser(DocumentParser):
 
         return metadata
 
-    def _parse_document_elements(self, doc: DocxDocument, doc_id: str, parent_id: str, source_id: str) -> List[
-        Dict[str, Any]]:
+    def _parse_document_elements(self, doc: DocxDocument, doc_id: str, parent_id: str, source_id: str) -> tuple[
+        List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
-        Parse DOCX document into structured elements.
+        Parse DOCX document into structured elements and create relationships.
 
         Args:
             doc: The DOCX document
@@ -468,32 +476,59 @@ class DocxParser(DocumentParser):
             source_id: Source identifier
 
         Returns:
-            List of parsed elements
+            Tuple of (list of elements, list of relationships)
         """
         elements = []
+        relationships = []
         section_stack = [{"id": parent_id, "level": 0}]
 
         # Extract headers and footers if enabled
         if self.extract_headers_footers:
-            header_elements = self._extract_headers_footers(doc, doc_id, parent_id, source_id)
+            header_elements, header_relationships = self._extract_headers_footers(doc, doc_id, parent_id, source_id)
             elements.extend(header_elements)
+            relationships.extend(header_relationships)
 
         # Process document body
         body_id = self._generate_id("body_")
         body_element = {
             "element_id": body_id,
             "doc_id": doc_id,
-            "element_type": "body",
+            "element_type": ElementType.BODY.value,
             "parent_id": parent_id,
             "content_preview": "Document body",
             "content_location": json.dumps({
                 "source": source_id,
-                "type": "body"
+                "type": ElementType.BODY.value
             }),
             "content_hash": "",
             "metadata": {}
         }
         elements.append(body_element)
+
+        # Create relationship from root to body
+        contains_relationship = {
+            "relationship_id": self._generate_id("rel_"),
+            "source_id": parent_id,
+            "target_id": body_id,
+            "relationship_type": RelationshipType.CONTAINS.value,
+            "metadata": {
+                "confidence": 1.0
+            }
+        }
+        relationships.append(contains_relationship)
+
+        # Create inverse relationship
+        contained_by_relationship = {
+            "relationship_id": self._generate_id("rel_"),
+            "source_id": body_id,
+            "target_id": parent_id,
+            "relationship_type": RelationshipType.CONTAINED_BY.value,
+            "metadata": {
+                "confidence": 1.0
+            }
+        }
+        relationships.append(contained_by_relationship)
+
         current_parent = body_id
 
         # Process all block-level elements in the document
@@ -539,20 +574,49 @@ class DocxParser(DocumentParser):
 
                 elements.append(para_element)
 
+                # Create relationship from parent to paragraph/header
+                element_id = para_element["element_id"]
+                contains_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": para_element["parent_id"],
+                    "target_id": element_id,
+                    "relationship_type": RelationshipType.CONTAINS.value if para_element[
+                                                                                "element_type"] == "header" else RelationshipType.CONTAINS_TEXT.value,
+                    "metadata": {
+                        "confidence": 1.0,
+                        "index": i
+                    }
+                }
+                relationships.append(contains_relationship)
+
+                # Create inverse relationship
+                contained_by_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": element_id,
+                    "target_id": para_element["parent_id"],
+                    "relationship_type": RelationshipType.CONTAINED_BY.value,
+                    "metadata": {
+                        "confidence": 1.0
+                    }
+                }
+                relationships.append(contained_by_relationship)
+
             elif isinstance(block, Table):
                 # Process table
-                table_elements = self._process_table(block, i, doc_id, current_parent, source_id)
+                table_elements, table_relationships = self._process_table(block, i, doc_id, current_parent, source_id)
                 elements.extend(table_elements)
+                relationships.extend(table_relationships)
 
         # Extract comments if enabled
         if self.extract_comments:
             try:
-                comment_elements = self._extract_comments(doc, doc_id, body_id, source_id)
+                comment_elements, comment_relationships = self._extract_comments(doc, doc_id, body_id, source_id)
                 elements.extend(comment_elements)
+                relationships.extend(comment_relationships)
             except Exception as e:
                 logger.warning(f"Error extracting comments: {str(e)}")
 
-        return elements
+        return elements, relationships
 
     def _process_paragraph(self, paragraph: Paragraph, index: int, doc_id: str, parent_id: str, source_id: str) -> \
             Optional[Dict[str, Any]]:
@@ -598,13 +662,13 @@ class DocxParser(DocumentParser):
         element = {
             "element_id": element_id,
             "doc_id": doc_id,
-            "element_type": "paragraph",
+            "element_type": ElementType.PARAGRAPH.value,
             "parent_id": parent_id,
             "content_preview": text[:self.max_content_preview] + (
                 "..." if len(text) > self.max_content_preview else ""),
             "content_location": json.dumps({
                 "source": source_id,
-                "type": "paragraph",
+                "type": ElementType.PARAGRAPH.value,
                 "index": index
             }),
             "content_hash": self._generate_hash(text),
@@ -618,7 +682,7 @@ class DocxParser(DocumentParser):
         # Check for list formatting
         if paragraph._p.pPr and paragraph._p.pPr.numPr:
             # This is a list item
-            element["element_type"] = "list_item"
+            element["element_type"] = ElementType.LIST_ITEM.value
 
             # Try to determine list type and level
             list_level = 0
@@ -638,10 +702,10 @@ class DocxParser(DocumentParser):
 
         return element
 
-    def _process_table(self, table: Table, index: int, doc_id: str, parent_id: str, source_id: str) -> List[
-        Dict[str, Any]]:
+    def _process_table(self, table: Table, index: int, doc_id: str, parent_id: str, source_id: str) -> tuple[
+        List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
-        Process a table element.
+        Process a table element and create relationships.
 
         Args:
             table: The table
@@ -651,9 +715,10 @@ class DocxParser(DocumentParser):
             source_id: Source identifier
 
         Returns:
-            List of table-related elements
+            Tuple of (list of table-related elements, list of relationships)
         """
-        elements = list()
+        elements = []
+        relationships = []
 
         # Generate table element ID
         table_id = self._generate_id("table_")
@@ -663,12 +728,12 @@ class DocxParser(DocumentParser):
         table_element = {
             "element_id": table_id,
             "doc_id": doc_id,
-            "element_type": "table",
+            "element_type": ElementType.TABLE.value,
             "parent_id": parent_id,
             "content_preview": table_preview,  # This can be empty if we couldn't extract meaningful content
             "content_location": json.dumps({
                 "source": source_id,
-                "type": "table",
+                "type": ElementType.TABLE.value,
                 "index": index
             }),
             "content_hash": "",
@@ -680,6 +745,31 @@ class DocxParser(DocumentParser):
         }
         elements.append(table_element)
 
+        # Create relationship from parent to table
+        contains_relationship = {
+            "relationship_id": self._generate_id("rel_"),
+            "source_id": parent_id,
+            "target_id": table_id,
+            "relationship_type": RelationshipType.CONTAINS.value,
+            "metadata": {
+                "confidence": 1.0,
+                "index": index
+            }
+        }
+        relationships.append(contains_relationship)
+
+        # Create inverse relationship
+        contained_by_relationship = {
+            "relationship_id": self._generate_id("rel_"),
+            "source_id": table_id,
+            "target_id": parent_id,
+            "relationship_type": RelationshipType.CONTAINED_BY.value,
+            "metadata": {
+                "confidence": 1.0
+            }
+        }
+        relationships.append(contained_by_relationship)
+
         # Process rows
         for row_idx, row in enumerate(table.rows):
             # Generate row element ID
@@ -689,12 +779,12 @@ class DocxParser(DocumentParser):
             row_element = {
                 "element_id": row_id,
                 "doc_id": doc_id,
-                "element_type": "table_row",
+                "element_type": ElementType.TABLE_ROW.value,
                 "parent_id": table_id,
                 "content_preview": f"Row {row_idx + 1}",
                 "content_location": json.dumps({
                     "source": source_id,
-                    "type": "table_row",
+                    "type": ElementType.TABLE_ROW.value,
                     "table_index": index,
                     "row": row_idx
                 }),
@@ -704,6 +794,31 @@ class DocxParser(DocumentParser):
                 }
             }
             elements.append(row_element)
+
+            # Create relationship from table to row
+            contains_row_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": table_id,
+                "target_id": row_id,
+                "relationship_type": RelationshipType.CONTAINS_TABLE_ROW.value,
+                "metadata": {
+                    "confidence": 1.0,
+                    "row_index": row_idx
+                }
+            }
+            relationships.append(contains_row_relationship)
+
+            # Create inverse relationship
+            row_contained_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": row_id,
+                "target_id": table_id,
+                "relationship_type": RelationshipType.CONTAINED_BY.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(row_contained_relationship)
 
             # Process cells
             for col_idx, cell in enumerate(row.cells):
@@ -717,13 +832,13 @@ class DocxParser(DocumentParser):
                 cell_element = {
                     "element_id": cell_id,
                     "doc_id": doc_id,
-                    "element_type": "table_cell",
+                    "element_type": ElementType.TABLE_CELL.value,
                     "parent_id": row_id,
                     "content_preview": cell_text[:self.max_content_preview] + (
                         "..." if len(cell_text) > self.max_content_preview else ""),
                     "content_location": json.dumps({
                         "source": source_id,
-                        "type": "table_cell",
+                        "type": ElementType.TABLE_CELL.value,
                         "table_index": index,
                         "row": row_idx,
                         "col": col_idx
@@ -742,12 +857,38 @@ class DocxParser(DocumentParser):
 
                 elements.append(cell_element)
 
-        return elements
+                # Create relationship from row to cell
+                contains_cell_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": row_id,
+                    "target_id": cell_id,
+                    "relationship_type": RelationshipType.CONTAINS_TABLE_CELL.value if cell_element[
+                                                                                           "element_type"] == ElementType.TABLE_CELL.value else RelationshipType.CONTAINS_TABLE_HEADER.value,
+                    "metadata": {
+                        "confidence": 1.0,
+                        "col_index": col_idx
+                    }
+                }
+                relationships.append(contains_cell_relationship)
 
-    def _extract_headers_footers(self, doc: DocxDocument, doc_id: str, parent_id: str, source_id: str) -> List[
-        Dict[str, Any]]:
+                # Create inverse relationship
+                cell_contained_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": cell_id,
+                    "target_id": row_id,
+                    "relationship_type": RelationshipType.CONTAINED_BY.value,
+                    "metadata": {
+                        "confidence": 1.0
+                    }
+                }
+                relationships.append(cell_contained_relationship)
+
+        return elements, relationships
+
+    def _extract_headers_footers(self, doc: DocxDocument, doc_id: str, parent_id: str, source_id: str) -> tuple[
+        List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
-        Extract headers and footers from document.
+        Extract headers and footers from document and create relationships.
 
         Args:
             doc: The DOCX document
@@ -756,9 +897,10 @@ class DocxParser(DocumentParser):
             source_id: Source identifier
 
         Returns:
-            List of header/footer elements
+            Tuple of (list of header/footer elements, list of relationships)
         """
         elements = []
+        relationships = []
 
         try:
             # Create headers container
@@ -766,34 +908,82 @@ class DocxParser(DocumentParser):
             headers_element = {
                 "element_id": headers_id,
                 "doc_id": doc_id,
-                "element_type": "headers",
+                "element_type": ElementType.HEADERS.value,
                 "parent_id": parent_id,
                 "content_preview": "Document headers",
                 "content_location": json.dumps({
                     "source": source_id,
-                    "type": "headers"
+                    "type": ElementType.HEADERS.value
                 }),
                 "content_hash": "",
                 "metadata": {}
             }
             elements.append(headers_element)
 
+            # Create relationship from parent to headers container
+            contains_headers_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": parent_id,
+                "target_id": headers_id,
+                "relationship_type": RelationshipType.CONTAINS.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(contains_headers_relationship)
+
+            # Create inverse relationship
+            headers_contained_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": headers_id,
+                "target_id": parent_id,
+                "relationship_type": RelationshipType.CONTAINED_BY.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(headers_contained_relationship)
+
             # Create footers container
             footers_id = self._generate_id("footers_")
             footers_element = {
                 "element_id": footers_id,
                 "doc_id": doc_id,
-                "element_type": "footers",
+                "element_type": ElementType.FOOTERS.value,
                 "parent_id": parent_id,
                 "content_preview": "Document footers",
                 "content_location": json.dumps({
                     "source": source_id,
-                    "type": "footers"
+                    "type": ElementType.FOOTERS.value
                 }),
                 "content_hash": "",
                 "metadata": {}
             }
             elements.append(footers_element)
+
+            # Create relationship from parent to footers container
+            contains_footers_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": parent_id,
+                "target_id": footers_id,
+                "relationship_type": RelationshipType.CONTAINS.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(contains_footers_relationship)
+
+            # Create inverse relationship
+            footers_contained_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": footers_id,
+                "target_id": parent_id,
+                "relationship_type": RelationshipType.CONTAINED_BY.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(footers_contained_relationship)
 
             # Process sections
             for sect_idx, section in enumerate(doc.sections):
@@ -813,13 +1003,13 @@ class DocxParser(DocumentParser):
                             header_element = {
                                 "element_id": header_id,
                                 "doc_id": doc_id,
-                                "element_type": "header",
+                                "element_type": ElementType.PAGE_HEADER.value,
                                 "parent_id": headers_id,
                                 "content_preview": header_text[:self.max_content_preview] + (
                                     "..." if len(header_text) > self.max_content_preview else ""),
                                 "content_location": json.dumps({
                                     "source": source_id,
-                                    "type": "header",
+                                    "type": ElementType.PAGE_HEADER.value,
                                     "section": sect_idx,
                                     "header_type": header_type
                                 }),
@@ -831,6 +1021,32 @@ class DocxParser(DocumentParser):
                                 }
                             }
                             elements.append(header_element)
+
+                            # Create relationship from headers container to header
+                            contains_header_relationship = {
+                                "relationship_id": self._generate_id("rel_"),
+                                "source_id": headers_id,
+                                "target_id": header_id,
+                                "relationship_type": RelationshipType.CONTAINS.value,
+                                "metadata": {
+                                    "confidence": 1.0,
+                                    "section": sect_idx,
+                                    "type": header_type
+                                }
+                            }
+                            relationships.append(contains_header_relationship)
+
+                            # Create inverse relationship
+                            header_contained_relationship = {
+                                "relationship_id": self._generate_id("rel_"),
+                                "source_id": header_id,
+                                "target_id": headers_id,
+                                "relationship_type": RelationshipType.CONTAINED_BY.value,
+                                "metadata": {
+                                    "confidence": 1.0
+                                }
+                            }
+                            relationships.append(header_contained_relationship)
 
                 # Process footers
                 for footer_type in ['first_page_footer', 'footer', 'even_page_footer']:
@@ -848,13 +1064,13 @@ class DocxParser(DocumentParser):
                             footer_element = {
                                 "element_id": footer_id,
                                 "doc_id": doc_id,
-                                "element_type": "footer",
+                                "element_type": ElementType.PAGE_FOOTER.value,
                                 "parent_id": footers_id,
                                 "content_preview": footer_text[:self.max_content_preview] + (
                                     "..." if len(footer_text) > self.max_content_preview else ""),
                                 "content_location": json.dumps({
                                     "source": source_id,
-                                    "type": "footer",
+                                    "type": ElementType.PAGE_FOOTER.value,
                                     "section": sect_idx,
                                     "footer_type": footer_type
                                 }),
@@ -866,14 +1082,41 @@ class DocxParser(DocumentParser):
                                 }
                             }
                             elements.append(footer_element)
+
+                            # Create relationship from footers container to footer
+                            contains_footer_relationship = {
+                                "relationship_id": self._generate_id("rel_"),
+                                "source_id": footers_id,
+                                "target_id": footer_id,
+                                "relationship_type": RelationshipType.CONTAINS.value,
+                                "metadata": {
+                                    "confidence": 1.0,
+                                    "section": sect_idx,
+                                    "type": footer_type
+                                }
+                            }
+                            relationships.append(contains_footer_relationship)
+
+                            # Create inverse relationship
+                            footer_contained_relationship = {
+                                "relationship_id": self._generate_id("rel_"),
+                                "source_id": footer_id,
+                                "target_id": footers_id,
+                                "relationship_type": RelationshipType.CONTAINED_BY.value,
+                                "metadata": {
+                                    "confidence": 1.0
+                                }
+                            }
+                            relationships.append(footer_contained_relationship)
         except Exception as e:
             logger.warning(f"Error extracting headers/footers: {str(e)}")
 
-        return elements
+        return elements, relationships
 
-    def _extract_comments(self, doc: DocxDocument, doc_id: str, parent_id: str, source_id: str) -> List[Dict[str, Any]]:
+    def _extract_comments(self, doc: DocxDocument, doc_id: str, parent_id: str, source_id: str) -> tuple[
+        List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
-        Extract comments from document.
+        Extract comments from document and create relationships.
 
         Args:
             doc: The DOCX document
@@ -882,9 +1125,10 @@ class DocxParser(DocumentParser):
             source_id: Source identifier
 
         Returns:
-            List of comment elements
+            Tuple of (list of comment elements, list of relationships)
         """
         elements = []
+        relationships = []
 
         try:
             # Create comments container
@@ -892,17 +1136,41 @@ class DocxParser(DocumentParser):
             comments_element = {
                 "element_id": comments_id,
                 "doc_id": doc_id,
-                "element_type": "comments",
+                "element_type": ElementType.COMMENTS.value,
                 "parent_id": parent_id,
                 "content_preview": "Document comments",
                 "content_location": json.dumps({
                     "source": source_id,
-                    "type": "comments"
+                    "type": ElementType.COMMENTS.value
                 }),
                 "content_hash": "",
                 "metadata": {}
             }
             elements.append(comments_element)
+
+            # Create relationship from parent to comments container
+            contains_comments_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": parent_id,
+                "target_id": comments_id,
+                "relationship_type": RelationshipType.CONTAINS.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(contains_comments_relationship)
+
+            # Create inverse relationship
+            comments_contained_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": comments_id,
+                "target_id": parent_id,
+                "relationship_type": RelationshipType.CONTAINED_BY.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(comments_contained_relationship)
 
             # Extract comments
             # This is a bit tricky as python-docx doesn't have a direct API for comments
@@ -930,13 +1198,13 @@ class DocxParser(DocumentParser):
                                         comment_element = {
                                             "element_id": comment_element_id,
                                             "doc_id": doc_id,
-                                            "element_type": "comment",
+                                            "element_type": ElementType.COMMENT.value,
                                             "parent_id": comments_id,
                                             "content_preview": text[:self.max_content_preview] + (
                                                 "..." if len(text) > self.max_content_preview else ""),
                                             "content_location": json.dumps({
                                                 "source": source_id,
-                                                "type": "comment",
+                                                "type": ElementType.COMMENT.value,
                                                 "comment_id": comment_id
                                             }),
                                             "content_hash": self._generate_hash(text),
@@ -949,10 +1217,35 @@ class DocxParser(DocumentParser):
                                             }
                                         }
                                         elements.append(comment_element)
+
+                                        # Create relationship from comments container to comment
+                                        contains_comment_relationship = {
+                                            "relationship_id": self._generate_id("rel_"),
+                                            "source_id": comments_id,
+                                            "target_id": comment_element_id,
+                                            "relationship_type": RelationshipType.CONTAINS.value,
+                                            "metadata": {
+                                                "confidence": 1.0,
+                                                "index": i
+                                            }
+                                        }
+                                        relationships.append(contains_comment_relationship)
+
+                                        # Create inverse relationship
+                                        comment_contained_relationship = {
+                                            "relationship_id": self._generate_id("rel_"),
+                                            "source_id": comment_element_id,
+                                            "target_id": comments_id,
+                                            "relationship_type": RelationshipType.CONTAINED_BY.value,
+                                            "metadata": {
+                                                "confidence": 1.0
+                                            }
+                                        }
+                                        relationships.append(comment_contained_relationship)
         except Exception as e:
             logger.warning(f"Error extracting comments: {str(e)}")
 
-        return elements
+        return elements, relationships
 
     def _extract_links(self, doc: DocxDocument, elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """

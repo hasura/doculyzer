@@ -5,12 +5,13 @@ This module provides access to documents from the local file system,
 supporting various file formats that can be handled by document parsers.
 """
 
-import wcmatch.glob as glob
 import logging
 import mimetypes
 import os
 import re
 from typing import Dict, Any, List, Optional, Set
+
+import wcmatch.glob as glob
 
 from .base import ContentSource
 from ..document_parser.factory import get_parser_for_content

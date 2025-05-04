@@ -1,8 +1,9 @@
 import json
 import logging
 import os
+from typing import Optional, Dict, Any, List, Tuple
+
 import time
-from typing import Optional, Dict, Any, List, Tuple, Union
 
 from .base import DocumentDatabase
 from .element_relationship import ElementRelationship
@@ -40,7 +41,7 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
     3. Updated search_by_embedding methods to return element_pk instead of element_id for consistency
     """
 
-    def get_element(self, element_id_or_pk: Union[str, int]) -> Optional[Dict[str, Any]]:
+    def get_element(self, element_id_or_pk: str | int) -> Optional[Dict[str, Any]]:
         """
         Get element by ID or PK.
 

@@ -12,6 +12,8 @@ import re
 import uuid
 from typing import Dict, Any, List, Optional, Tuple, Union
 
+from ..relationships import RelationshipType
+
 try:
     # noinspection PyPackageRequirements
     import fitz  # PyMuPDF
@@ -48,6 +50,7 @@ class PdfParser(DocumentParser):
         self.max_pages = self.config.get("max_pages", 1000)  # Limit for large documents
         self.min_header_font_size = self.config.get("min_header_font_size", 12)  # Minimum font size for headers
         self.temp_dir = self.config.get("temp_dir", os.path.join(os.path.dirname(__file__), 'temp'))
+        self.max_content_preview = self.config.get("max_content_preview", 100)
 
         # Table detection parameters
         self.table_detection_method = self.config.get("table_detection_method",
@@ -360,9 +363,13 @@ class PdfParser(DocumentParser):
         elements = [self._create_root_element(doc_id, source_id)]
         root_id = elements[0]["element_id"]
 
-        # Parse document elements
-        page_elements = self._parse_document(doc, doc_id, root_id, source_id)
+        # Initialize relationships list
+        relationships = []
+
+        # Parse document elements and create relationships
+        page_elements, page_relationships = self._parse_document(doc, doc_id, root_id, source_id)
         elements.extend(page_elements)
+        relationships.extend(page_relationships)
 
         # Extract links from the document using the helper method
         links = self._extract_document_links(doc, elements)
@@ -376,12 +383,12 @@ class PdfParser(DocumentParser):
             except Exception as e:
                 logger.warning(f"Failed to delete temporary file {binary_path}: {str(e)}")
 
-        # Return the parsed document with extracted links
+        # Return the parsed document with extracted links and relationships
         return {
             "document": document,
             "elements": elements,
             "links": links,
-            "relationships": []
+            "relationships": relationships
         }
 
     def _extract_document_metadata(self, doc: fitz.Document, base_metadata: Dict[str, Any]) -> Dict[str, Any]:
@@ -438,7 +445,8 @@ class PdfParser(DocumentParser):
 
         return metadata
 
-    def _parse_document(self, doc: fitz.Document, doc_id: str, parent_id: str, source_id: str) -> List[Dict[str, Any]]:
+    def _parse_document(self, doc: fitz.Document, doc_id: str, parent_id: str, source_id: str) -> tuple[
+        List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Parse PDF document into structured elements.
 
@@ -449,9 +457,10 @@ class PdfParser(DocumentParser):
             source_id: Source identifier
 
         Returns:
-            List of parsed elements
+            Tuple of (list of elements, list of relationships)
         """
         elements = []
+        relationships = []
 
         # Create and add a content element to hold all pages
         content_id = self._generate_id("content_")
@@ -472,19 +481,44 @@ class PdfParser(DocumentParser):
         }
         elements.append(content_element)
 
+        # Create relationship from root to content
+        contains_relationship = {
+            "relationship_id": self._generate_id("rel_"),
+            "source_id": parent_id,
+            "target_id": content_id,
+            "relationship_type": RelationshipType.CONTAINS.value,
+            "metadata": {
+                "confidence": 1.0
+            }
+        }
+        relationships.append(contains_relationship)
+
+        # Create inverse relationship
+        contained_by_relationship = {
+            "relationship_id": self._generate_id("rel_"),
+            "source_id": content_id,
+            "target_id": parent_id,
+            "relationship_type": RelationshipType.CONTAINED_BY.value,
+            "metadata": {
+                "confidence": 1.0
+            }
+        }
+        relationships.append(contained_by_relationship)
+
         # Process each page up to max_pages
         for page_idx, page in enumerate(doc):
             if page_idx >= self.max_pages:
                 break
 
             # Process the page
-            page_elements = self._process_page(doc, page, page_idx, doc_id, content_id, source_id)
+            page_elements, page_relationships = self._process_page(doc, page, page_idx, doc_id, content_id, source_id)
             elements.extend(page_elements)
+            relationships.extend(page_relationships)
 
-        return elements
+        return elements, relationships
 
     def _process_page(self, _doc: fitz.Document, page: fitz.Page, page_idx: int, doc_id: str, parent_id: str,
-                      source_id: str) -> List[Dict[str, Any]]:
+                      source_id: str) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Process a single PDF page.
 
@@ -497,9 +531,10 @@ class PdfParser(DocumentParser):
             source_id: Source identifier
 
         Returns:
-            List of page elements
+            Tuple of (list of page elements, list of relationships)
         """
         elements = []
+        relationships = []
 
         # Create page element
         page_id = self._generate_id(f"page_{page_idx + 1}_")
@@ -542,28 +577,58 @@ class PdfParser(DocumentParser):
 
         elements.append(page_element)
 
-        # Extract text blocks
-        text_elements = self._extract_text_blocks(page, doc_id, page_id, source_id)
+        # Create relationship from content to page
+        contains_relationship = {
+            "relationship_id": self._generate_id("rel_"),
+            "source_id": parent_id,
+            "target_id": page_id,
+            "relationship_type": RelationshipType.CONTAINS.value,
+            "metadata": {
+                "confidence": 1.0,
+                "index": page_number
+            }
+        }
+        relationships.append(contains_relationship)
+
+        # Create inverse relationship
+        contained_by_relationship = {
+            "relationship_id": self._generate_id("rel_"),
+            "source_id": page_id,
+            "target_id": parent_id,
+            "relationship_type": RelationshipType.CONTAINED_BY.value,
+            "metadata": {
+                "confidence": 1.0
+            }
+        }
+        relationships.append(contained_by_relationship)
+
+        # Extract text blocks and create relationships
+        text_elements, text_relationships = self._extract_text_blocks(page, doc_id, page_id, source_id)
         elements.extend(text_elements)
+        relationships.extend(text_relationships)
 
         # Extract tables if enabled
         if self.extract_tables:
-            table_elements = self._extract_tables(page, doc_id, page_id, source_id)
+            table_elements, table_relationships = self._extract_tables(page, doc_id, page_id, source_id)
             elements.extend(table_elements)
+            relationships.extend(table_relationships)
 
         # Extract annotations if enabled
         if self.extract_annotations:
-            annotation_elements = self._extract_annotations(page, doc_id, page_id, source_id)
+            annotation_elements, annotation_relationships = self._extract_annotations(page, doc_id, page_id, source_id)
             elements.extend(annotation_elements)
+            relationships.extend(annotation_relationships)
 
         # Extract images if enabled
         if self.extract_images:
-            image_elements = self._extract_images(page, doc_id, page_id, source_id)
+            image_elements, image_relationships = self._extract_images(page, doc_id, page_id, source_id)
             elements.extend(image_elements)
+            relationships.extend(image_relationships)
 
-        return elements
+        return elements, relationships
 
-    def _extract_text_blocks(self, page: fitz.Page, doc_id: str, page_id: str, source_id: str) -> List[Dict[str, Any]]:
+    def _extract_text_blocks(self, page: fitz.Page, doc_id: str, page_id: str, source_id: str) -> tuple[
+        List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Extract text blocks from a PDF page.
 
@@ -574,15 +639,16 @@ class PdfParser(DocumentParser):
             source_id: Source identifier
 
         Returns:
-            List of text block elements
+            Tuple of (list of text block elements, list of relationships)
         """
         elements = []
+        relationships = []
 
         # Extract text blocks using PyMuPDF's built-in text extraction
         blocks = page.get_text("blocks")
 
         # Track headers for section structuring
-        # current_header = None
+        section_stack = [{"id": page_id, "level": 0}]
         current_section = None
 
         # Sort blocks by their vertical position (top to bottom)
@@ -647,69 +713,6 @@ class PdfParser(DocumentParser):
                 element_id = self._generate_id(f"header_{i}_")
                 element_type = "header"
 
-                # Create a new section for this header
-                # current_header = element_id
-                section_id = self._generate_id(f"section_{i}_")
-
-                # Create section element
-                section_element = {
-                    "element_id": section_id,
-                    "doc_id": doc_id,
-                    "element_type": "section",
-                    "parent_id": page_id,
-                    "content_preview": f"Section: {text[:50]}{'...' if len(text) > 50 else ''}",
-                    "content_location": json.dumps({
-                        "source": source_id,
-                        "type": "section",
-                        "page": page.number + 1,
-                        "bbox": [x0, y0, x1, y1]
-                    }),
-                    "content_hash": self._generate_hash(text),
-                    "metadata": {
-                        "page_number": page.number + 1,
-                        "bbox": [x0, y0, x1, y1]
-                    }
-                }
-
-                elements.append(section_element)
-                current_section = section_id
-
-                # Set this header's parent to the page
-                parent_id_for_block = page_id
-            else:
-                element_id = self._generate_id(f"textblock_{i}_")
-                element_type = "paragraph"
-
-                # Set parent to current section if we have one, otherwise to the page
-                parent_id_for_block = current_section if current_section else page_id
-
-            # Create text block element
-            content_preview = text.replace('\n', ' ')
-            if len(content_preview) > 100:
-                content_preview = content_preview[:97] + "..."
-
-            block_element = {
-                "element_id": element_id,
-                "doc_id": doc_id,
-                "element_type": element_type,
-                "parent_id": parent_id_for_block,
-                "content_preview": content_preview,
-                "content_location": json.dumps({
-                    "source": source_id,
-                    "type": element_type,
-                    "page": page.number + 1,
-                    "bbox": [x0, y0, x1, y1]
-                }),
-                "content_hash": self._generate_hash(text),
-                "metadata": {
-                    "page_number": page.number + 1,
-                    "bbox": [x0, y0, x1, y1],
-                    "block_type": block_type,
-                    "block_number": block_no
-                }
-            }
-
-            if is_header:
                 # Determine header level based on font size or other heuristics
                 header_level = 1  # Default
                 try:
@@ -741,14 +744,138 @@ class PdfParser(DocumentParser):
                 except Exception as e:
                     logger.debug(f"Error determining header level: {str(e)}")
 
+                # Update section stack based on header level
+                while section_stack[-1]["level"] >= header_level:
+                    section_stack.pop()
+
+                # Create section element
+                section_id = self._generate_id(f"section_{i}_")
+                section_element = {
+                    "element_id": section_id,
+                    "doc_id": doc_id,
+                    "element_type": "section",
+                    "parent_id": section_stack[-1]["id"],
+                    "content_preview": f"Section: {text[:50]}{'...' if len(text) > 50 else ''}",
+                    "content_location": json.dumps({
+                        "source": source_id,
+                        "type": "section",
+                        "page": page.number + 1,
+                        "bbox": [x0, y0, x1, y1]
+                    }),
+                    "content_hash": self._generate_hash(text),
+                    "metadata": {
+                        "page_number": page.number + 1,
+                        "bbox": [x0, y0, x1, y1],
+                        "level": header_level
+                    }
+                }
+
+                elements.append(section_element)
+
+                # Create relationship from parent to section
+                section_parent_id = section_stack[-1]["id"]
+                contains_section_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": section_parent_id,
+                    "target_id": section_id,
+                    "relationship_type": RelationshipType.CONTAINS.value,
+                    "metadata": {
+                        "confidence": 1.0,
+                        "index": i
+                    }
+                }
+                relationships.append(contains_section_relationship)
+
+                # Create inverse relationship
+                section_contained_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": section_id,
+                    "target_id": section_parent_id,
+                    "relationship_type": RelationshipType.CONTAINED_BY.value,
+                    "metadata": {
+                        "confidence": 1.0
+                    }
+                }
+                relationships.append(section_contained_relationship)
+
+                # Add to section stack
+                section_stack.append({"id": section_id, "level": header_level})
+                current_section = section_id
+
+                # Set this header's parent to the section
+                parent_id_for_block = section_id
+            else:
+                element_id = self._generate_id(f"textblock_{i}_")
+                element_type = "paragraph"
+
+                # Set parent to current section if we have one, otherwise to the page
+                parent_id_for_block = section_stack[-1]["id"]
+
+            # Create text block element
+            content_preview = text.replace('\n', ' ')
+            if len(content_preview) > self.max_content_preview:
+                content_preview = content_preview[:self.max_content_preview - 3] + "..."
+
+            block_element = {
+                "element_id": element_id,
+                "doc_id": doc_id,
+                "element_type": element_type,
+                "parent_id": parent_id_for_block,
+                "content_preview": content_preview,
+                "content_location": json.dumps({
+                    "source": source_id,
+                    "type": element_type,
+                    "page": page.number + 1,
+                    "bbox": [x0, y0, x1, y1]
+                }),
+                "content_hash": self._generate_hash(text),
+                "metadata": {
+                    "page_number": page.number + 1,
+                    "bbox": [x0, y0, x1, y1],
+                    "block_type": block_type,
+                    "block_number": block_no
+                }
+            }
+
+            if is_header:
                 # Add header-specific metadata
                 block_element["metadata"]["level"] = header_level
 
             elements.append(block_element)
 
-        return elements
+            # Create relationship from parent to text block
+            relationship_type = RelationshipType.CONTAINS.value
+            if element_type == "paragraph":
+                relationship_type = RelationshipType.CONTAINS_TEXT.value
 
-    def _extract_tables(self, page: fitz.Page, doc_id: str, page_id: str, source_id: str) -> List[Dict[str, Any]]:
+            contains_block_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": parent_id_for_block,
+                "target_id": element_id,
+                "relationship_type": relationship_type,
+                "metadata": {
+                    "confidence": 1.0,
+                    "index": i
+                }
+            }
+            relationships.append(contains_block_relationship)
+
+            # Create inverse relationship
+            block_contained_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": element_id,
+                "target_id": parent_id_for_block,
+                "relationship_type": RelationshipType.CONTAINED_BY.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(block_contained_relationship)
+
+        return elements, relationships
+
+    def _extract_tables(self, page: fitz.Page, doc_id: str, page_id: str, source_id: str) -> tuple[
+        List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Extract tables from a PDF page.
 
@@ -759,9 +886,10 @@ class PdfParser(DocumentParser):
             source_id: Source identifier
 
         Returns:
-            List of table elements
+            Tuple of (list of table elements, list of relationships)
         """
         elements = []
+        relationships = []
 
         # Use heuristic-based table detection as PyMuPDF doesn't have built-in table detection
         if self.table_detection_method == "heuristic":
@@ -813,9 +941,34 @@ class PdfParser(DocumentParser):
 
                 elements.append(table_element)
 
+                # Create relationship from page to table
+                contains_table_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": page_id,
+                    "target_id": table_id,
+                    "relationship_type": RelationshipType.CONTAINS.value,
+                    "metadata": {
+                        "confidence": 1.0,
+                        "index": table_idx
+                    }
+                }
+                relationships.append(contains_table_relationship)
+
+                # Create inverse relationship
+                table_contained_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": table_id,
+                    "target_id": page_id,
+                    "relationship_type": RelationshipType.CONTAINED_BY.value,
+                    "metadata": {
+                        "confidence": 1.0
+                    }
+                }
+                relationships.append(table_contained_relationship)
+
                 # Add the header row if one exists
                 if rows > 0:
-                    header_id = self._generate_id(f"table_header_{table_idx}_")
+                    header_row_id = self._generate_id(f"table_header_{table_idx}_")
                     header_texts = []
 
                     for col in sorted(cells[0].keys()):
@@ -825,12 +978,13 @@ class PdfParser(DocumentParser):
                     header_text = "\t".join(header_texts)
 
                     # Create header row element
-                    header_element = {
-                        "element_id": header_id,
+                    header_row_element = {
+                        "element_id": header_row_id,
                         "doc_id": doc_id,
                         "element_type": "table_header_row",
                         "parent_id": table_id,
-                        "content_preview": header_text[:100] + ("..." if len(header_text) > 100 else ""),
+                        "content_preview": header_text[:self.max_content_preview] + (
+                            "..." if len(header_text) > self.max_content_preview else ""),
                         "content_location": json.dumps({
                             "source": source_id,
                             "type": "table_header_row",
@@ -845,9 +999,207 @@ class PdfParser(DocumentParser):
                         }
                     }
 
-                    elements.append(header_element)
+                    elements.append(header_row_element)
 
-        return elements
+                    # Create relationship from table to header row
+                    contains_header_row_relationship = {
+                        "relationship_id": self._generate_id("rel_"),
+                        "source_id": table_id,
+                        "target_id": header_row_id,
+                        "relationship_type": RelationshipType.CONTAINS_TABLE_ROW.value,
+                        "metadata": {
+                            "confidence": 1.0,
+                            "row_index": 0
+                        }
+                    }
+                    relationships.append(contains_header_row_relationship)
+
+                    # Create inverse relationship
+                    header_row_contained_relationship = {
+                        "relationship_id": self._generate_id("rel_"),
+                        "source_id": header_row_id,
+                        "target_id": table_id,
+                        "relationship_type": RelationshipType.CONTAINED_BY.value,
+                        "metadata": {
+                            "confidence": 1.0
+                        }
+                    }
+                    relationships.append(header_row_contained_relationship)
+
+                    # Process header cells
+                    for col_idx, col in enumerate(sorted(cells[0].keys())):
+                        cell_id = self._generate_id(f"table_header_cell_{table_idx}_{col_idx}_")
+                        cell_text = cells[0][col].strip()
+
+                        # Create header cell element
+                        header_cell_element = {
+                            "element_id": cell_id,
+                            "doc_id": doc_id,
+                            "element_type": "table_header",
+                            "parent_id": header_row_id,
+                            "content_preview": cell_text[:self.max_content_preview] + (
+                                "..." if len(cell_text) > self.max_content_preview else ""),
+                            "content_location": json.dumps({
+                                "source": source_id,
+                                "type": "table_header",
+                                "page": page.number + 1,
+                                "table": table_idx,
+                                "row": 0,
+                                "col": col_idx
+                            }),
+                            "content_hash": self._generate_hash(cell_text),
+                            "metadata": {
+                                "page_number": page.number + 1,
+                                "row": 0,
+                                "col": col_idx,
+                                "text": cell_text
+                            }
+                        }
+
+                        elements.append(header_cell_element)
+
+                        # Create relationship from header row to header cell
+                        contains_header_cell_relationship = {
+                            "relationship_id": self._generate_id("rel_"),
+                            "source_id": header_row_id,
+                            "target_id": cell_id,
+                            "relationship_type": RelationshipType.CONTAINS_TABLE_HEADER.value,
+                            "metadata": {
+                                "confidence": 1.0,
+                                "col_index": col_idx
+                            }
+                        }
+                        relationships.append(contains_header_cell_relationship)
+
+                        # Create inverse relationship
+                        header_cell_contained_relationship = {
+                            "relationship_id": self._generate_id("rel_"),
+                            "source_id": cell_id,
+                            "target_id": header_row_id,
+                            "relationship_type": RelationshipType.CONTAINED_BY.value,
+                            "metadata": {
+                                "confidence": 1.0
+                            }
+                        }
+                        relationships.append(header_cell_contained_relationship)
+
+                # Process data rows
+                for row_idx in range(1, rows):  # Skip header row (0)
+                    row_id = self._generate_id(f"table_row_{table_idx}_{row_idx}_")
+
+                    # Create row element
+                    row_text = []
+                    for col in sorted(cells[row_idx].keys()):
+                        cell_text = cells[row_idx][col].strip()
+                        row_text.append(cell_text if cell_text else "")
+
+                    row_text_str = "\t".join(row_text)
+
+                    row_element = {
+                        "element_id": row_id,
+                        "doc_id": doc_id,
+                        "element_type": "table_row",
+                        "parent_id": table_id,
+                        "content_preview": f"Row {row_idx + 1}",
+                        "content_location": json.dumps({
+                            "source": source_id,
+                            "type": "table_row",
+                            "page": page.number + 1,
+                            "table": table_idx,
+                            "row": row_idx
+                        }),
+                        "content_hash": self._generate_hash(row_text_str),
+                        "metadata": {
+                            "page_number": page.number + 1,
+                            "row": row_idx
+                        }
+                    }
+
+                    elements.append(row_element)
+
+                    # Create relationship from table to row
+                    contains_row_relationship = {
+                        "relationship_id": self._generate_id("rel_"),
+                        "source_id": table_id,
+                        "target_id": row_id,
+                        "relationship_type": RelationshipType.CONTAINS_TABLE_ROW.value,
+                        "metadata": {
+                            "confidence": 1.0,
+                            "row_index": row_idx
+                        }
+                    }
+                    relationships.append(contains_row_relationship)
+
+                    # Create inverse relationship
+                    row_contained_relationship = {
+                        "relationship_id": self._generate_id("rel_"),
+                        "source_id": row_id,
+                        "target_id": table_id,
+                        "relationship_type": RelationshipType.CONTAINED_BY.value,
+                        "metadata": {
+                            "confidence": 1.0
+                        }
+                    }
+                    relationships.append(row_contained_relationship)
+
+                    # Process cells in the row
+                    for col_idx, col in enumerate(sorted(cells[row_idx].keys())):
+                        cell_id = self._generate_id(f"table_cell_{table_idx}_{row_idx}_{col_idx}_")
+                        cell_text = cells[row_idx][col].strip()
+
+                        # Create cell element
+                        cell_element = {
+                            "element_id": cell_id,
+                            "doc_id": doc_id,
+                            "element_type": "table_cell",
+                            "parent_id": row_id,
+                            "content_preview": cell_text[:self.max_content_preview] + (
+                                "..." if len(cell_text) > self.max_content_preview else ""),
+                            "content_location": json.dumps({
+                                "source": source_id,
+                                "type": "table_cell",
+                                "page": page.number + 1,
+                                "table": table_idx,
+                                "row": row_idx,
+                                "col": col_idx
+                            }),
+                            "content_hash": self._generate_hash(cell_text),
+                            "metadata": {
+                                "page_number": page.number + 1,
+                                "row": row_idx,
+                                "col": col_idx,
+                                "text": cell_text
+                            }
+                        }
+
+                        elements.append(cell_element)
+
+                        # Create relationship from row to cell
+                        contains_cell_relationship = {
+                            "relationship_id": self._generate_id("rel_"),
+                            "source_id": row_id,
+                            "target_id": cell_id,
+                            "relationship_type": RelationshipType.CONTAINS_TABLE_CELL.value,
+                            "metadata": {
+                                "confidence": 1.0,
+                                "col_index": col_idx
+                            }
+                        }
+                        relationships.append(contains_cell_relationship)
+
+                        # Create inverse relationship
+                        cell_contained_relationship = {
+                            "relationship_id": self._generate_id("rel_"),
+                            "source_id": cell_id,
+                            "target_id": row_id,
+                            "relationship_type": RelationshipType.CONTAINED_BY.value,
+                            "metadata": {
+                                "confidence": 1.0
+                            }
+                        }
+                        relationships.append(cell_contained_relationship)
+
+        return elements, relationships
 
     def _detect_tables_heuristic(self, page: fitz.Page) -> List[Tuple]:
         """
@@ -1019,7 +1371,7 @@ class PdfParser(DocumentParser):
 
         # Use filtered clusters as column boundaries
         boundaries = filtered_clusters
-        num_cols = len(boundaries) - 1
+        num_cols = len(boundaries) - 1 if len(boundaries) > 1 else 1
 
         # Now assign words to cells based on boundaries
         cells = {}
@@ -1043,7 +1395,8 @@ class PdfParser(DocumentParser):
 
         return num_cols, cells
 
-    def _extract_annotations(self, page: fitz.Page, doc_id: str, page_id: str, source_id: str) -> List[Dict[str, Any]]:
+    def _extract_annotations(self, page: fitz.Page, doc_id: str, page_id: str, source_id: str) -> tuple[
+        List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Extract annotations from a PDF page.
 
@@ -1054,75 +1407,148 @@ class PdfParser(DocumentParser):
             source_id: Source identifier
 
         Returns:
-            List of annotation elements
+            Tuple of (list of annotation elements, list of relationships)
         """
         elements = []
+        relationships = []
 
-        # Get all annotations on the page
-        for annot_idx, annot in enumerate(page.annots()):
-            # Generate element ID
-            annot_id = self._generate_id(f"annot_{annot_idx}_")
-
-            # Get annotation details
-            annot_type = annot.type[1]  # Get type name without number
-            rect = annot.rect
-            content = annot.info.get("content", "")
-            author = annot.info.get("title", "")
-            created = annot.info.get("creationDate", "")
-            modified = annot.info.get("modDate", "")
-
-            # Create content preview
-            if content:
-                content_preview = f"{annot_type} annotation: {content}"
-                if len(content_preview) > 100:
-                    content_preview = content_preview[:97] + "..."
-            else:
-                content_preview = f"{annot_type} annotation"
-
-            # Determine element type based on annotation type
-            if annot_type == "Highlight":
-                element_type = "highlight"
-            elif annot_type == "Text":
-                element_type = "comment"
-            elif annot_type == "FreeText":
-                element_type = "text_annotation"
-            elif annot_type == "Ink":
-                element_type = "ink_annotation"
-            elif annot_type == "Underline":
-                element_type = "underline"
-            else:
-                element_type = "annotation"
-
-            # Create annotation element
-            annot_element = {
-                "element_id": annot_id,
+        # Create annotations container
+        annotations_id = None
+        if page.annots():
+            annotations_id = self._generate_id("annotations_")
+            annotations_element = {
+                "element_id": annotations_id,
                 "doc_id": doc_id,
-                "element_type": element_type,
+                "element_type": "annotations",
                 "parent_id": page_id,
-                "content_preview": content_preview,
+                "content_preview": "Page annotations",
                 "content_location": json.dumps({
                     "source": source_id,
-                    "type": element_type,
-                    "page": page.number + 1,
-                    "bbox": [rect.x0, rect.y0, rect.x1, rect.y1]
+                    "type": "annotations",
+                    "page": page.number + 1
                 }),
-                "content_hash": self._generate_hash(content),
+                "content_hash": "",
                 "metadata": {
-                    "page_number": page.number + 1,
-                    "annotation_type": annot_type,
-                    "bbox": [rect.x0, rect.y0, rect.x1, rect.y1],
-                    "author": author,
-                    "created": created,
-                    "modified": modified,
-                    "flags": annot.flags
+                    "page_number": page.number + 1
                 }
             }
+            elements.append(annotations_element)
 
-            elements.append(annot_element)
+            # Create relationship from page to annotations container
+            contains_annotations_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": page_id,
+                "target_id": annotations_id,
+                "relationship_type": RelationshipType.CONTAINS.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(contains_annotations_relationship)
 
-        return elements
+            # Create inverse relationship
+            annotations_contained_relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": annotations_id,
+                "target_id": page_id,
+                "relationship_type": RelationshipType.CONTAINED_BY.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(annotations_contained_relationship)
 
-    def _extract_images(self, page: fitz.Page, doc_id: str, page_id: str, source_id: str) -> List[Dict[str, Any]]:
+            # Get all annotations on the page
+            for annot_idx, annot in enumerate(page.annots()):
+                # Generate element ID
+                annot_id = self._generate_id(f"annot_{annot_idx}_")
+
+                # Get annotation details
+                annot_type = annot.type[1]  # Get type name without number
+                rect = annot.rect
+                content = annot.info.get("content", "")
+                author = annot.info.get("title", "")
+                created = annot.info.get("creationDate", "")
+                modified = annot.info.get("modDate", "")
+
+                # Create content preview
+                if content:
+                    content_preview = f"{annot_type} annotation: {content}"
+                    if len(content_preview) > self.max_content_preview:
+                        content_preview = content_preview[:self.max_content_preview - 3] + "..."
+                else:
+                    content_preview = f"{annot_type} annotation"
+
+                # Determine element type based on annotation type
+                if annot_type == "Highlight":
+                    element_type = "highlight"
+                elif annot_type == "Text":
+                    element_type = "comment"
+                elif annot_type == "FreeText":
+                    element_type = "text_annotation"
+                elif annot_type == "Ink":
+                    element_type = "ink_annotation"
+                elif annot_type == "Underline":
+                    element_type = "underline"
+                else:
+                    element_type = "annotation"
+
+                # Create annotation element
+                annot_element = {
+                    "element_id": annot_id,
+                    "doc_id": doc_id,
+                    "element_type": element_type,
+                    "parent_id": annotations_id,
+                    "content_preview": content_preview,
+                    "content_location": json.dumps({
+                        "source": source_id,
+                        "type": element_type,
+                        "page": page.number + 1,
+                        "bbox": [rect.x0, rect.y0, rect.x1, rect.y1]
+                    }),
+                    "content_hash": self._generate_hash(content),
+                    "metadata": {
+                        "page_number": page.number + 1,
+                        "annotation_type": annot_type,
+                        "bbox": [rect.x0, rect.y0, rect.x1, rect.y1],
+                        "author": author,
+                        "created": created,
+                        "modified": modified,
+                        "flags": annot.flags
+                    }
+                }
+
+                elements.append(annot_element)
+
+                # Create relationship from annotations container to annotation
+                contains_annotation_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": annotations_id,
+                    "target_id": annot_id,
+                    "relationship_type": RelationshipType.CONTAINS.value,
+                    "metadata": {
+                        "confidence": 1.0,
+                        "index": annot_idx
+                    }
+                }
+                relationships.append(contains_annotation_relationship)
+
+                # Create inverse relationship
+                annotation_contained_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": annot_id,
+                    "target_id": annotations_id,
+                    "relationship_type": RelationshipType.CONTAINED_BY.value,
+                    "metadata": {
+                        "confidence": 1.0
+                    }
+                }
+                relationships.append(annotation_contained_relationship)
+
+        return elements, relationships
+
+    def _extract_images(self, page: fitz.Page, doc_id: str, page_id: str, source_id: str) -> tuple[
+        List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Extract images from a PDF page.
 
@@ -1133,82 +1559,156 @@ class PdfParser(DocumentParser):
             source_id: Source identifier
 
         Returns:
-            List of image elements
+            Tuple of (list of image elements, list of relationships)
         """
         elements = []
+        relationships = []
 
         try:
             # Get image blocks
             image_list = page.get_images(full=True)
 
-            for img_idx, img_info in enumerate(image_list):
-                # Generate element ID
-                img_id = self._generate_id(f"img_{img_idx}_")
+            # Create images container if we have images
+            images_id = None
 
-                # Extract image information
-                xref = img_info[0]  # Cross-reference number
-                smask = img_info[1]  # SMask number (transparency)
-                width = img_info[2]  # Width
-                height = img_info[3]  # Height
-                bpc = img_info[4]  # Bits per component
-                colorspace = img_info[5]  # Colorspace
-                name = img_info[7]  # Image name
-
-                # Try to determine image position on the page
-                img_bbox = None
-                img_rects = []
-
-                # Search for image references in the page's content streams
-                try:
-                    # Use a heuristic approach to find image positions
-                    for item in page.get_drawings():
-                        if item["type"] == "image" and item.get("xref") == xref:
-                            rect = item["rect"]
-                            img_bbox = [rect.x0, rect.y0, rect.x1, rect.y1]
-                            img_rects.append(img_bbox)
-                except Exception as e:
-                    logger.debug(f"Error locating image on page: {str(e)}")
-
-                # Use the largest rectangle if multiple were found
-                if img_rects:
-                    img_bbox = max(img_rects, key=lambda r: (r[2] - r[0]) * (r[3] - r[1]))
-
-                # Create content preview
-                content_preview = f"Image ({width}x{height})"
-
-                # Create image element
-                img_element = {
-                    "element_id": img_id,
+            if image_list:
+                images_id = self._generate_id("images_")
+                images_element = {
+                    "element_id": images_id,
                     "doc_id": doc_id,
-                    "element_type": "image",
+                    "element_type": "images",
                     "parent_id": page_id,
-                    "content_preview": content_preview,
+                    "content_preview": f"Page images ({len(image_list)})",
                     "content_location": json.dumps({
                         "source": source_id,
-                        "type": "image",
-                        "page": page.number + 1,
-                        "xref": xref,
-                        "bbox": img_bbox
+                        "type": "images",
+                        "page": page.number + 1
                     }),
-                    "content_hash": f"img_{xref}_{smask}",  # Use xref and smask as content hash
+                    "content_hash": "",
                     "metadata": {
                         "page_number": page.number + 1,
-                        "xref": xref,
-                        "width": width,
-                        "height": height,
-                        "bbox": img_bbox,
-                        "bits_per_component": bpc,
-                        "colorspace": colorspace,
-                        "name": name if name else None
+                        "image_count": len(image_list)
                     }
                 }
+                elements.append(images_element)
 
-                elements.append(img_element)
+                # Create relationship from page to images container
+                contains_images_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": page_id,
+                    "target_id": images_id,
+                    "relationship_type": RelationshipType.CONTAINS.value,
+                    "metadata": {
+                        "confidence": 1.0
+                    }
+                }
+                relationships.append(contains_images_relationship)
+
+                # Create inverse relationship
+                images_contained_relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": images_id,
+                    "target_id": page_id,
+                    "relationship_type": RelationshipType.CONTAINED_BY.value,
+                    "metadata": {
+                        "confidence": 1.0
+                    }
+                }
+                relationships.append(images_contained_relationship)
+
+                for img_idx, img_info in enumerate(image_list):
+                    # Generate element ID
+                    img_id = self._generate_id(f"img_{img_idx}_")
+
+                    # Extract image information
+                    xref = img_info[0]  # Cross-reference number
+                    smask = img_info[1]  # SMask number (transparency)
+                    width = img_info[2]  # Width
+                    height = img_info[3]  # Height
+                    bpc = img_info[4]  # Bits per component
+                    colorspace = img_info[5]  # Colorspace
+                    name = img_info[7]  # Image name
+
+                    # Try to determine image position on the page
+                    img_bbox = None
+                    img_rects = []
+
+                    # Search for image references in the page's content streams
+                    try:
+                        # Use a heuristic approach to find image positions
+                        for item in page.get_drawings():
+                            if item["type"] == "image" and item.get("xref") == xref:
+                                rect = item["rect"]
+                                img_bbox = [rect.x0, rect.y0, rect.x1, rect.y1]
+                                img_rects.append(img_bbox)
+                    except Exception as e:
+                        logger.debug(f"Error locating image on page: {str(e)}")
+
+                    # Use the largest rectangle if multiple were found
+                    if img_rects:
+                        img_bbox = max(img_rects, key=lambda r: (r[2] - r[0]) * (r[3] - r[1]))
+
+                    # Create content preview
+                    content_preview = f"Image ({width}x{height})"
+
+                    # Create image element
+                    img_element = {
+                        "element_id": img_id,
+                        "doc_id": doc_id,
+                        "element_type": "image",
+                        "parent_id": images_id,
+                        "content_preview": content_preview,
+                        "content_location": json.dumps({
+                            "source": source_id,
+                            "type": "image",
+                            "page": page.number + 1,
+                            "xref": xref,
+                            "bbox": img_bbox
+                        }),
+                        "content_hash": f"img_{xref}_{smask}",  # Use xref and smask as content hash
+                        "metadata": {
+                            "page_number": page.number + 1,
+                            "xref": xref,
+                            "width": width,
+                            "height": height,
+                            "bbox": img_bbox,
+                            "bits_per_component": bpc,
+                            "colorspace": colorspace,
+                            "name": name if name else None
+                        }
+                    }
+
+                    elements.append(img_element)
+
+                    # Create relationship from images container to image
+                    contains_image_relationship = {
+                        "relationship_id": self._generate_id("rel_"),
+                        "source_id": images_id,
+                        "target_id": img_id,
+                        "relationship_type": RelationshipType.CONTAINS.value,
+                        "metadata": {
+                            "confidence": 1.0,
+                            "index": img_idx
+                        }
+                    }
+                    relationships.append(contains_image_relationship)
+
+                    # Create inverse relationship
+                    image_contained_relationship = {
+                        "relationship_id": self._generate_id("rel_"),
+                        "source_id": img_id,
+                        "target_id": images_id,
+                        "relationship_type": RelationshipType.CONTAINED_BY.value,
+                        "metadata": {
+                            "confidence": 1.0
+                        }
+                    }
+                    relationships.append(image_contained_relationship)
 
         except Exception as e:
             logger.warning(f"Error extracting images: {str(e)}")
 
-        return elements
+        return elements, relationships
 
     def _extract_document_links(self, doc: fitz.Document, elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """

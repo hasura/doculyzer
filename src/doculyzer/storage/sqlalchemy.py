@@ -8,10 +8,10 @@ allowing for flexible database support and ORM capabilities.
 import json
 import logging
 import os
-import time
 from typing import Optional, Dict, Any, List, Tuple, Union
 
 import numpy as np
+import time
 from sqlalchemy import (
     create_engine, Column, ForeignKey, String, Integer, Float, Text, LargeBinary, func, text
 )
@@ -117,7 +117,6 @@ Key updates to the SQLAlchemy implementation:
 3. Updated search methods to consistently return element_pk values for compatibility with other storage backends
 """
 
-
     def get_element(self, element_id_or_pk: Union[int, str]) -> Optional[Dict[str, Any]]:
         """
         Get element by ID or PK.
@@ -161,7 +160,6 @@ Key updates to the SQLAlchemy implementation:
             result["metadata"] = {}
 
         return result
-
 
     def get_outgoing_relationships(self, element_pk: int) -> List[ElementRelationship]:
         """
@@ -256,7 +254,6 @@ Key updates to the SQLAlchemy implementation:
         except Exception as e:
             logger.error(f"Error getting outgoing relationships for element {element_pk}: {str(e)}")
             return []
-
 
     def _search_by_pgvector(self, query_embedding: List[float], limit: int = 10,
                             filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
@@ -354,7 +351,6 @@ Key updates to the SQLAlchemy implementation:
             logger.error(f"Error using pgvector search: {str(e)}")
             raise
 
-
     def _search_by_embedding_native(self, query_embedding: List[float], limit: int = 10,
                                     filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
         """
@@ -417,7 +413,6 @@ Key updates to the SQLAlchemy implementation:
 
         # Return top results
         return similarities[:limit]
-
 
     def search_by_text(self, search_text: str, limit: int = 10,
                        filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:

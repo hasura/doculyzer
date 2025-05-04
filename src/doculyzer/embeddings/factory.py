@@ -7,11 +7,11 @@ with support for different embedding models and contextual embeddings.
 
 import logging
 
-from ..config import Config
 from .base import EmbeddingGenerator
 from .contextual_embedding import ContextualEmbeddingGenerator
 from .hugging_face import HuggingFaceEmbeddingGenerator
 from .openai import OpenAIEmbeddingGenerator
+from ..config import Config
 
 logger = logging.getLogger(__name__)
 

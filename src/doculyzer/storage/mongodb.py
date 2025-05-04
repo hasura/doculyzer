@@ -1,7 +1,8 @@
 import logging
 import os
+from typing import Dict, Any, List, Optional, Tuple
+
 import time
-from typing import Dict, Any, List, Optional, Tuple, Union
 
 from .element_relationship import ElementRelationship
 
@@ -568,7 +569,7 @@ class MongoDBDocumentDatabase(DocumentDatabase):
 
         return relationships
 
-    def get_element(self, element_id_or_pk: Union[str, int]) -> Optional[Dict[str, Any]]:
+    def get_element(self, element_id_or_pk: str | int) -> Optional[Dict[str, Any]]:
         """
         Get element by ID or PK.
 

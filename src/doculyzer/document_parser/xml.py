@@ -1,275 +1,35 @@
 """
-XML document parser module for the document pointer system.
+XML document parser module with caching strategies for the document pointer system.
 
 This module parses XML documents into structured elements and provides
-semantic textual representations of the data.
+semantic textual representations of the data with improved performance.
 """
 
+import functools
+import hashlib
 import json
 import logging
 import os
-import re
-import datetime
-import enum
-from typing import Dict, Any, Optional, List, Union, Tuple
+import uuid
+from typing import Dict, Any, Optional, Union, Tuple
 
-from bs4 import BeautifulSoup
+import time
+from lxml import etree
 
 from .base import DocumentParser
+from .lru_cache import LRUCache, ttl_cache
+from .temporal_semantics import detect_temporal_type, TemporalType, create_semantic_temporal_expression
+from ..relationships import RelationshipType
+from ..storage import ElementType
 
 logger = logging.getLogger(__name__)
 
 
-class TemporalType(enum.Enum):
-    """Enumeration for different types of temporal data."""
-    NONE = 0       # Not a temporal string
-    DATE = 1       # Date only (no time component)
-    TIME = 2       # Time only (no date component)
-    DATETIME = 3   # Combined date and time
-
-
-def detect_temporal_type(input_string: str) -> TemporalType:
-    """
-    Detect if a string represents a date, time, datetime, or none of these.
-
-    Args:
-        input_string: String to analyze
-
-    Returns:
-        TemporalType enum indicating the type of temporal data
-    """
-    try:
-        # Import dateutil parser
-        from dateutil import parser
-
-        # Check if it's an obviously non-temporal string
-        if not input_string or not isinstance(input_string, str):
-            return TemporalType.NONE
-
-        # If the string is very long or has many words, it's probably not a date/time
-        if len(input_string) > 50 or len(input_string.split()) > 8:
-            return TemporalType.NONE
-
-        # Check if it's a time-only string (no date component)
-        time_patterns = [
-            r'^\d{1,2}:\d{2}(:\d{2})?(\s*[ap]\.?m\.?)?$',  # 3:45pm, 15:30, 3:45:30 PM
-            r'^\d{1,2}\s*[ap]\.?m\.?$',                    # 3pm, 11 a.m.
-            r'^([01]?\d|2[0-3])([.:][0-5]\d)?([.:][0-5]\d)?$',  # 0500, 13.45, 22:30:15
-            r'^(noon|midnight)$'                            # noon, midnight
-        ]
-
-        for pattern in time_patterns:
-            if re.match(pattern, input_string.lower().strip()):
-                return TemporalType.TIME
-
-        # Try to parse with dateutil
-        try:
-            result = parser.parse(input_string, fuzzy=False)
-
-            # Check if it has a non-default time component
-            # Default time is usually 00:00:00
-            has_time = (result.hour != 0 or result.minute != 0 or result.second != 0 or
-                       'am' in input_string.lower() or 'pm' in input_string.lower() or
-                       ':' in input_string)
-
-            # If the input string contains typical time separators (:) or indicators (am/pm)
-            # even if the parsed time is 00:00:00, consider it a datetime
-            if has_time:
-                return TemporalType.DATETIME
-            else:
-                return TemporalType.DATE
-
-        except (parser.ParserError, ValueError):
-            # If dateutil couldn't parse it, it's likely not a date/time
-            return TemporalType.NONE
-
-    except Exception as e:
-        logger.warning(f"Error in detect_temporal_type: {str(e)}")
-        return TemporalType.NONE
-
-
-def create_semantic_time_expression(time_obj):
-    """
-    Convert a time object into a rich semantic natural language expression.
-
-    Args:
-        time_obj: A datetime object containing time information
-
-    Returns:
-        A natural language representation of the time with rich semantic context
-    """
-    try:
-        # Get hour, minute, second
-        hour = time_obj.hour
-        minute = time_obj.minute
-        second = time_obj.second
-        microsecond = time_obj.microsecond
-
-        # Determine AM/PM
-        am_pm = "AM" if hour < 12 else "PM"
-
-        # Convert to 12-hour format
-        hour_12 = hour % 12
-        if hour_12 == 0:
-            hour_12 = 12
-
-        # Time of day label
-        if 4 <= hour < 12:
-            time_of_day = "morning"
-        elif 12 <= hour < 17:
-            time_of_day = "afternoon"
-        elif 17 <= hour < 21:
-            time_of_day = "evening"
-        else:
-            time_of_day = "night"
-
-        # Determine quarter of hour
-        quarter_labels = {0: "o'clock", 15: "quarter past", 30: "half past", 45: "quarter to"}
-
-        # Default time description
-        time_desc = f"{hour_12}:{minute:02d} {am_pm}"
-
-        # Explicit minute description
-        minute_desc = f", at minute {minute}" if minute != 0 else ""
-
-        # Check for special times
-        if minute in quarter_labels and second == 0:
-            if minute == 45:
-                next_hour = (hour_12 % 12) + 1
-                if next_hour == 0:
-                    next_hour = 12
-                time_desc = f"{quarter_labels[minute]} {next_hour} {am_pm}"
-            else:
-                time_desc = f"{quarter_labels[minute]} {hour_12} {am_pm}"
-
-        # Create full semantic expression
-        result = f"at {time_desc} in the {time_of_day}{minute_desc}"
-
-        # Add seconds if non-zero
-        if second > 0 or microsecond > 0:
-            if microsecond > 0:
-                result += f", at second {second}.{microsecond//1000:03d}"
-            else:
-                result += f", at second {second}"
-
-        return result
-
-    except Exception as e:
-        logger.warning(f"Error converting time to semantic expression: {str(e)}")
-        return str(time_obj)  # Return string representation on error
-
-
-def create_semantic_date_expression(date_str: str) -> str:
-    """
-    Convert a date string into a rich semantic natural language expression.
-
-    Args:
-        date_str: A string representing a date in various possible formats
-
-    Returns:
-        A natural language representation of the date with rich semantic context
-    """
-    try:
-        # Import dateutil parser
-        from dateutil import parser
-
-        # Parse the date string using dateutil's flexible parser
-        parsed_date = parser.parse(date_str)
-
-        # Check if this is a datetime with significant time component
-        has_time = False
-        if hasattr(parsed_date, 'hour') and hasattr(parsed_date, 'minute'):
-            if parsed_date.hour != 0 or parsed_date.minute != 0 or parsed_date.second != 0:
-                has_time = True
-
-        # If this has a significant time component, use the datetime formatter
-        if has_time:
-            return create_semantic_date_time_expression(date_str)
-
-        # Get month name, day, and year
-        month_name = parsed_date.strftime("%B")
-        day = parsed_date.day
-        year = parsed_date.year
-
-        # Calculate week of month (approximate)
-        week_of_month = (day - 1) // 7 + 1
-
-        # Convert week number to ordinal word
-        week_ordinals = ["first", "second", "third", "fourth", "fifth"]
-        if 1 <= week_of_month <= 5:
-            week_ordinal = week_ordinals[week_of_month - 1]
-        else:
-            week_ordinal = f"{week_of_month}th"  # Fallback if calculation is off
-
-        # Calculate day of week
-        day_of_week = parsed_date.strftime("%A")
-
-        # Calculate quarter and convert to ordinal word
-        quarter_num = (parsed_date.month - 1) // 3 + 1
-        quarter_ordinals = {1: "first", 2: "second", 3: "third", 4: "fourth"}
-        quarter_ordinal = quarter_ordinals.get(quarter_num, f"{quarter_num}th")
-
-        # Calculate decade as ordinal within century
-        decade_in_century = (year % 100) // 10 + 1
-
-        # Convert decade to ordinal word
-        decade_ordinals = {1: "first", 2: "second", 3: "third", 4: "fourth",
-                          5: "fifth", 6: "sixth", 7: "seventh", 8: "eighth",
-                          9: "ninth", 10: "tenth"}
-        decade_ordinal = decade_ordinals.get(decade_in_century, f"{decade_in_century}th")
-
-        # Calculate century
-        century = (year // 100) + 1
-
-        # Format century as ordinal
-        century_ordinals = {1: "1st", 2: "2nd", 3: "3rd"}
-        century_ordinal = century_ordinals.get(century, f"{century}th")
-
-        # Format as more descriptive natural language
-        return f"the month of {month_name} ({quarter_ordinal} quarter), in the {week_ordinal} week, on {day_of_week} day {day}, in the year {year}, during the {decade_ordinal} decade of the {century_ordinal} century"
-
-    except Exception as e:
-        logger.warning(f"Error converting date to semantic expression: {str(e)}")
-        return date_str  # Return original on any error
-
-
-def create_semantic_date_time_expression(dt_str):
-    """
-    Convert a datetime string into a rich semantic natural language expression
-    that includes both date and time information.
-
-    Args:
-        dt_str: A string representing a datetime
-
-    Returns:
-        A natural language representation with rich semantic context
-    """
-    try:
-        # Import dateutil parser
-        from dateutil import parser
-
-        # Parse the datetime string
-        parsed_dt = parser.parse(dt_str)
-
-        # Generate date part
-        date_part = create_semantic_date_expression(dt_str)
-
-        # Generate time part
-        time_part = create_semantic_time_expression(parsed_dt)
-
-        # Combine them
-        return f"{date_part}, {time_part}"
-
-    except Exception as e:
-        logger.warning(f"Error converting datetime to semantic expression: {str(e)}")
-        return dt_str  # Return original on error
-
-
 class XmlParser(DocumentParser):
-    """Parser for XML documents."""
+    """Parser for XML documents with caching for improved performance using lxml."""
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        """Initialize the XML parser."""
+        """Initialize the XML parser with caching capabilities."""
         super().__init__(config)
         # Configuration options
         self.config = config or {}
@@ -278,332 +38,1204 @@ class XmlParser(DocumentParser):
         self.flatten_namespaces = self.config.get("flatten_namespaces", True)
         self.treat_namespaces_as_elements = self.config.get("treat_namespaces_as_elements", False)
         self.extract_namespace_declarations = self.config.get("extract_namespace_declarations", True)
-        self.parser_features = self.config.get("parser_features", "xml")  # Use "xml" as the BeautifulSoup parser
-        self.xpath_support = self.config.get("xpath_support", False)
+        self.parser_features = self.config.get("parser_features", None)  # No BeautifulSoup parser features needed
 
-        # Initialize lxml for XPath if requested and available
-        self.lxml_available = False
-        if self.xpath_support:
+        # Cache configurations
+        self.cache_ttl = self.config.get("cache_ttl", 3600)  # Default 1 hour TTL
+        self.max_cache_size = self.config.get("max_cache_size", 128)  # Default max cache size
+        self.enable_caching = self.config.get("enable_caching", True)
+
+        # Performance monitoring
+        self.enable_performance_monitoring = self.config.get("enable_performance_monitoring", False)
+        self.performance_stats = {
+            "parse_count": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "total_parse_time": 0.0,
+            "total_path_generation_time": 0.0,
+            "total_element_processing_time": 0.0,
+            "total_link_extraction_time": 0.0,
+            "method_times": {}
+        }
+
+        # Initialize caches
+        self.document_cache = LRUCache(max_size=self.max_cache_size, ttl=self.cache_ttl)
+        self.tree_cache = LRUCache(max_size=min(50, self.max_cache_size), ttl=self.cache_ttl)  # For etree objects
+        self.text_cache = LRUCache(max_size=self.max_cache_size * 2, ttl=self.cache_ttl)
+
+    @staticmethod
+    def _load_source_content(source_path: str) -> Tuple[Union[str, bytes], Optional[str]]:
+        """
+        Load content from a source file with proper error handling.
+
+        Args:
+            source_path: Path to the source file
+
+        Returns:
+            Tuple of (content, error_message)
+            - content: The file content as string or bytes
+            - error_message: Error message if loading failed, None otherwise
+        """
+        if not os.path.exists(source_path):
+            error_msg = f"Error: Source file not found: {source_path}"
+            logger.error(error_msg)
+            return None, error_msg
+
+        try:
+            # First try to read as text
+            with open(source_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                return content, None
+        except UnicodeDecodeError:
+            # If that fails, try to read as binary
             try:
-                # noinspection PyPackageRequirements
-                import lxml.etree
-                self.lxml_available = True
-                logger.info("lxml is available - XPath support enabled")
-            except ImportError:
-                logger.warning("lxml not available. Install with 'pip install lxml' to enable XPath support")
+                with open(source_path, 'rb') as f:
+                    content = f.read()
+                    return content, None
+            except Exception as e:
+                error_msg = f"Error: Cannot read content from {source_path}: {str(e)}"
+                logger.error(error_msg)
+                return None, error_msg
+        except Exception as e:
+            error_msg = f"Error: Cannot read content from {source_path}: {str(e)}"
+            logger.error(error_msg)
+            return None, error_msg
 
-    def _is_identity_element(self, element_name: str) -> bool:
+    def _get_or_create_lxml_root(self, content: Union[str, bytes]) -> Any:
         """
-        Determines if an element likely represents an identity or entity.
+        Get a cached lxml root element or create one if not cached.
 
         Args:
-            element_name: The name of the XML element
+            content: XML content as string or bytes
 
         Returns:
-            True if it appears to be an identity element, False otherwise
+            lxml root element
         """
-        # Use natural language processing principles to identify likely entity elements
+        # Ensure content is bytes for lxml
+        if isinstance(content, str):
+            xml_bytes = content.encode('utf-8')
+        else:
+            xml_bytes = content
 
-        # Check if it's a common entity/identity type
-        common_entities = [
-            # Places
-            "country", "city", "state", "province", "location", "address", "region",
-            # People and organizations
-            "person", "author", "publisher", "company", "organization", "corporation", "vendor",
-            "owner", "creator", "editor", "manager", "developer", "provider", "customer",
-            # Identifiers
-            "name", "title", "label", "id", "identifier", "category", "type", "class",
-            # Descriptors
-            "genre", "style", "format", "model", "brand", "version"
-        ]
+        # Generate a key for the parsed tree cache
+        tree_cache_key = hashlib.md5(xml_bytes).hexdigest()
 
-        # Simple text matching approach
-        element_lower = element_name.lower()
+        # Try to get cached parsed tree
+        root = None
+        if self.enable_caching and tree_cache_key:
+            root = self.tree_cache.get(tree_cache_key)
+            if root is not None:
+                if self.enable_performance_monitoring:
+                    self.performance_stats["cache_hits"] += 1
+                logger.debug("Tree cache hit")
+                return root
 
-        # Check if it's in our list of common entities
-        if element_lower in common_entities:
-            return True
+        if self.enable_performance_monitoring:
+            self.performance_stats["cache_misses"] += 1
 
-        # Check for possessive forms that suggest identity (e.g., author's, company's)
-        if element_lower.endswith("'s"):
-            base_word = element_lower[:-2]
-            if base_word in common_entities:
-                return True
+        # Parse if not cached
+        start_time = time.time()
 
-        # Advanced: Check for compound words containing entity terms
-        # E.g., "productName", "bookAuthor", "companyTitle"
-        for entity in common_entities:
-            if entity in element_lower and entity != element_lower:
-                return True
+        # Use a parser with error recovery
+        parser = etree.XMLParser(recover=True, remove_blank_text=True)
+        root = etree.fromstring(xml_bytes, parser)
 
-        # Default to False for unknown elements
-        return False
+        parse_time = time.time() - start_time
+        logger.debug(f"XML parsing time: {parse_time:.4f} seconds")
 
-    def _is_container_element(self, element_name: str) -> bool:
+        # Cache the parsed tree
+        if self.enable_caching and tree_cache_key:
+            self.tree_cache.set(tree_cache_key, root)
+
+        return root
+
+    @staticmethod
+    def _prepare_namespace_dict(namespaces: Optional[Dict[str, str]]) -> Dict[str, str]:
         """
-        Determines if an element likely represents a container or collection.
+        Prepare namespace dictionary for XPath queries.
 
         Args:
-            element_name: The name of the XML element
+            namespaces: Optional namespace dictionary
 
         Returns:
-            True if it appears to be a container element, False otherwise
+            Prepared namespace dictionary for lxml
         """
-        # Check for plural endings (most common signal)
-        element_lower = element_name.lower()
+        ns_dict = {}
+        if namespaces:
+            # Add namespaces from location_data
+            if "default" in namespaces:
+                ns_dict["ns"] = namespaces["default"]
+                etree.register_namespace("ns", namespaces["default"])
 
-        # Common plural endings in English
-        if (element_lower.endswith('s') and not element_lower.endswith('ss') and
-            not element_lower.endswith('us') and not element_lower.endswith('is')):
-            return True
+            # Add other namespaces
+            for prefix, uri in namespaces.items():
+                if prefix != "default":
+                    ns_dict[prefix] = uri
+                    etree.register_namespace(prefix, uri)
 
-        # Check for common container words
-        container_words = [
-            "list", "array", "collection", "set", "group", "series", "catalog",
-            "index", "directory", "table", "map", "dictionary", "container",
-            "package", "bundle", "batch", "items", "entries", "records",
-            "results", "data"
-        ]
+        return ns_dict
 
-        if element_lower in container_words:
-            return True
+    def _get_element_by_xpath(self, root, xpath: str, namespaces: Optional[Dict[str, str]] = None) -> Optional[Any]:
+        """
+        Get an element directly using XPath expression.
 
-        # Check for compound words with container terms
-        for container in container_words:
-            # Look for patterns like "userList", "productArray", etc.
-            if container in element_lower and container != element_lower:
-                return True
+        Args:
+            root: lxml root element
+            xpath: XPath expression
+            namespaces: Optional namespace dictionary
 
-        # Check for container-implying prefixes
-        collection_prefixes = ["all", "each", "every", "many", "multi"]
-        for prefix in collection_prefixes:
-            if element_lower.startswith(prefix) and len(element_lower) > len(prefix):
-                # Check if the character after the prefix is uppercase (camelCase)
-                if len(element_name) > len(prefix) and element_name[len(prefix)].isupper():
-                    return True
+        Returns:
+            Found element or None
+        """
+        try:
+            ns_dict = self._prepare_namespace_dict(namespaces)
+            results = root.xpath(xpath, namespaces=ns_dict)
+            return results[0] if results else None
+        except Exception as e:
+            logger.error(f"Error in XPath query '{xpath}': {str(e)}")
+            return None
 
-        return False
+    @staticmethod
+    def _get_normalized_tag_name(tag: str) -> str:
+        """
+        Get normalized tag name by removing namespace prefix.
 
-    def _get_path(self, element):
-        """Get the path for an element from our path map."""
-        if hasattr(self, '_path_map'):
-            return self._path_map.get(id(element))
-        return None
+        Args:
+            tag: Element tag name, possibly with namespace
+
+        Returns:
+            Normalized tag name without namespace
+        """
+        if tag is None:
+            return "unknown"
+
+        # Handle namespace with Clark notation {namespace}localname
+        if '}' in tag:
+            return tag.split('}')[1]
+        return tag
+
+    def _create_root_element(self, doc_id: str, source_id: str) -> Dict[str, Any]:
+        """
+        Create a document root element.
+
+        Args:
+            doc_id: Document ID
+            source_id: Source identifier
+
+        Returns:
+            Document root element dictionary
+        """
+        root_id = self._generate_id("doc_root_")
+        root_element = {
+            "element_id": root_id,
+            "doc_id": doc_id,
+            "element_type": "document_root",
+            "parent_id": None,
+            "content_preview": f"Document: {source_id}",
+            "content_location": json.dumps({
+                "source": source_id,
+                "type": "root"
+            }),
+            "content_hash": self._generate_hash(source_id),
+            "metadata": {
+                "source_id": source_id,
+                "path": "/"
+            }
+        }
+        return root_element
+
+    def _generate_hash(self, content):
+        """Generate a hash for content, always returning a string."""
+        try:
+            if isinstance(content, str):
+                return hashlib.md5(content.encode('utf-8')).hexdigest()
+            elif isinstance(content, bytes):
+                return hashlib.md5(content).hexdigest()
+            else:
+                # Convert any other type to string first
+                return hashlib.md5(str(content).encode('utf-8')).hexdigest()
+        except Exception as e:
+            logger.warning(f"Error generating hash: {str(e)}")
+            # Return a UUID as string for fallback
+            return str(uuid.uuid4())
+
+    def _generate_id(self, prefix: str = "") -> str:
+        """
+        Generate a unique ID with an optional prefix.
+
+        Args:
+            prefix: Optional ID prefix
+
+        Returns:
+            Unique ID string
+        """
+        return f"{prefix}{uuid.uuid4()}"
 
     def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]]) -> str:
         """
-        Resolve the plain text representation of an XML element.
+        Resolve the plain text representation of an XML element using lxml's native XPath.
+        Includes natural language representation of attributes.
 
         Args:
             location_data: Content location data
             source_content: Optional preloaded source content
 
         Returns:
-            Plain text representation of the element
+            Plain text representation of the element with attributes
         """
         source = location_data.get("source", "")
         element_type = location_data.get("type", "")
         path = location_data.get("path", "")
+        namespaces = location_data.get("namespaces", None)
 
-        logger.debug(f"RESOLVING ELEMENT TEXT: source={source}, type={element_type}, path={path}")
+        # Generate cache key
+        cache_key = f"text_{source}_{element_type}_{path}"
+        if self.enable_caching:
+            cached_text = self.text_cache.get(cache_key)
+            if cached_text is not None:
+                logger.debug(f"Cache hit for element text: {cache_key}")
+                return cached_text
+
+        logger.debug(f"Cache miss for element text: {cache_key}")
 
         # Load content if not provided
         content = source_content
         if content is None:
-            if os.path.exists(source):
-                try:
-                    with open(source, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                except UnicodeDecodeError:
-                    # Try different encodings
-                    try:
-                        with open(source, 'rb') as f:
-                            content = f.read()
-                            content = content.decode('latin1')
-                    except UnicodeDecodeError:
-                        logger.error(f"Failed to decode content from {source}")
-                        return "Binary content (cannot be displayed as text)"
+            content, error = self._load_source_content(source)
+            if error:
+                return error
+
+        # Process with lxml
+        try:
+            # Get or create lxml root
+            root = self._get_or_create_lxml_root(content)
+
+            # Execute XPath query
+            ns_dict = self._prepare_namespace_dict(namespaces)
+            elements = root.xpath(path, namespaces=ns_dict)
+
+            if not elements:
+                error_msg = f"Element not found at path: {path}"
+                logger.warning(error_msg)
+                # Don't cache errors to allow retry
+                return error_msg
+
+            # Get element and extract text
+            element = elements[0]
+
+            # Extract text content based on element type
+            if element_type == "xml_text" or "text()" in path:
+                # For text nodes or explicit text() XPath
+                if isinstance(element, str):
+                    # If XPath returns the text node directly
+                    text_content = element.strip()
+                else:
+                    # Try to get text content from an element
+                    text_content = element.text.strip() if element.text else ""
+            elif element_type == "xml_list":
+                # For list containers, get a summary of child elements
+                if hasattr(element, 'itertext'):
+                    text_content = ''.join(element.itertext()).strip()
+                    if len(text_content) > 100:
+                        # Summarize if too long
+                        text_content = f"List with {len(element)} items"
+                else:
+                    text_content = f"List with {len(element)} items"
+            elif element_type == "xml_object":
+                # For object containers, summarize properties
+                properties = []
+                for child in element:
+                    child_name = self._get_normalized_tag_name(child.tag)
+                    properties.append(child_name)
+
+                if properties:
+                    text_content = f"Object with properties: {', '.join(properties[:5])}" + (
+                        "..." if len(properties) > 5 else "")
+                else:
+                    text_content = "Empty object"
             else:
-                logger.error(f"Source file not found: {source}")
-                return f"Source file not found: {source}"
+                # For regular elements, get all contained text
+                if hasattr(element, 'itertext'):
+                    text_content = ''.join(element.itertext()).strip()
+                else:
+                    # Fallback for non-element objects
+                    text_content = str(element).strip()
 
-        # Ensure content is string (not bytes)
-        if isinstance(content, bytes):
-            try:
-                content = content.decode('utf-8')
-            except UnicodeDecodeError:
-                try:
-                    content = content.decode('latin1')
-                except UnicodeDecodeError:
-                    logger.error(f"Failed to decode content bytes from {source}")
-                    return "Binary content (cannot be displayed as text)"
+            logger.debug(f"Extracted text content: '{text_content}'")
 
-        # Parse XML
-        soup = BeautifulSoup(content, self.parser_features)
-        logger.debug(f"SOUP CREATED: parser={self.parser_features}, root tag={soup.find().name if soup.find() else 'None'}")
+            # Get element name
+            if hasattr(element, 'tag'):
+                # Handle namespaces in tag names
+                element_name = self._get_normalized_tag_name(element.tag)
+            else:
+                # Use path component as name for text nodes
+                path_parts = path.split('/')
+                last_part = path_parts[-1].split('[')[0]
 
-        # Add paths to elements if they don't exist
-        self._add_paths(soup)
-        logger.debug("Added XPath-like paths to elements")
-
-        # Check that paths were correctly added to a sample of elements
-        for tag in list(soup.find_all())[:5]:  # Check first 5 elements
-            path = self._get_path(tag)
-            logger.debug(f"Element {tag.name} path: {path}")
-
-        # For XPath-style paths, try to directly search and find the element
-        element = None
-        text_content = ""
-
-        if path.startswith('//'):
-            # Handle XPath path by direct searching
-            parts = path.split('/')
-            parts = [p for p in parts if p]  # Remove empty parts
-
-            # For a path like //books/book[6]/copies, extract these components:
-            if len(parts) >= 1:
-                # Get the target element (the last part before any text() node)
-                target_name = parts[-1]
-                if "text()" in target_name:
-                    # This is a text node reference - get the parent instead
-                    if len(parts) >= 2:
-                        target_name = parts[-2]
+                if last_part == "text()":
+                    # Get parent element name for text() nodes
+                    if len(path_parts) > 1:
+                        parent_part = path_parts[-2].split('[')[0]
+                        # Remove namespace prefix if present
+                        if ':' in parent_part:
+                            element_name = parent_part.split(':')[1]
+                        else:
+                            element_name = parent_part
                     else:
-                        target_name = None
+                        element_name = "text"
+                else:
+                    # Remove namespace prefix if present
+                    if ':' in last_part:
+                        element_name = last_part.split(':')[1]
+                    else:
+                        element_name = last_part
 
-                # Check if it has an index like book[6]
-                target_idx = None
-                if target_name and '[' in target_name and ']' in target_name:
-                    idx_str = target_name.split('[')[1].split(']')[0]
-                    if idx_str.isdigit():
-                        target_idx = int(idx_str) - 1  # Convert to 0-based index
-                    target_name = target_name.split('[')[0]
+            logger.debug(f"Element name: {element_name}")
 
-                logger.debug(f"Target element: {target_name}, index: {target_idx}")
+            # Check if this might be a date/time value
+            temporal_type = detect_temporal_type(text_content)
 
-                # Find all matching target elements
-                if target_name:
-                    targets = soup.find_all(target_name)
-                    logger.debug(f"Found {len(targets)} {target_name} elements")
+            # Extract attributes (new code)
+            attributes = {}
+            if hasattr(element, 'attrib') and element.attrib:
+                attributes = dict(element.attrib)
 
-                    # If we have a specific index and it's valid, use that element
-                    if target_idx is not None and 0 <= target_idx < len(targets):
-                        element = targets[target_idx]
-                        logger.debug(f"Selected {target_name} at index {target_idx+1}")
-                    elif targets:
-                        # Otherwise use the first element (default behavior)
-                        element = targets[0]
-                        logger.debug(f"Selected first {target_name} element")
+                # Check if any attribute values contain temporal data
+                for attr_name, attr_value in attributes.items():
+                    attr_temporal_type = detect_temporal_type(attr_value)
+                    if attr_temporal_type is not TemporalType.NONE:
+                        # Convert to semantic expression
+                        attributes[attr_name] = (attr_value, create_semantic_temporal_expression(attr_value))
 
-                # If this is a text node reference, extract the text
-                if element and "text()" in parts[-1]:
-                    # Just get the text content of the element
-                    text_content = element.get_text().strip()
-                    logger.debug(f"Extracted text from element: '{text_content}'")
-
-            # If no element or text found yet, try to find by tag name as a fallback
-            if not element and not text_content:
-                # Try direct tag search - use the last part of the path
-                last_part = parts[-1]
-                element_name = last_part.split('[')[0] if '[' in last_part else last_part
-
-                # If it's a text node reference, use the parent
-                if element_name == "text()":
-                    element_name = parts[-2].split('[')[0] if len(parts) > 1 else None
-
-                if element_name:
-                    targets = soup.find_all(element_name)
-                    if targets:
-                        element = targets[0]
-                        logger.debug(f"Fallback: found element by name {element_name}")
-        else:
-            # Standard path lookup using our path map
-            for tag in soup.find_all():
-                if self._get_path(tag) == path:
-                    element = tag
-                    logger.debug(f"Found element with exact path match: {path}")
-                    break
-
-        # Handle the case where we have plain text content already
-        if text_content:
-            logger.debug(f"Using previously extracted text content: '{text_content}'")
-
-            # Determine element name from path
-            element_name = ""
-            for part in reversed(path.split("/")):
-                if part and not part.startswith("text("):
-                    # Get the base name without any index
-                    element_name = part.split('[')[0] if '[' in part else part
-                    break
-
-            logger.debug(f"Determined element name from path: {element_name}")
-
-            # Format as appropriate for the element type
-            is_identity_element = self._is_identity_element(element_name)
-            is_container_element = self._is_container_element(element_name)
-
-            if is_identity_element:
-                return f"{element_name} is \"{text_content}\""
-            elif is_container_element:
-                return f"{element_name} contains \"{text_content}\""
+            # Format semantic representation based on node type
+            if attributes and not text_content:
+                # Attribute-only node
+                result = self._format_attribute_only_node(element_name, attributes)
+            elif attributes and text_content:
+                # Node with both text and attributes
+                result = self._format_node_with_text_and_attributes(element_name, text_content, attributes,
+                                                                    temporal_type)
             else:
-                return f"{element_name} is \"{text_content}\""
+                # Text-only node (existing code)
+                if temporal_type is not TemporalType.NONE:
+                    result = f"{element_name} is {create_semantic_temporal_expression(text_content)}"
+                else:
+                    # Format as appropriate for the element type
+                    is_container, container_type = self._analyze_container_type(element_name)
+                    is_identity_element = self._is_identity_element(element_name)
 
-        # Get element name from path - simplified for non-text cases
-        element_name = path.split('/')[-1] if '/' in path else path
-        if '[' in element_name:
-            element_name = element_name.split('[')[0]
-        if element_name.startswith("text()"):
-            parts = path.split('/')
-            element_name = parts[-2].split('[')[0] if len(parts) > 1 else "text"
-
-        logger.debug(f"Element name from path: {element_name}")
-
-        # Handle element types - very simplified to the core functionality
-        if element_type == "xml_text":
-            # For text nodes, just return the text
-            if element:
-                text = element.get_text().strip()
-                logger.debug(f"Returning text from text node: '{text}'")
-                return text
-            return ""
-
-        elif element_type == "xml_element":
-            if element:
-                # Extract text content using get_text
-                text_content = element.get_text().strip()
-                logger.debug(f"Text content: '{text_content}'")
-
-                # Apply semantic formatting based on element name
-                is_identity_element = self._is_identity_element(element_name)
-                is_container_element = self._is_container_element(element_name)
-
-                if text_content:
                     if is_identity_element:
                         result = f"{element_name} is \"{text_content}\""
-                        logger.debug(f"Formatted as identity: {result}")
-                        return result
-                    elif is_container_element:
+                    elif is_container:
                         result = f"{element_name} contains \"{text_content}\""
-                        logger.debug(f"Formatted as container: {result}")
-                        return result
                     else:
-                        result = f"{element_name} is \"{text_content}\""
-                        logger.debug(f"Formatted as generic: {result}")
-                        return result
-                else:
-                    return element_name
-            else:
-                return element_name
+                        result = text_content
 
-        # Default fallback just returns element name from path
-        return element_name
+            logger.debug(f"Formatted text result: {result}")
+
+            # Cache the result
+            if self.enable_caching:
+                self.text_cache.set(cache_key, result)
+
+            return result
+
+        except Exception as e:
+            error_msg = f"Error resolving element text: {str(e)}"
+            logger.error(error_msg)
+            # Don't cache errors to allow retry
+            return error_msg
+
+    @staticmethod
+    def _format_attribute_only_node(element_name: str, attributes: Dict[str, Any]) -> str:
+        """
+        Format an attribute-only node into a natural language representation.
+
+        Args:
+            element_name: Name of the element
+            attributes: Dictionary of attributes
+
+        Returns:
+            Natural language representation
+        """
+        # Select different patterns based on attribute count
+        if len(attributes) == 1:
+            # Single attribute
+            attr_name, attr_value = next(iter(attributes.items()))
+
+            # Check if attribute value is temporal (already processed)
+            if isinstance(attr_value, tuple):
+                raw_value, semantic_value = attr_value
+                return f"{element_name} has {attr_name} of {semantic_value}"
+
+            # Special handling for common attributes
+            if attr_name in ['id', 'name', 'title', 'type', 'class']:
+                return f"{element_name} with {attr_name} \"{attr_value}\""
+            elif attr_name in ['href', 'src', 'link', 'url']:
+                return f"{element_name} links to \"{attr_value}\""
+            elif attr_name in ['date', 'time', 'datetime']:
+                # Check if this is a time range
+                temporal_type = detect_temporal_type(attr_value)
+                if temporal_type is not TemporalType.NONE:
+                    semantic_value = create_semantic_temporal_expression(attr_value)
+                    return f"{element_name} has {attr_name} of {semantic_value}"
+                else:
+                    return f"{element_name} has {attr_name} of \"{attr_value}\""
+            else:
+                return f"{element_name} has {attr_name} of \"{attr_value}\""
+
+        else:
+            # Multiple attributes
+            attr_phrases = []
+
+            # Process each attribute
+            for attr_name, attr_value in attributes.items():
+                # Handle pre-processed temporal values
+                if isinstance(attr_value, tuple):
+                    raw_value, semantic_value = attr_value
+                    attr_phrases.append(f"has {attr_name} of {semantic_value}")
+                    continue
+
+                # Special handling for common attributes
+                if attr_name in ['id', 'name']:
+                    attr_phrases.append(f"identified as \"{attr_value}\"")
+                elif attr_name in ['title', 'label']:
+                    attr_phrases.append(f"titled \"{attr_value}\"")
+                elif attr_name in ['href', 'src', 'link', 'url']:
+                    attr_phrases.append(f"linking to \"{attr_value}\"")
+                elif attr_name == 'class':
+                    attr_phrases.append(f"of class \"{attr_value}\"")
+                elif attr_name == 'type':
+                    attr_phrases.append(f"of type \"{attr_value}\"")
+                elif attr_name in ['date', 'time', 'datetime']:
+                    # Check if this is a time range
+                    temporal_type = detect_temporal_type(attr_value)
+                    if temporal_type is not TemporalType.NONE:
+                        semantic_value = create_semantic_temporal_expression(attr_value)
+                        attr_phrases.append(f"with {attr_name} of {semantic_value}")
+                    else:
+                        attr_phrases.append(f"with {attr_name} of \"{attr_value}\"")
+                else:
+                    attr_phrases.append(f"with {attr_name} of \"{attr_value}\"")
+
+            # Join attributes with commas and 'and'
+            if len(attr_phrases) == 2:
+                attr_text = f"{attr_phrases[0]} and {attr_phrases[1]}"
+            else:
+                attr_text = ", ".join(attr_phrases[:-1]) + f", and {attr_phrases[-1]}"
+
+            return f"{element_name} {attr_text}"
+
+    def _format_node_with_text_and_attributes(self, element_name: str, text_content: str,
+                                              attributes: Dict[str, Any], temporal_type: TemporalType) -> str:
+        """
+        Format a node that has both text content and attributes.
+
+        Args:
+            element_name: Name of the element
+            text_content: Text content of the element
+            attributes: Dictionary of attributes
+            temporal_type: Type of temporal data if applicable
+
+        Returns:
+            Natural language representation
+        """
+        # First check for time range in attributes that should be prioritized
+        time_range_attr = None
+        for attr_name, attr_value in attributes.items():
+            if attr_name in ['time', 'period', 'duration', 'range']:
+                # Check if the value is already processed as temporal
+                if isinstance(attr_value, tuple):
+                    raw_value, semantic_value = attr_value
+                    time_range_attr = (attr_name, semantic_value)
+                    break
+
+                # Otherwise check and process
+                if detect_temporal_type(attr_value) is TemporalType.TIME_RANGE:
+                    semantic_value = create_semantic_temporal_expression(attr_value)
+                    time_range_attr = (attr_name, semantic_value)
+                    break
+
+        # If this is a time element with range attribute, prioritize the range
+        if time_range_attr and element_name in ['time', 'meeting', 'appointment', 'schedule', 'event']:
+            attr_name, semantic_value = time_range_attr
+            return f"{element_name} for \"{text_content}\" is {semantic_value}"
+
+        # Select key attributes for compact representation
+        key_attrs = {}
+
+        # Prioritize common identifying attributes
+        for attr_name in ['id', 'name', 'title', 'type', 'class']:
+            if attr_name in attributes:
+                # Handle pre-processed temporal values
+                if isinstance(attributes[attr_name], tuple):
+                    raw_value, semantic_value = attributes[attr_name]
+                    key_attrs[attr_name] = semantic_value
+                else:
+                    key_attrs[attr_name] = attributes[attr_name]
+
+        # Include other attributes if we don't have many key ones
+        if len(key_attrs) < 2:
+            for attr_name, attr_value in attributes.items():
+                if attr_name not in key_attrs and len(key_attrs) < 3:
+                    # Handle pre-processed temporal values
+                    if isinstance(attr_value, tuple):
+                        raw_value, semantic_value = attr_value
+                        key_attrs[attr_name] = semantic_value
+                    else:
+                        key_attrs[attr_name] = attr_value
+
+        # Format attributes
+        if len(key_attrs) == 0:
+            attr_text = ""
+        elif len(key_attrs) == 1:
+            attr_name, attr_value = next(iter(key_attrs.items()))
+            if attr_name in ['id', 'name']:
+                attr_text = f" identified as \"{attr_value}\""
+            elif attr_name == 'title':
+                attr_text = f" titled \"{attr_value}\""
+            elif attr_name in ['date', 'time', 'datetime']:
+                attr_text = f" with {attr_name} {attr_value}"
+            else:
+                attr_text = f" with {attr_name} \"{attr_value}\""
+        else:
+            attr_phrases = []
+            for attr_name, attr_value in key_attrs.items():
+                # Handle special case for temporal values
+                if isinstance(attr_value, str) and not attr_value.startswith('"'):
+                    attr_phrases.append(f"{attr_name}={attr_value}")
+                else:
+                    attr_phrases.append(f"{attr_name}=\"{attr_value}\"")
+            attr_text = f" ({', '.join(attr_phrases)})"
+
+        # Combine with text content
+        if temporal_type is not TemporalType.NONE:
+            text_repr = create_semantic_temporal_expression(text_content)
+            return f"{element_name}{attr_text} is {text_repr}"
+        else:
+            is_container, container_type = self._analyze_container_type(element_name)
+            is_identity_element = self._is_identity_element(element_name)
+
+            if is_identity_element:
+                return f"{element_name}{attr_text} is \"{text_content}\""
+            elif is_container:
+                return f"{element_name}{attr_text} contains \"{text_content}\""
+            else:
+                # For regular content, put the attributes in parentheses before the content
+                if attr_text:
+                    return f"{element_name}{attr_text}: {text_content}"
+                else:
+                    return text_content
+
+    def _resolve_element_content(self, location_data: Dict[str, Any],
+                                 source_content: Optional[Union[str, bytes]]) -> str:
+        """
+        Resolve content for specific XML element types with lxml's XPath support.
+
+        Args:
+            location_data: Content location data
+            source_content: Optional preloaded source content
+
+        Returns:
+            Resolved content as properly formatted XML
+        """
+        source = location_data.get("source", "")
+        element_type = location_data.get("type", "")
+        path = location_data.get("path", "")
+        namespaces = location_data.get("namespaces", None)
+
+        # Generate cache key
+        if self.enable_caching:
+            cache_key = f"content_{source}_{element_type}_{path}"
+            cached_content = self.text_cache.get(cache_key)
+            if cached_content is not None:
+                logger.debug(f"Content cache hit for {cache_key}")
+                return cached_content
+
+        logger.debug(f"Content cache miss for {path}")
+
+        # Load content if not provided
+        content = source_content
+        if content is None:
+            content, error = self._load_source_content(source)
+            if error:
+                error_result = f'<error source="{source}">{error}</error>'
+                return error_result
+
+        # Process with lxml
+        try:
+            # Get or create lxml root
+            root = self._get_or_create_lxml_root(content)
+
+            # Special case for root or document
+            if not path or path == "/":
+                result = etree.tostring(root, encoding='unicode', pretty_print=True)
+                if self.enable_caching:
+                    self.text_cache.set(cache_key, result)
+                return result
+
+            # Execute XPath query
+            ns_dict = self._prepare_namespace_dict(namespaces)
+            elements = root.xpath(path, namespaces=ns_dict)
+
+            if not elements:
+                error_result = f'<error path="{path}">Element not found</error>'
+                logger.warning(f"No elements found for path '{path}'")
+                return error_result
+
+            # Get the element
+            element = elements[0]
+
+            # Process based on type
+            if element_type == "xml_text" or "text()" in path:
+                # For text nodes
+                if isinstance(element, str):
+                    # If XPath returns the text node directly
+                    text = element.strip()
+                else:
+                    # Try to get text from element
+                    text = element.text.strip() if element.text else ""
+
+                result = f"<text>{text}</text>"
+            else:
+                # For XML elements
+                if hasattr(element, 'tag'):
+                    # Use lxml's tostring to serialize the element
+                    result = etree.tostring(element, encoding='unicode', pretty_print=True)
+                else:
+                    # Fallback for non-element objects
+                    result = f"<value>{str(element)}</value>"
+
+            # Cache the result
+            if self.enable_caching:
+                self.text_cache.set(cache_key, result)
+
+            return result
+
+        except Exception as e:
+            error_result = f'<error path="{path}">Error processing XML: {str(e)}</error>'
+            logger.error(f"Error resolving element content: {str(e)}")
+            return error_result
+
+    @ttl_cache(maxsize=256, ttl=3600)
+    def _analyze_container_type(self, element_name: str, element=None) -> Tuple[bool, str]:
+        """
+        Analyzes if an element represents a container and determines its type.
+        Uses both semantic naming patterns and structural analysis (if element provided).
+
+        Args:
+            element_name: The name of the XML element
+            element: Optional XML element for structural analysis
+
+        Returns:
+            Tuple of (is_container, container_type), where container_type is one of:
+            - "array" for homogeneous list-like containers
+            - "object" for heterogeneous structure-like containers
+            - "element" for non-containers
+        """
+        element_lower = element_name.lower()
+        is_container = False
+        container_type = "element"  # Default type
+
+        # Step 1: Check naming patterns to determine if this is potentially a container
+
+        # Check for plural endings (most common array signal)
+        if (element_lower.endswith('s') and not element_lower.endswith('ss') and
+                not element_lower.endswith('us') and not element_lower.endswith('is')):
+            is_container = True
+            container_type = "array"  # Plurals suggest arrays by default
+
+        # Check for common container words
+        container_words = {
+            # Array-like containers
+            "array": "array",
+            "list": "array",
+            "collection": "array",
+            "items": "array",
+            "records": "array",
+            "entries": "array",
+
+            # Object-like containers
+            "map": "object",
+            "dictionary": "object",
+            "object": "object",
+            "container": "object",
+            "wrapper": "object",
+            "package": "object",
+
+            # Ambiguous containers (need structural analysis)
+            "set": "array",  # Default, but may be overridden
+            "group": "object",  # Default, but may be overridden
+            "data": "object",  # Default, but may be overridden
+            "bundle": "object",
+            "batch": "array",
+            "series": "array",
+            "catalog": "object",
+            "index": "object",
+            "directory": "object",
+            "table": "object",
+            "results": "array"
+        }
+
+        if element_lower in container_words:
+            is_container = True
+            container_type = container_words[element_lower]
+
+        # Check for compound words with container terms
+        if not is_container:
+            for word, word_type in container_words.items():
+                if word in element_lower and word != element_lower:
+                    is_container = True
+                    container_type = word_type
+                    break
+
+        # Check for container-implying prefixes
+        if not is_container:
+            collection_prefixes = ["all", "each", "every", "many", "multi"]
+            for prefix in collection_prefixes:
+                if (element_lower.startswith(prefix) and
+                        len(element_lower) > len(prefix) and
+                        len(element_name) > len(prefix) and
+                        element_name[len(prefix)].isupper()):
+                    is_container = True
+                    # "all" and "many" suggest arrays, "each" suggests objects
+                    container_type = "array" if prefix in ["all", "many", "multi"] else "object"
+                    break
+
+        # Step 2: If we have the actual element, use structural analysis to confirm
+        # or override the type determined by naming conventions
+        if is_container and element is not None:
+            children = list(element)
+
+            # If no children or only one child, this might still be a container
+            # but we can't determine the type from structure
+            if len(children) > 1:
+                # Get all child tag names
+                child_tags = [self._get_normalized_tag_name(child.tag) for child in children]
+
+                # Criteria 1: All children have the same tag name - definitely an array
+                if len(set(child_tags)) == 1:
+                    container_type = "array"
+                    return True, container_type
+
+                # Criteria 2: Most children (>80%) have the same tag name - likely an array
+                tag_counts = {}
+                for tag in child_tags:
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+
+                most_common_tag_count = max(tag_counts.values()) if tag_counts else 0
+                if most_common_tag_count / len(children) > 0.8:
+                    container_type = "array"
+                    return True, container_type
+
+                # Criteria 3: Many different child tag types - likely an object
+                if len(set(child_tags)) > len(children) * 0.5:
+                    container_type = "object"
+                    return True, container_type
+
+        return is_container, container_type
+
+    def _extract_xml_links_direct(self, lxml_root, elements, namespaces):
+        """
+        Extract links directly using lxml's element attributes.
+
+        Args:
+            lxml_root: lxml root element
+            elements: Processed elements
+            namespaces: XML namespaces
+
+        Returns:
+            List of extracted links
+        """
+        links = []
+
+        # Create a map of element paths to element IDs
+        element_map = {
+            json.loads(element.get("content_location", "{}")).get("path", ""): element.get("element_id")
+            for element in elements
+            if element.get("element_type") in [ElementType.XML_ELEMENT.value, ElementType.XML_TEXT.value,
+                                               ElementType.XML_LIST.value, ElementType.XML_OBJECT.value]
+               and element.get("content_location")
+        }
+
+        # Look for various link-like attributes
+        link_attrs = [
+            "href", "src", "xlink:href", "uri", "url", "link",
+            "reference", "ref", "target", "to", "from"
+        ]
+
+        # Process each element
+        tree = etree.ElementTree(lxml_root)
+        for element in lxml_root.iter():
+            # Get element path
+            element_path = tree.getpath(element)
+            element_id = element_map.get(element_path)
+
+            if not element_id:
+                continue
+
+            # Check attributes for links
+            for attr_name, attr_value in element.attrib.items():
+                # Normalize namespace prefixed attributes
+                attr_local_name = attr_name.split('}')[-1] if '}' in attr_name else attr_name
+
+                # Check if this is a link attribute
+                if attr_local_name in link_attrs or any(attr_local_name.endswith(f":{name}") for name in link_attrs):
+                    if attr_value and isinstance(attr_value, str):
+                        # Determine link type
+                        if "href" in attr_local_name:
+                            link_type = RelationshipType.LINK.value
+                        elif "src" in attr_local_name:
+                            link_type = RelationshipType.LINK.value
+                        else:
+                            link_type = RelationshipType.REFERENCED_BY.value
+
+                        links.append({
+                            "source_id": element_id,
+                            "link_text": f"{attr_local_name}='{attr_value}'",
+                            "link_target": attr_value,
+                            "link_type": link_type
+                        })
+
+        return links
+
+    def _process_document_structure(self, lxml_root, doc_id, parent_id, source_id, namespaces):
+        """
+        Process XML document structure using direct XPath and lxml.
+
+        Args:
+            lxml_root: lxml root element (for XPath queries)
+            doc_id: Document ID
+            parent_id: Parent element ID
+            source_id: Source identifier
+            namespaces: XML namespaces
+
+        Returns:
+            Tuple of (elements, relationships)
+        """
+        elements = []
+        relationships = []
+
+        # Create a map to track element paths to IDs
+        element_path_to_id = {}
+        # Map to store lxml elements by path for container type detection
+        element_path_to_lxml = {}
+
+        # Create the document root element
+        root_tag = lxml_root.tag
+        root_name = self._get_normalized_tag_name(root_tag)
+
+        # Check if root is a container and determine type
+        is_container, container_type = self._analyze_container_type(root_name, lxml_root)
+
+        # Set the appropriate element_type based on container analysis
+        if container_type == "array":
+            element_type = "xml_list"  # For array-like containers
+        elif container_type == "object":
+            element_type = "xml_object"  # For object-like containers
+        else:
+            element_type = "xml_element"  # For non-containers
+
+        # Create XML root element
+        xml_root_id = self._generate_id("xml_root_")
+        xml_root_element = {
+            "element_id": xml_root_id,
+            "doc_id": doc_id,
+            "element_type": element_type,  # Use determined element type
+            "parent_id": parent_id,
+            "content_preview": f"<{root_name}>",
+            "content_location": json.dumps({
+                "source": source_id,
+                "type": element_type,  # Also store it in the content location
+                "path": "/",
+                "namespaces": namespaces
+            }),
+            "content_hash": self._generate_hash(etree.tostring(lxml_root)),
+            "metadata": {
+                "element_name": root_name,
+                "has_attributes": bool(lxml_root.attrib),
+                "attributes": dict(lxml_root.attrib) if self.extract_attributes else {},
+                "path": "/",
+                "text": lxml_root.text.strip() if lxml_root.text else "",
+                "is_container": is_container,
+                "container_type": container_type,
+                "child_count": len(lxml_root) if is_container else 0
+            }
+        }
+        elements.append(xml_root_element)
+        element_path_to_id["/"] = xml_root_id
+        element_path_to_lxml["/"] = lxml_root
+
+        # Create relationship between document root and XML root
+        relationship = {
+            "relationship_id": self._generate_id("rel_"),
+            "source_id": parent_id,
+            "target_id": xml_root_id,
+            "relationship_type": RelationshipType.CONTAINS.value,
+            "metadata": {
+                "confidence": 1.0
+            }
+        }
+        relationships.append(relationship)
+        relationship = {
+            "relationship_id": self._generate_id("rel_"),
+            "source_id": xml_root_id,
+            "target_id": parent_id,
+            "relationship_type": RelationshipType.CONTAINED_BY.value,
+            "metadata": {
+                "confidence": 1.0
+            }
+        }
+        relationships.append(relationship)
+
+        # Process all elements recursively
+        # Use lxml's native iter for efficiency
+        tree = etree.ElementTree(lxml_root)
+        for element in lxml_root.iter():
+            # Skip the root element since we already processed it
+            if element == lxml_root:
+                continue
+
+            # Get element path
+            element_path = tree.getpath(element)
+
+            # Generate element ID
+            element_name = self._get_normalized_tag_name(element.tag)
+            element_id = self._generate_id(f"xml_elem_{element_name}_")
+
+            # Get parent path and ID
+            parent_path = '/'.join(element_path.split('/')[:-1]) or '/'
+            parent_id = element_path_to_id.get(parent_path, xml_root_id)
+
+            # Check if element is a container and determine type
+            is_container, container_type = self._analyze_container_type(element_name, element)
+
+            # Set the appropriate element_type based on container analysis
+            if container_type == "array":
+                element_type = "xml_list"  # For array-like containers
+            elif container_type == "object":
+                element_type = "xml_object"  # For object-like containers
+            else:
+                element_type = "xml_element"  # For non-containers
+
+            # Create element metadata
+            element_data = {
+                "element_id": element_id,
+                "doc_id": doc_id,
+                "element_type": element_type,  # Use determined element type
+                "parent_id": parent_id,
+                "content_preview": f"<{element_name}>",
+                "content_location": json.dumps({
+                    "source": source_id,
+                    "type": element_type,  # Also store it in the content location
+                    "path": element_path,
+                    "namespaces": namespaces
+                }),
+                "content_hash": self._generate_hash(etree.tostring(element)),
+                "metadata": {
+                    "element_name": element_name,
+                    "has_attributes": bool(element.attrib),
+                    "attributes": dict(element.attrib) if self.extract_attributes else {},
+                    "path": element_path,
+                    "text": element.text.strip() if element.text else "",
+                    "is_container": is_container,
+                    "container_type": container_type,
+                    "child_count": len(element) if is_container else 0
+                }
+            }
+            elements.append(element_data)
+            element_path_to_id[element_path] = element_id
+            element_path_to_lxml[element_path] = element
+
+            # Determine the relationship type
+            # If the parent is an array container, use a more specific relationship type
+            parent_element = element_path_to_lxml.get(parent_path)
+            relationship_type = RelationshipType.CONTAINS.value
+
+            if parent_element:
+                parent_name = self._get_normalized_tag_name(parent_element.tag)
+                parent_is_container, parent_container_type = self._analyze_container_type(parent_name, parent_element)
+
+                if parent_is_container and parent_container_type == "array":
+                    relationship_type = RelationshipType.CONTAINS_ARRAY_ITEM.value
+
+            relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": parent_id,
+                "target_id": element_id,
+                "relationship_type": relationship_type,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(relationship)
+            relationship = {
+                "relationship_id": self._generate_id("rel_"),
+                "source_id": element_id,
+                "target_id": parent_id,
+                "relationship_type": RelationshipType.CONTAINED_BY.value,
+                "metadata": {
+                    "confidence": 1.0
+                }
+            }
+            relationships.append(relationship)
+
+            # Process text nodes if they have content
+            if element.text and element.text.strip():
+                text_id = self._generate_id("text_")
+                text_content = element.text.strip()
+                text_preview = text_content[:self.max_content_preview] + (
+                    "..." if len(text_content) > self.max_content_preview else "")
+
+                # Create text path
+                text_path = f"{element_path}/text()[1]"
+
+                # Check for temporal data
+                temporal_type = detect_temporal_type(text_content)
+                temporal_metadata = {"temporal_type": temporal_type.name}
+
+                # Add semantic representation if it's a temporal value
+                if temporal_type is not TemporalType.NONE:
+                    temporal_metadata["semantic_value"] = create_semantic_temporal_expression(text_content)
+
+                text_element = {
+                    "element_id": text_id,
+                    "doc_id": doc_id,
+                    "element_type": "xml_text",
+                    "parent_id": element_id,
+                    "content_preview": text_preview,
+                    "content_location": json.dumps({
+                        "source": source_id,
+                        "type": "xml_text",
+                        "path": text_path,
+                        "namespaces": namespaces
+                    }),
+                    "content_hash": self._generate_hash(text_content),
+                    "metadata": {
+                        "parent_element": element_name,
+                        "path": text_path,
+                        "text": text_content,
+                        **temporal_metadata
+                    }
+                }
+                elements.append(text_element)
+                element_path_to_id[text_path] = text_id
+
+                # Create relationship for text
+                relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": element_id,
+                    "target_id": text_id,
+                    "relationship_type": RelationshipType.CONTAINS_TEXT.value,
+                    "metadata": {
+                        "confidence": 1.0
+                    }
+                }
+                relationships.append(relationship)
+                # Create relationship for text
+                relationship = {
+                    "relationship_id": self._generate_id("rel_"),
+                    "source_id": text_id,
+                    "target_id": element_id,
+                    "relationship_type": RelationshipType.CONTAINED_BY.value,
+                    "metadata": {
+                        "confidence": 1.0
+                    }
+                }
+                relationships.append(relationship)
+
+        return elements, relationships
+
+    def _extract_document_metadata(self, content: Union[str, bytes], base_metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extract metadata from XML document with lxml.
+
+        Args:
+            content: XML content
+            base_metadata: Base metadata from content source
+
+        Returns:
+            Dictionary of document metadata
+        """
+        # Generate cache key
+        if self.enable_caching:
+            content_hash = self._generate_hash(content)
+            cache_key = f"metadata_{content_hash}"
+
+            # Check metadata cache
+            cached_metadata = self.text_cache.get(cache_key)
+            if cached_metadata is not None:
+                logger.debug(f"Metadata cache hit for {cache_key}")
+                return cached_metadata
+
+        logger.debug(f"Metadata cache miss")
+
+        metadata = base_metadata.copy()
+
+        try:
+            # Use lxml for processing
+            lxml_root = self._get_or_create_lxml_root(content)
+
+            # Extract root element name
+            root_tag = lxml_root.tag
+            if '}' in root_tag:
+                root_name = root_tag.split('}')[1]
+            else:
+                root_name = root_tag
+
+            metadata["root_element"] = root_name
+
+            # Extract namespace declarations
+            if self.extract_namespace_declarations:
+                namespaces = {}
+                # Get namespaces from lxml
+                for prefix, uri in lxml_root.nsmap.items():
+                    if prefix is None:
+                        namespaces["default"] = uri
+                    else:
+                        namespaces[prefix] = uri
+
+                if namespaces:
+                    metadata["namespaces"] = namespaces
+
+            # Basic document statistics
+            metadata["element_count"] = len([e for e in lxml_root.iter()])
+
+            # Try to detect schema or DTD information
+            schema_locations = []
+            for attr_name, attr_value in lxml_root.attrib.items():
+                if attr_name.endswith("}schemaLocation") or attr_name == "schemaLocation":
+                    schema_locations.append(attr_value)
+
+            if schema_locations:
+                metadata["schema_locations"] = schema_locations
+
+        except Exception as e:
+            logger.warning(f"Error extracting document metadata: {str(e)}")
+
+        # Cache the metadata
+        if self.enable_caching:
+            self.text_cache.set(cache_key, metadata)
+
+        return metadata
 
     def parse(self, doc_content: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse an XML document into structured elements."""
+        """Parse an XML document into structured elements with direct lxml support."""
         content = doc_content["content"]
         source_id = doc_content["id"]  # Should already be a fully qualified path
         metadata = doc_content.get("metadata", {}).copy()  # Make a copy to avoid modifying original
+
+        # Generate document cache key
+        if self.enable_caching:
+            content_hash = self._generate_hash(content)
+            doc_cache_key = f"{source_id}_{content_hash}"
+
+            # Check document cache
+            cached_doc = self.document_cache.get(doc_cache_key)
+            if cached_doc is not None:
+                logger.info(f"Document cache hit for {source_id}")
+                return cached_doc
+
+        logger.info(f"Document cache miss for {source_id}")
 
         # Generate document ID if not present
         doc_id = metadata.get("doc_id", self._generate_id("doc_"))
@@ -617,576 +1249,167 @@ class XmlParser(DocumentParser):
             "content_hash": doc_content.get("content_hash", self._generate_hash(content))
         }
 
+        # Use the helper method to get lxml root
+        lxml_root = self._get_or_create_lxml_root(content)
+
         # Create root element
         elements = [self._create_root_element(doc_id, source_id)]
         root_id = elements[0]["element_id"]
 
-        # Parse XML
-        soup = BeautifulSoup(content, self.parser_features)
+        # Extract namespace information from root
+        namespaces = {}
+        for prefix, uri in lxml_root.nsmap.items():
+            if prefix is None:
+                namespaces["default"] = uri
+            else:
+                namespaces[prefix] = uri
 
-        # Add XPath-like paths to elements for better location tracking
-        self._add_paths(soup)
-
-        # Parse XML elements
-        parsed_elements, relationships = self._parse_document(soup, doc_id, root_id, source_id)
+        # Process document structure using the revised approach
+        parsed_elements, relationships = self._process_document_structure(
+            lxml_root, doc_id, root_id, source_id, namespaces
+        )
         elements.extend(parsed_elements)
 
-        # Extract links from XML (e.g., xlink:href attributes, etc.)
-        links = self._extract_xml_links(soup, elements)
+        # Extract links from the document
+        links = self._extract_xml_links_direct(lxml_root, elements, namespaces)
 
-        # Return the parsed document with extracted links and relationships
-        return {
+        # Create result
+        result = {
             "document": document,
             "elements": elements,
             "links": links,
             "relationships": relationships
         }
 
-    def _extract_document_metadata(self, content: str, base_metadata: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Extract metadata from XML document.
+        # Add performance metrics if enabled
+        if self.enable_performance_monitoring:
+            self.performance_stats["parse_count"] += 1
+            result["performance"] = self.get_performance_stats()
 
-        Args:
-            content: XML content
-            base_metadata: Base metadata from content source
+        # Cache the document
+        if self.enable_caching:
+            self.document_cache.set(doc_cache_key, result)
+
+        return result
+
+    def clear_caches(self):
+        """Clear all caches."""
+        self.document_cache.clear()
+        self.tree_cache.clear()
+        self.text_cache.clear()
+        logger.info("All caches cleared")
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """
+        Get statistics about the caches.
 
         Returns:
-            Dictionary of document metadata
+            Dictionary with cache statistics
         """
-        metadata = base_metadata.copy()
+        if not self.enable_caching:
+            return {"caching_enabled": False}
 
-        try:
-            # Parse XML
-            soup = BeautifulSoup(content, self.parser_features)
+        return {
+            "caching_enabled": True,
+            "document_cache": {
+                "size": len(self.document_cache.cache),
+                "max_size": self.document_cache.max_size,
+                "ttl": self.document_cache.ttl
+            },
+            "tree_cache": {
+                "size": len(self.tree_cache.cache),
+                "max_size": self.tree_cache.max_size,
+                "ttl": self.tree_cache.ttl
+            },
+            "text_cache": {
+                "size": len(self.text_cache.cache),
+                "max_size": self.text_cache.max_size,
+                "ttl": self.text_cache.ttl
+            }
+        }
 
-            # Extract root element name
-            root = soup.find()
-            if root:
-                metadata["root_element"] = root.name
-
-                # Extract namespace declarations
-                if self.extract_namespace_declarations:
-                    namespaces = {}
-                    for attr_name, attr_value in root.attrs.items():
-                        if attr_name.startswith("xmlns:"):
-                            prefix = attr_name[6:]  # Remove "xmlns:" prefix
-                            namespaces[prefix] = attr_value
-                        elif attr_name == "xmlns":
-                            namespaces["default"] = attr_value
-
-                    if namespaces:
-                        metadata["namespaces"] = namespaces
-
-            # Extract document type declaration if available
-            if hasattr(soup, 'doctype') and soup.doctype:
-                metadata["doctype"] = {
-                    "name": soup.doctype.name,
-                    "public_id": soup.doctype.publicId,
-                    "system_id": soup.doctype.systemId
-                }
-
-            # Basic document statistics
-            metadata["element_count"] = len(soup.find_all())
-
-            # Extract XML processing instructions
-            if soup.find_all(
-                    text=lambda text: isinstance(text, str) and text.strip().startswith("<?") and text.strip().endswith(
-                        "?>")):
-                proc_instructions = [
-                    pi.strip() for pi in soup.find_all(
-                        text=lambda text: isinstance(text, str) and text.strip().startswith(
-                            "<?") and text.strip().endswith("?>"))
-                ]
-                if proc_instructions:
-                    metadata["processing_instructions"] = proc_instructions
-
-            # Try to detect schema or DTD information
-            schema_locations = []
-            if root and hasattr(root, 'attrs'):
-                for attr_name, attr_value in root.attrs.items():
-                    if attr_name.endswith(":schemaLocation") or attr_name == "schemaLocation":
-                        schema_locations.append(attr_value)
-
-                if schema_locations:
-                    metadata["schema_locations"] = schema_locations
-
-        except Exception as e:
-            logger.warning(f"Error extracting document metadata: {str(e)}")
-
-        return metadata
-
-    def _parse_document(self, soup, doc_id: str, parent_id: str, source_id: str) -> Tuple[
-        List[Dict[str, Any]], List[Dict[str, Any]]]:
+    def get_performance_stats(self) -> Dict[str, Any]:
         """
-        Parse the entire XML document.
-
-        Args:
-            soup: BeautifulSoup object
-            doc_id: Document ID
-            parent_id: Parent element ID
-            source_id: Source identifier
+        Get performance statistics.
 
         Returns:
-            Tuple of (elements, relationships)
+            Dictionary with performance statistics
         """
-        elements = []
-        relationships = []
+        if not self.enable_performance_monitoring:
+            return {"performance_monitoring_enabled": False}
 
-        # Create a map to track element IDs
-        element_id_map = {}
+        stats = self.performance_stats.copy()
 
-        # Start with the root element
-        root_tag = soup.find()
-        if root_tag:
-            # Create the document root element
-            xml_root_id = self._generate_id("xml_root_")
-            xml_root_element = {
-                "element_id": xml_root_id,
-                "doc_id": doc_id,
-                "element_type": "xml_element",
-                "parent_id": parent_id,
-                "content_preview": f"<{root_tag.name}>",
-                "content_location": json.dumps({
-                    "source": source_id,
-                    "type": "xml_element",
-                    "path": "/"
-                }),
-                "content_hash": self._generate_hash(str(root_tag)),
-                "metadata": {
-                    "element_name": root_tag.name,
-                    "has_attributes": bool(root_tag.attrs),
-                    "attributes": root_tag.attrs if self.extract_attributes else {},
-                    "path": "/",
-                    "text": root_tag.string.strip() if root_tag.string else ""
-                }
-            }
-            elements.append(xml_root_element)
-            element_id_map[root_tag] = xml_root_id
+        # Add derived metrics
+        if stats["parse_count"] > 0:
+            stats["avg_parse_time"] = stats["total_parse_time"] / stats["parse_count"]
 
-            # Create relationship between document root and XML root
-            relationship = {
-                "source_id": parent_id,
-                "target_id": xml_root_id,
-                "relationship_type": "contains"
-            }
-            relationships.append(relationship)
+        # Add cache efficiency
+        total_requests = stats["cache_hits"] + stats["cache_misses"]
+        if total_requests > 0:
+            stats["cache_hit_ratio"] = stats["cache_hits"] / total_requests
 
-            # Process child elements recursively
-            self._process_element_children(root_tag, doc_id, xml_root_id, source_id, elements, relationships,
-                                           element_id_map)
+        return {
+            "performance_monitoring_enabled": True,
+            **stats
+        }
 
-        return elements, relationships
+    def reset_performance_stats(self):
+        """Reset performance statistics."""
+        self.performance_stats = {
+            "parse_count": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "total_parse_time": 0.0,
+            "total_path_generation_time": 0.0,
+            "total_element_processing_time": 0.0,
+            "total_link_extraction_time": 0.0,
+            "method_times": {}
+        }
+        logger.info("Performance statistics reset")
 
-    def _process_element_children(self, parent_tag, doc_id, parent_id, source_id, elements, relationships,
-                                  element_id_map, parent_path="/"):
+    def performance_monitor(self, method_name):
         """
-        Process all children of an XML element.
+        Decorator for monitoring method performance.
 
         Args:
-            parent_tag: Parent XML element
-            doc_id: Document ID
-            parent_id: Parent element ID
-            source_id: Source identifier
-            elements: List to add elements to
-            relationships: List to add relationships to
-            element_id_map: Map of BeautifulSoup tags to element IDs
-            parent_path: XPath-like path to parent element
+            method_name: Name of the method to monitor
         """
-        # Track text node positions for each parent
-        text_node_position = 0
 
-        for i, child in enumerate(parent_tag.children):
-            # Skip all non-element nodes unless they are text nodes with content
-            if not hasattr(child, 'name') or child.name is None:
-                # Only process text nodes with actual content
-                if isinstance(child, str) and child.strip():
-                    # This is a text node with content
-                    text_node_position += 1
-                    text_id = self._generate_id("text_")
-                    text_content = child.strip()
-                    text_preview = text_content[:self.max_content_preview] + (
-                        "..." if len(text_content) > self.max_content_preview else "")
+        def decorator(func):
+            @functools.wraps(func)
+            def wrapper(*args, **kwargs):
+                if not self.enable_performance_monitoring:
+                    return func(*args, **kwargs)
 
-                    text_element = {
-                        "element_id": text_id,
-                        "doc_id": doc_id,
-                        "element_type": "xml_text",
-                        "parent_id": parent_id,
-                        "content_preview": text_preview,
-                        "content_location": json.dumps({
-                            "source": source_id,
-                            "type": "xml_text",
-                            "path": f"{parent_path}/text()[{text_node_position}]"
-                        }),
-                        "content_hash": self._generate_hash(text_content),
-                        "metadata": {
-                            "parent_element": parent_tag.name,
-                            "path": f"{parent_path}/text()[{text_node_position}]",
-                            "index": i,
-                            "text": text_content
-                        }
+                start_time = time.time()
+                result = func(*args, **kwargs)
+                elapsed_time = time.time() - start_time
+
+                # Update statistics
+                if method_name not in self.performance_stats["method_times"]:
+                    self.performance_stats["method_times"][method_name] = {
+                        "calls": 0,
+                        "total_time": 0,
+                        "min_time": float('inf'),
+                        "max_time": 0
                     }
-                    elements.append(text_element)
 
-                    # Create relationship
-                    relationship = {
-                        "source_id": parent_id,
-                        "target_id": text_id,
-                        "relationship_type": "contains_text"
-                    }
-                    relationships.append(relationship)
-                # Skip all non-element nodes (including whitespace)
-                continue
+                stats = self.performance_stats["method_times"][method_name]
+                stats["calls"] += 1
+                stats["total_time"] += elapsed_time
+                stats["min_time"] = min(stats["min_time"], elapsed_time)
+                stats["max_time"] = max(stats["max_time"], elapsed_time)
 
-            # Skip comment nodes
-            if child.name == 'comment':
-                continue
+                # Log if this is a particularly slow operation
+                if elapsed_time > 1.0:  # Log operations taking more than 1 second
+                    logger.warning(f"Slow operation: {method_name} took {elapsed_time:.4f} seconds")
 
-            # Skip processing instructions for now
-            if isinstance(child, str) and child.strip().startswith("<?") and child.strip().endswith("?>"):
-                continue
-
-            # Process element
-            element_path = f"{parent_path}/{child.name}"
-
-            # If there are multiple siblings with the same name, add index
-            siblings = [s for s in parent_tag.find_all(child.name, recursive=False)]
-            if len(siblings) > 1:
-                # Find position of this child among siblings with same name
-                # This is safe now since we've verified child has a name attribute
-                pos = siblings.index(child) + 1
-                element_path = f"{parent_path}/{child.name}[{pos}]"
-
-            # Generate element ID
-            element_id = self._generate_id(f"xml_elem_{child.name}_")
-
-            # Get content preview
-            if child.string and child.string.strip():
-                text_content = child.string.strip()
-                content_preview = f"<{child.name}>{text_content[:self.max_content_preview]}" + (
-                    "..." if len(text_content) > self.max_content_preview else "") + f"</{child.name}>"
-            else:
-                content_preview = f"<{child.name}>" + ("..." if len(child.contents) > 0 else "") + f"</{child.name}>"
-
-            # Create element with attributes
-            element = {
-                "element_id": element_id,
-                "doc_id": doc_id,
-                "element_type": "xml_element",
-                "parent_id": parent_id,
-                "content_preview": content_preview,
-                "content_location": json.dumps({
-                    "source": source_id,
-                    "type": "xml_element",
-                    "path": element_path
-                }),
-                "content_hash": self._generate_hash(str(child)),
-                "metadata": {
-                    "element_name": child.name,
-                    "has_attributes": bool(child.attrs),
-                    "attributes": child.attrs if self.extract_attributes else {},
-                    "path": element_path,
-                    "text": child.string.strip() if child.string else ""
-                }
-            }
-
-            elements.append(element)
-            element_id_map[child] = element_id
-
-            # Create relationship
-            relationship = {
-                "source_id": parent_id,
-                "target_id": element_id,
-                "relationship_type": "contains"
-            }
-            relationships.append(relationship)
-
-            # Process child's children recursively
-            self._process_element_children(child, doc_id, element_id, source_id, elements, relationships,
-                                           element_id_map, element_path)
-
-    def _add_paths(self, soup, current_path="/", parent=None):
-        """
-        Add XPath-like paths to XML elements.
-
-        Args:
-            soup: BeautifulSoup object
-            current_path: Current XPath
-            parent: Parent element
-        """
-        # Create a dictionary to store paths, using id(element) as key
-        if not hasattr(self, '_path_map'):
-            self._path_map = {}
-            logger.debug(f"Creating new path map dictionary")
-
-        logger.debug(f"Adding paths starting with path={current_path}, parent={parent.name if parent else 'None'}")
-
-        if not parent:
-            # Start with root element
-            root = soup.find()
-            if root:
-                # Store path in our map using element's id as key
-                self._path_map[id(root)] = "/"
-                logger.debug(f"Set root path to / for element {root.name}")
-                self._add_paths(soup, "/", root)
-            return
-
-        # Process child elements
-        tag_counts = {}
-        for child in parent.children:
-            if hasattr(child, 'name') and child.name:
-                # Count siblings with same name
-                tag_counts[child.name] = tag_counts.get(child.name, 0) + 1
-                logger.debug(f"Processing child: {child.name}, count: {tag_counts[child.name]}")
-
-                # Create path
-                if tag_counts[child.name] > 1:
-                    child_path = f"{current_path}/{child.name}[{tag_counts[child.name]}]"
-                else:
-                    count_same_tags = len(parent.find_all(child.name, recursive=False))
-                    if count_same_tags > 1:
-                        child_path = f"{current_path}/{child.name}[1]"
-                    else:
-                        child_path = f"{current_path}/{child.name}"
-
-                # Store path in our map
-                self._path_map[id(child)] = child_path
-                logger.debug(f"Set path to {child_path} for element {child.name}")
-
-                # Recurse to child's children
-                self._add_paths(soup, child_path, child)
-
-    @staticmethod
-    def _extract_xml_links(soup, elements) -> List[Dict[str, Any]]:
-        """
-        Extract links from XML document.
-
-        Args:
-            soup: BeautifulSoup object
-            elements: List of parsed elements
-
-        Returns:
-            List of extracted links
-        """
-        links = []
-
-        # Create a map of element paths to element IDs
-        element_map = {}
-        for element in elements:
-            if element.get("element_type") in ["xml_element", "xml_text"]:
-                content_location = element.get("content_location", "{}")
-                try:
-                    location = json.loads(content_location)
-                    path = location.get("path", "")
-                    element_map[path] = element.get("element_id")
-                except (json.JSONDecodeError, TypeError):
-                    pass
-
-        # Look for various link-like attributes
-        link_attrs = [
-            "href", "xlink:href", "src", "uri", "url", "link",
-            "reference", "ref", "target", "to", "from"
-        ]
-
-        # Find all elements with link attributes
-        for tag in soup.find_all():
-            if not hasattr(tag, '_path'):
-                continue
-
-            element_path = tag._path
-            element_id = element_map.get(element_path)
-
-            if not element_id:
-                continue
-
-            # Check for link attributes
-            for attr in link_attrs:
-                if attr in tag.attrs:
-                    target = tag.attrs[attr]
-                    if target and isinstance(target, str):
-                        # Determine link type
-                        link_type = "xml_attribute"
-                        if attr == "xlink:href":
-                            link_type = "xlink"
-                        elif attr in ["href", "src"]:
-                            link_type = attr
-
-                        links.append({
-                            "source_id": element_id,
-                            "link_text": f"{attr}='{target}'",
-                            "link_target": target,
-                            "link_type": link_type
-                        })
-
-        return links
-
-    def _resolve_element_content(self, location_data: Dict[str, Any],
-                                 source_content: Optional[Union[str, bytes]]) -> str:
-        """
-        Resolve content for specific XML element types, returning valid XML.
-
-        Args:
-            location_data: Content location data
-            source_content: Optional preloaded source content
-
-        Returns:
-            Resolved content as properly formatted XML
-        """
-        source = location_data.get("source", "")
-        element_type = location_data.get("type", "")
-        path = location_data.get("path", "")
-
-        logger.debug(f"RESOLVING ELEMENT CONTENT: source={source}, type={element_type}, path={path}")
-
-        # Load content if not provided
-        content = source_content
-        if content is None:
-            if os.path.exists(source):
-                try:
-                    with open(source, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                        logger.debug(f"Successfully read content from file with utf-8 encoding")
-                except UnicodeDecodeError:
-                    # Try binary mode if text mode fails
-                    try:
-                        with open(source, 'rb') as f:
-                            content = f.read()
-                            try:
-                                content = content.decode('utf-8')
-                                logger.debug(f"Successfully decoded binary content with utf-8")
-                            except UnicodeDecodeError:
-                                try:
-                                    content = content.decode('latin1')
-                                    logger.debug(f"Successfully decoded binary content with latin1")
-                                except UnicodeDecodeError:
-                                    logger.error(f"Failed to decode binary content from {source}")
-                                    raise ValueError("Cannot decode binary content as XML")
-                    except Exception as e:
-                        logger.error(f"Error reading binary content: {str(e)}")
-                        raise ValueError(f"Error reading content: {str(e)}")
-            else:
-                logger.error(f"Source file not found: {source}")
-                raise ValueError(f"Source file not found: {source}")
-
-        # Ensure content is string (not bytes)
-        if isinstance(content, bytes):
-            try:
-                content = content.decode('utf-8')
-                logger.debug(f"Decoded bytes content with utf-8")
-            except UnicodeDecodeError:
-                try:
-                    content = content.decode('latin1')
-                    logger.debug(f"Decoded bytes content with latin1")
-                except UnicodeDecodeError:
-                    logger.error(f"Failed to decode content bytes")
-                    raise ValueError("Cannot decode binary content as XML")
-
-        # Parse XML
-        soup = BeautifulSoup(content, self.parser_features)
-        logger.debug(f"Created BeautifulSoup object using {self.parser_features} parser")
-
-        # Add paths to elements
-        self._add_paths(soup)
-        logger.debug(f"Added XPath-like paths to elements")
-
-        # If root path or no path, return full document
-        if not path or path == "/":
-            logger.debug(f"Root path requested")
-            if element_type == "root":
-                logger.debug(f"Returning full document")
-                return str(soup)
-            else:
-                # Get the root element
-                root = soup.find()
-                if root:
-                    logger.debug(f"Returning root element: {root.name}")
-                    return str(root)
-                else:
-                    logger.warning(f"No root element found")
-                    return "<empty/>"
-
-        # Check if path uses // which needs special handling
-        found_element = None
-        if path.startswith('//'):
-            logger.debug(f"Path starts with '//', using more flexible path matching")
-            # For paths that use '//' we need a more flexible approach
-            # Extract the element name from the path
-            if '[' in path:
-                # Handle paths with indexes like "//books/book[15]/summary"
-                parts = path.split('/')
-                element_name = parts[-1]
-                if '[' in element_name:
-                    element_name = element_name.split('[')[0]
-                    logger.debug(f"Extracted element name '{element_name}' from path with index")
-            else:
-                # Simple path like "//books/summary"
-                element_name = path.split('/')[-1]
-                logger.debug(f"Extracted element name '{element_name}' from simple path")
-
-            # Try to find all elements with this name
-            candidates = soup.find_all(element_name)
-            logger.debug(f"Found {len(candidates)} candidate elements with name '{element_name}'")
-
-            # See if any match our path - handling both exact matches and partial paths
-            for tag in candidates:
-                if hasattr(tag, '_path'):
-                    logger.debug(f"Checking candidate with path: {tag._path}")
-
-                    # Check for exact match or if the path ends with what we're looking for
-                    if tag._path == path or tag._path.endswith(path[1:]) or path.endswith(tag._path):
-                        found_element = tag
-                        logger.debug(f"FOUND MATCH: {tag._path}")
-                        break
-        else:
-            # Regular path search
-            logger.debug(f"Searching for exact path match: {path}")
-            for tag in soup.find_all():
-                if hasattr(tag, '_path') and tag._path == path:
-                    found_element = tag
-                    logger.debug(f"Found exact path match")
-                    break
-
-        # Process the found element based on type
-        if found_element:
-            logger.debug(f"Processing found element of type: {element_type}")
-            if element_type == "xml_text":
-                # For text nodes, wrap in a simple container to maintain XML validity
-                text = found_element.string.strip() if found_element.string else ""
-                logger.debug(f"Returning text node content: '{text}'")
-                return f"<text>{text}</text>"
-            elif element_type == "xml_element":
-                # Return the element as XML
-                result = str(found_element)
-                logger.debug(f"Returning element content: '{result[:100]}...' (truncated)")
-                return result
-            else:
-                # Default to returning the element
-                result = str(found_element)
-                logger.debug(f"Returning default element content: '{result[:100]}...' (truncated)")
-                return result
-        else:
-            # If no element found through direct path search, try using element name
-            logger.warning(f"Element not found with path: {path}")
-
-            # Extract element name from path
-            element_name = path.split('/')[-1]
-            if '[' in element_name:
-                element_name = element_name.split('[')[0]
-
-            logger.debug(f"Trying to find by element name: {element_name}")
-
-            # Look for elements with this name
-            elements = soup.find_all(element_name)
-            if elements:
-                logger.debug(f"Found {len(elements)} elements with name '{element_name}'")
-                # Just use the first one as a fallback
-                result = str(elements[0])
-                logger.warning(f"Using first matching element as fallback")
                 return result
 
-            # If element not found at all, return an error indicator as valid XML
-            logger.error(f"No elements found with name '{element_name}' for path '{path}'")
-            return f'<error path="{path}">Element not found</error>'
+            return wrapper
+
+        return decorator
 
     def supports_location(self, content_location: str) -> bool:
         """
@@ -1208,7 +1431,7 @@ class XmlParser(DocumentParser):
                 return False
 
             # Check if element type is one we handle
-            if element_type not in ["root", "xml_element", "xml_text"]:
+            if element_type not in ["root", "xml_element", "xml_text", "xml_list", "xml_object"]:
                 return False
 
             # Check file extension for XML
@@ -1218,46 +1441,43 @@ class XmlParser(DocumentParser):
         except (json.JSONDecodeError, TypeError):
             return False
 
-    def _extract_links(self, content: str, element_id: str) -> List[Dict[str, Any]]:
+    @ttl_cache(maxsize=256, ttl=3600)
+    def _is_identity_element(self, element_name: str) -> bool:
         """
-        Extract links from XML content.
+        Determines if an element likely represents an identity or entity.
+        Uses caching for improved performance.
 
         Args:
-            content: XML content
-            element_id: ID of the element containing the links
+            element_name: The name of the XML element
 
         Returns:
-            List of extracted links
+            True if it appears to be an identity element, False otherwise
         """
-        links = []
-
-        # Parse XML with BeautifulSoup
-        soup = BeautifulSoup(content, self.parser_features)
-
-        # Look for various link-like attributes
-        link_attrs = [
-            "href", "xlink:href", "src", "uri", "url", "link",
-            "reference", "ref", "target", "to", "from"
+        # Use natural language processing principles to identify likely entity elements
+        # Check if it's a common entity/identity type
+        common_entities = [
+            # Places
+            "country", "city", "state", "province", "location", "address", "region",
+            # People and organizations
+            "person", "author", "publisher", "company", "organization", "corporation", "vendor",
+            "owner", "creator", "editor", "manager", "developer", "provider", "customer",
+            # Identifiers
+            "name", "title", "label", "id", "identifier", "category", "type", "class",
+            # Descriptors
+            "genre", "style", "format", "model", "brand", "version"
         ]
 
-        # Find all elements with link attributes
-        for tag in soup.find_all():
-            for attr in link_attrs:
-                if attr in tag.attrs:
-                    target = tag.attrs[attr]
-                    if target and isinstance(target, str):
-                        # Determine link type
-                        link_type = "xml_attribute"
-                        if attr == "xlink:href":
-                            link_type = "xlink"
-                        elif attr in ["href", "src"]:
-                            link_type = attr
+        # Simple text matching approach
+        element_lower = element_name.lower()
 
-                        links.append({
-                            "source_id": element_id,
-                            "link_text": f"{attr}='{target}'",
-                            "link_target": target,
-                            "link_type": link_type
-                        })
-
-        return links
+        # Check if it's in our list of common entities
+        if element_lower in common_entities:
+            return True
+        # Check for possessive forms that suggest identity (e.g., author's, company's)
+        elif element_lower.endswith("'s"):
+            base_word = element_lower[:-2]
+            return base_word in common_entities
+        # Advanced: Check for compound words containing entity terms
+        # E.g., "productName", "bookAuthor", "companyTitle"
+        else:
+            return any(entity in element_lower and entity != element_lower for entity in common_entities)

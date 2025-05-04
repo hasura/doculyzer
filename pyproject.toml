@@ -28,7 +28,7 @@ classifiers = [
 dependencies = [
     "sqlean.py~=3.47.0; platform_system == 'Darwin'",
     "sqlean.py~=3.47.0; platform_system == 'Linux' and platform_machine == 'x86_64'",
-    "glob2~=0.7",
+    "lxml~=5.4.0",
     "PyYAML~=6.0.2",
     "beautifulsoup4~=4.13.4",
     "Markdown~=3.8",
@@ -55,7 +55,8 @@ dependencies = [
 
 [project.optional-dependencies]
 development = [
-    "pytest~=8.3.5"
+    "pytest~=8.3.5",
+    "build~=1.2.2"
 ]
 
 [project.urls]

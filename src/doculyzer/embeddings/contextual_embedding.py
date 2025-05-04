@@ -140,10 +140,17 @@ class ContextualEmbeddingGenerator(EmbeddingGenerator):
             return False
 
     def generate_from_elements(self, elements: List[Dict[str, Any]]) -> Dict[str, List[float]]:
-        """Generate contextual embeddings for document elements."""
+        """
+        Generate contextual embeddings for document elements, with size handling:
+        - Skip root elements that exceed the size threshold
+        - Truncate non-root elements that exceed the size threshold
+        """
         # Build element hierarchy
         hierarchy = self._build_element_hierarchy(elements)
         resolver = create_content_resolver(self._config)
+
+        # Define maximum content size for effective embedding (approximate word count)
+        max_words_for_embedding = 500
 
         # Generate embeddings with context
         embeddings = {}
@@ -151,23 +158,35 @@ class ContextualEmbeddingGenerator(EmbeddingGenerator):
         for element in elements:
             element_pk = element["element_pk"]
 
-            # Skip root element
-            if element["element_type"] == "root":
-                continue
+            # Get full text content for all elements using the resolver
+            content = resolver.resolve_content(element.get('content_location'), text=True)
 
-            # Get content from preview
-            content = element.get("content_preview", "")
+            # Skip if no meaningful content
             if not content and not self.is_number(content):
                 continue
+
+            # Check content length
+            word_count = len(content.split())
+            if word_count > max_words_for_embedding:
+                # For root elements, skip entirely
+                if element["element_type"] == "root":
+                    continue
+
+                # For non-root elements, truncate to threshold
+                content = " ".join(content.split()[:max_words_for_embedding])
 
             # Get context elements
             context_elements = self._get_context_elements(element, elements, hierarchy)
 
-            # Get context contents from previews
+            # Get context contents using the resolver for text
             context_contents = []
             for ctx_element in context_elements:
                 ctx_content = resolver.resolve_content(ctx_element.get('content_location'), text=True)
                 if ctx_content and not self.is_number(ctx_content):
+                    # Also check size of context elements and truncate if needed
+                    ctx_words = len(ctx_content.split())
+                    if ctx_words > max_words_for_embedding:
+                        ctx_content = " ".join(ctx_content.split()[:max_words_for_embedding])
                     context_contents.append(ctx_content)
 
             # Generate embedding with context

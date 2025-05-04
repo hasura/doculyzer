@@ -47,7 +47,7 @@ class HuggingFaceEmbeddingGenerator(EmbeddingGenerator):
 
             # Generate embedding
             with torch.no_grad():
-                embedding = self.model.encode(text, normalize_embeddings=True, show_progress_bar=True,)
+                embedding = self.model.encode(text, normalize_embeddings=True, show_progress_bar=True, )
 
             # Convert to list
             if isinstance(embedding, torch.Tensor):
@@ -104,7 +104,7 @@ class HuggingFaceEmbeddingGenerator(EmbeddingGenerator):
 
                 # Generate embeddings
                 with torch.no_grad():
-                    embeddings = self.model.encode(uncached_texts, normalize_embeddings=True, show_progress_bar=True,)
+                    embeddings = self.model.encode(uncached_texts, normalize_embeddings=True, show_progress_bar=True, )
 
                 # Convert to lists
                 if isinstance(embeddings, torch.Tensor):

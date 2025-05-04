@@ -11,6 +11,7 @@ import re
 from typing import Dict, Any, List, Optional, Union
 
 from .base import DocumentParser
+from ..storage import ElementType
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ class TextParser(DocumentParser):
         element_type = location_data.get("type", "")
 
         # Handle different element types
-        if element_type == "root" or not element_type:
+        if element_type == ElementType.ROOT.value or not element_type:
             # For the full document, we might want to clean it up
             if self.normalize_whitespace:
                 # Normalize line endings and reduce excessive whitespace
@@ -61,15 +62,15 @@ class TextParser(DocumentParser):
                 content = re.sub(r'\n{3,}', '\n\n', content)  # Reduce excessive blank lines
             return content.strip() if self.strip_whitespace else content
 
-        elif element_type == "paragraph":
+        elif element_type == ElementType.PARAGRAPH.value:
             # For paragraphs, just return the text (already clean)
             return content.strip() if self.strip_whitespace else content
 
-        elif element_type == "line":
+        elif element_type == ElementType.LINE.value:
             # For a single line, just return it
             return content.strip() if self.strip_whitespace else content
 
-        elif element_type == "range" or element_type == "substring":
+        elif element_type == ElementType.RANGE.value or element_type == ElementType.SUBSTRING.value:
             # For text ranges or substrings, return as is
             return content.strip() if self.strip_whitespace else content
 
@@ -117,11 +118,11 @@ class TextParser(DocumentParser):
                 return f"(Binary content of {len(content)} bytes, cannot be displayed as text)"
 
         # Handle different element types
-        if element_type == "root" or not element_type:
+        if element_type == ElementType.ROOT.value or not element_type:
             # Return the entire document content
             return content
 
-        elif element_type == "paragraph":
+        elif element_type == ElementType.PARAGRAPH.value:
             # Extract specific paragraph by index
             paragraph_index = location_data.get("index", 0)
 
@@ -134,7 +135,7 @@ class TextParser(DocumentParser):
             else:
                 return f"Paragraph index {paragraph_index} out of range. Document has {len(paragraphs)} paragraphs."
 
-        elif element_type == "line":
+        elif element_type == ElementType.LINE.value:
             # Extract specific line by index
             line_index = location_data.get("line", 0)
 
@@ -147,7 +148,7 @@ class TextParser(DocumentParser):
             else:
                 return f"Line index {line_index} out of range. Document has {len(lines)} lines."
 
-        elif element_type == "range":
+        elif element_type == ElementType.RANGE.value:
             # Extract a range of text
             start = location_data.get("start", 0)
             end = location_data.get("end", len(content))
@@ -158,7 +159,7 @@ class TextParser(DocumentParser):
             else:
                 return f"Invalid range: start={start}, end={end}. Content length is {len(content)}."
 
-        elif element_type == "substring":
+        elif element_type == ElementType.SUBSTRING.value:
             # Extract text by search string
             search_string = location_data.get("search", "")
             occurrence = location_data.get("occurrence", 0)  # 0-based index
@@ -213,7 +214,13 @@ class TextParser(DocumentParser):
 
             # For non-file sources, check if we have the appropriate element type
             element_type = location_data.get("type", "")
-            return element_type in ["root", "paragraph", "line", "range", "substring", ""]
+            return element_type in [
+                ElementType.ROOT.value,
+                ElementType.PARAGRAPH.value,
+                ElementType.LINE.value,
+                ElementType.RANGE.value,
+                ElementType.SUBSTRING.value
+            ]
 
         except (json.JSONDecodeError, TypeError):
             return False
@@ -393,12 +400,12 @@ class TextParser(DocumentParser):
             para_element = {
                 "element_id": element_id,
                 "doc_id": doc_id,
-                "element_type": "paragraph",
+                "element_type": ElementType.PARAGRAPH.value,
                 "parent_id": parent_id,
                 "content_preview": paragraph[:100] + ("..." if len(paragraph) > 100 else ""),
                 "content_location": json.dumps({
                     "source": source_id,
-                    "type": "paragraph",
+                    "type": ElementType.PARAGRAPH.value,
                     "index": idx
                 }),
                 "content_hash": self._generate_hash(paragraph),

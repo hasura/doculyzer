@@ -7,10 +7,10 @@ This module provides integration with ServiceNow via its REST APIs.
 import json
 import logging
 import re
-import time
 from typing import Dict, Any, List, Optional
 
 import requests
+import time
 
 from .base import ContentSource
 

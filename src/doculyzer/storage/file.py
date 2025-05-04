@@ -2,8 +2,9 @@ import glob
 import json
 import logging
 import os
-import time
 from typing import Optional, Dict, Any, List, Tuple, Union
+
+import time
 
 from .base import DocumentDatabase
 from .element_relationship import ElementRelationship

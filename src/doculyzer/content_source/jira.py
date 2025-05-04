@@ -6,10 +6,10 @@ This module provides integration with Atlassian JIRA via its REST API.
 
 import logging
 import re
-import time
 from typing import Dict, Any, List, Optional
 
 import requests
+import time
 
 from .base import ContentSource
 

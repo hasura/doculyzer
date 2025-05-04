@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional, Tuple
 
-from .element_relationship import ElementRelationship
+from .element_relationship import ElementRelationship, ElementElement
 
 
 class DocumentDatabase(ABC):
@@ -109,7 +109,7 @@ class DocumentDatabase(ABC):
         pass
 
     @abstractmethod
-    def get_element(self, element_id: str) -> Optional[Dict[str, Any]]:
+    def get_element(self, element_id: str | int) -> Optional[Dict[str, Any]]:
         """
         Get element by ID.
 
@@ -256,3 +256,124 @@ class DocumentDatabase(ABC):
             List of ElementRelationship objects where the specified element is the source
         """
         pass
+
+    def get_results_outline(self, elements: List[Tuple[int, float]]) -> List[ElementElement]:
+        """
+        For an arbitrary list of element pk search results, finds the root node of the source, and each
+        ancestor element, to create a root -> element array of arrays like this:
+        [(<parent element>, score, [children])]
+
+        (Note score is None if the element was not in the results param)
+
+        Then each additional element is analyzed, its hierarchy materialized, and merged into
+        the final result.
+        """
+        # Dictionary to store element_pk -> score mapping for quick lookup
+        element_scores = {element_pk: score for element_pk, score in elements}
+
+        # Set to track processed element_pks to avoid duplicates
+        processed_elements = set()
+
+        # Final result structure
+        result_tree: List[ElementElement] = []
+
+        # Process each element from the search results
+        for element_pk, score in elements:
+            if element_pk in processed_elements:
+                continue
+
+            # Find the complete ancestry path for this element
+            ancestry_path = self._get_element_ancestry_path(element_pk)
+
+            if not ancestry_path:
+                continue
+
+            # Mark this element as processed
+            processed_elements.add(element_pk)
+
+            # Start with the root level
+            current_level = result_tree
+
+            # Process each ancestor from root to the target element
+            for i, ancestor in enumerate(ancestry_path):
+                ancestor_pk = ancestor.element_pk
+
+                # Check if this ancestor is already in the current level
+                existing_idx = None
+                for idx, existing_element in enumerate(current_level):
+                    if existing_element.element_pk == ancestor_pk:
+                        existing_idx = idx
+                        break
+
+                if existing_idx is not None:
+                    # Ancestor exists, get its children
+                    current_level = current_level[existing_idx].child_elements  # Get children list
+                else:
+                    # Ancestor doesn't exist, add it with its score (or None if not in search results)
+                    ancestor_score = element_scores.get(ancestor_pk)
+                    children = []
+                    ancestor.score = ancestor_score
+                    ancestor.child_elements = children
+                    current_level.append(ancestor)
+                    current_level = children
+
+        return result_tree
+
+    def _get_element_ancestry_path(self, element_pk: int) -> List[ElementElement]:
+        """
+        Get the complete ancestry path for an element, from root to the element itself.
+
+        Uses parent_id to find parents instead of relationships.
+        """
+        # Get the element
+        element_dict = self.get_element(element_pk)
+        if not element_dict:
+            return []
+
+        # Convert to ElementElement instance
+        element = ElementElement.from_dict(element_dict)
+
+        # Start building the ancestry path with the element itself
+        ancestry = [element]
+
+        # Track to avoid circular references
+        visited = {element_pk}
+
+        # Current element to process
+        current_pk = element_pk
+
+        # Traverse up the hierarchy using parent_id
+        while True:
+            # Get the current element
+            current_element = self.get_element(current_pk)
+            if not current_element:
+                break
+
+            # Get parent ID
+            parent_id = current_element.get('parent_id')
+            if not parent_id:
+                break
+
+            # Get the parent element
+            parent_dict = self.get_element(parent_id)
+            if not parent_dict:
+                break
+
+            # Check for circular references
+            parent_pk = parent_dict.get('id') or parent_dict.get('pk') or parent_dict.get('element_id')
+            if parent_pk in visited:
+                break
+
+            # Convert to ElementElement
+            parent = ElementElement.from_dict(parent_dict)
+
+            # Add to visited set
+            visited.add(parent_pk)
+
+            # Add parent to the beginning of the ancestry list (root first)
+            ancestry.insert(0, parent)
+
+            # Move up to the parent
+            current_pk = parent_id
+
+        return ancestry
