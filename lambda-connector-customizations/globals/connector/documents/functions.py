@@ -7,15 +7,19 @@ When you add a Python Lambda connector to your Hasura project, this file is gene
 In this file you'll find code examples that will help you get up to speed with the usage of the Hasura lambda connector.
 If you are an old pro and already know what is going on you can get rid of these example functions and start writing your own code.
 """
-from doculyzer import search_with_content
+from typing import List, Optional
+
 from hasura_ndc import start
-from hasura_ndc.instrumentation import with_active_span # If you aren't planning on adding additional tracing spans, you don't need this!
-from opentelemetry.trace import get_tracer # If you aren't planning on adding additional tracing spans, you don't need this either!
 from hasura_ndc.function_connector import FunctionConnector
-from pydantic import BaseModel, Field # You only need this import if you plan to have complex inputs/outputs, which function similar to how frameworks like FastAPI do
-from typing import Annotated, List, Optional
-from doculyzer.search import search_with_content, SearchResult, search_by_text
+from hasura_ndc.instrumentation import \
+    with_active_span  # If you aren't planning on adding additional tracing spans, you don't need this!
+from opentelemetry.trace import \
+    get_tracer  # If you aren't planning on adding additional tracing spans, you don't need this either!
+from pydantic import \
+    Field  # You only need this import if you plan to have complex inputs/outputs, which function similar to how frameworks like FastAPI do
+
 from doculyzer import ingest_documents
+from doculyzer.search import search_by_text
 from doculyzer.storage import ElementElement
 
 connector = FunctionConnector()
@@ -53,7 +57,6 @@ async def search_documents(
 
 
 import threading
-import time
 
 
 @connector.register_mutation

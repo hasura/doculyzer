@@ -1,5 +1,5 @@
 """Automatically generated __init__.py"""
-__all__ = ['DateTimeEncoder', 'Document', 'DocumentDatabase', 'Element', 'ElementElement', 'ElementRelationship',
+__all__ = ['DateTimeEncoder', 'Document', 'DocumentDatabase', 'Element', 'ElementRelationship',
            'ElementType', 'Embedding', 'FileDocumentDatabase', 'MongoDBDocumentDatabase', 'Neo4jDocumentDatabase',
            'PostgreSQLDocumentDatabase', 'ProcessingHistory', 'Relationship', 'RelationshipCategory',
            'SQLAlchemyDocumentDatabase', 'SQLiteDocumentDatabase', 'base', 'build_element_hierarchy',
@@ -7,7 +7,7 @@ __all__ = ['DateTimeEncoder', 'Document', 'DocumentDatabase', 'Element', 'Elemen
            'get_container_elements', 'get_container_relationships', 'get_document_database', 'get_explicit_links',
            'get_leaf_elements', 'get_root_elements', 'get_semantic_relationships', 'get_sibling_relationships',
            'get_structural_relationships', 'mongodb', 'neo4j', 'postgres', 'sort_relationships_by_confidence',
-           'sort_semantic_relationships_by_similarity', 'sqlalchemy', 'sqlite']
+           'sort_semantic_relationships_by_similarity', 'sqlalchemy', 'sqlite', 'ElementElement']
 
 from . import base
 from . import element_relationship
@@ -19,7 +19,7 @@ from . import postgres
 from . import sqlalchemy
 from . import sqlite
 from .base import DocumentDatabase
-from .element_relationship import ElementElement
+from .element_element import ElementElement
 from .element_relationship import ElementRelationship
 from .element_relationship import ElementType
 from .element_relationship import RelationshipCategory

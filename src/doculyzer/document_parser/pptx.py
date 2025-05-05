@@ -818,7 +818,7 @@ class PptxParser(DocumentParser):
         Returns:
             List of slide master elements
         """
-        elements = []
+        elements = list()
 
         try:
             if not hasattr(presentation, 'slide_masters'):
