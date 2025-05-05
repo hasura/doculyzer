@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any, List, cast
 
 from pydantic import BaseModel
 
-from doculyzer.storage import ElementType
+from .element_relationship import ElementType
 
 
 class ElementElement(BaseModel):
