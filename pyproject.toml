@@ -75,3 +75,4 @@ tag = true
 
 [tool.bumpversion.file]
 "doculyzer/__init__.py" = {}
+"pyproject.toml" = {}
