@@ -15,3 +15,5 @@ from .search import SearchResult
 from .search import search_with_content
 
 configure_logging()
+
+__version__ = "0.1.0"

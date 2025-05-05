@@ -2,7 +2,6 @@ import logging
 import os
 from typing import List, Optional, Dict, Any, Tuple, Set
 
-from docutils.parsers.rst.directives.parts import Contents
 from pydantic import BaseModel, Field, PrivateAttr
 
 from .adapter import create_content_resolver, ContentResolver

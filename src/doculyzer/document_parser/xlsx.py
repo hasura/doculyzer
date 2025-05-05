@@ -802,8 +802,8 @@ class XlsxParser(DocumentParser):
 
     # Update the _parse_workbook method to handle ReadOnly worksheets
     def _parse_workbook(self, workbook: openpyxl.workbook.Workbook, doc_id: str, parent_id: str, source_id: str) -> \
-    Tuple[
-        List[Dict[str, Any]], List[Dict[str, Any]]]:
+            Tuple[
+                List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Parse Excel workbook into structured elements.
 
@@ -1413,8 +1413,8 @@ class XlsxParser(DocumentParser):
         return metadata
 
     def _detect_data_tables(self, sheet, doc_id: str, sheet_id: str, source_id: str, max_row: int, max_col: int) -> \
-    Tuple[
-        List[Dict[str, Any]], List[Dict[str, Any]]]:
+            Tuple[
+                List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Detect and extract structured data tables within a worksheet.
         This focuses on finding regions that appear to be 2D tables with headers.
@@ -2022,5 +2022,3 @@ class XlsxParser(DocumentParser):
         except Exception:
             # If any error occurs, assume cell is not in range
             return False
-
-
