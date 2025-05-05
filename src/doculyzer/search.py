@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from typing import List, Optional, Dict, Any, Tuple, Set
@@ -17,16 +18,37 @@ class SearchResultItem(BaseModel):
     """Pydantic model for a single search result item."""
     element_pk: int
     similarity: float
-    resolved_text: Optional[str] = None
-    _db: DocumentDatabase = PrivateAttr()
-    _resolver: ContentResolver = PrivateAttr()
-    _location: str = PrivateAttr()
+    _db: Optional[DocumentDatabase] = PrivateAttr()
+    _resolver: Optional[ContentResolver] = PrivateAttr()
 
-    def __new__(cls, element_pk: int, similarity: float, *args, **kwargs):
-        cls._db = _config.get_document_database()
-        cls._resolver = create_content_resolver(_config)
-        cls.element_pk = element_pk
-        cls.similarity = similarity
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._db = _config.get_document_database()
+        self._resolver = create_content_resolver(_config)
+
+    @property
+    def doc_id(self) -> Optional[str]:
+        return self._db.get_element(self.element_pk).get("doc_id", None)
+
+    @property
+    def element_id(self) -> Optional[str]:
+        return self._db.get_element(self.element_pk).get("element_id", None)
+
+    @property
+    def element_type(self) -> Optional[str]:
+        return self._db.get_element(self.element_pk).get("element_type", None)
+
+    @property
+    def parent_id(self) -> Optional[str]:
+        return self._db.get_element(self.element_pk).get("parent_id", None)
+
+    @property
+    def content_preview(self) -> Optional[str]:
+        return self._db.get_element(self.element_pk).get("content_preview", None)
+
+    @property
+    def metadata(self) -> Optional[dict]:
+        return json.loads(self._db.get_element(self.element_pk).get("metadata", "{}"))
 
     @property
     def content(self) -> Optional[str]:
@@ -34,8 +56,7 @@ class SearchResultItem(BaseModel):
         A dynamic property that calls resolver.resolve_content() to return its value.
         """
         if self._resolver and self.element_pk:
-            self._location = self._db.get_element(self.element_pk).get("content_location")
-            return self._resolver.resolve_content(self._location, text=False)
+            return self._resolver.resolve_content(self._db.get_element(self.element_pk).get("content_location"), text=False)
         return None
 
     @property
@@ -43,8 +64,8 @@ class SearchResultItem(BaseModel):
         """
         A dynamic property that calls resolver.resolve_content() to return its value.
         """
-        if self._resolver:
-            return self._resolver.resolve_content(self._location, text=True)
+        if self._resolver and self.element_pk:
+            return self._resolver.resolve_content(self._db.get_element(self.element_pk).get("content_location"), text=True)
         return None
 
 

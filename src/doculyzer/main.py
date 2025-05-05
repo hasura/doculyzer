@@ -250,12 +250,13 @@ def _ingest_document_recursively(source, doc_id, db, relationship_detector,
 
         # Detect relationships
         links = parsed_doc.get('links', [])
+        relationships = parsed_doc.get('relationships', [])
         logger.debug(f"Detecting relationships. Found {len(links)} links in document")
-        relationships = relationship_detector.detect_relationships(
+        relationships.extend(relationship_detector.detect_relationships(
             parsed_doc['document'],
             parsed_doc['elements'],
             links
-        )
+        ))
         logger.debug(f"Detected {len(relationships)} relationships")
 
         # Store document

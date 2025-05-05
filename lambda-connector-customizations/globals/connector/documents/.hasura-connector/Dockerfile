@@ -22,12 +22,9 @@ RUN python3 -m venv venv && \
 RUN . venv/bin/activate && \
     pip install python-magic
 
-# Copy the wheel file into the container
-COPY dist/doculyzer-0.1.0-py3-none-any.whl /functions/
-
 # Install the wheel package
 RUN . venv/bin/activate && \
-    pip install /functions/doculyzer-0.1.0-py3-none-any.whl
+    pip install doculyzer
 
 # Copy the rest of the application code
 COPY ./ /functions

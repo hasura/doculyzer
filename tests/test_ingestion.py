@@ -1,5 +1,6 @@
 import logging
 import os
+import pprint
 from typing import List
 
 import pytest
@@ -78,7 +79,8 @@ def test_document_search():
     for i, result in enumerate(results):
         logger.info(result)
 
-    logger.info(text_results)
+    logger.info(pprint.pformat([(item.element_pk, item.doc_id, item.text) for item in text_results.results]))
+    logger.info(pprint.pformat(text_results.search_tree))
 
 
 if __name__ == "__main__":
