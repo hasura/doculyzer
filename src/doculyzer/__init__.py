@@ -16,4 +16,4 @@ from .search import search_with_content
 
 configure_logging()
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
