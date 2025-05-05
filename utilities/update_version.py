@@ -20,7 +20,7 @@ def update_version(version_type):
 
     try:
         # Execute the bumpversion command
-        subprocess.run(["bumpversion", version_type], check=True)
+        subprocess.run(["bumpversion", "--config-file", "pyproject.toml", version_type], check=True)
         print(f"Version successfully updated ({version_type}).")
     except FileNotFoundError:
         print("Error: `bumpversion` is not installed. Install it with:")
