@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=60.6.0", "wheel", "build", "twine"]
+requires = ["setuptools>=60.7.0", "wheel", "build", "twine"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "doculyzer"
-version = "0.6.0"
+version = "0.7.0"
 description = "Universal, Searchable, Structured Document Manager"
 readme = "README.md"
 license = {text = "MIT"}
