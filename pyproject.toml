@@ -74,5 +74,4 @@ commit = true
 tag = true
 
 [tool.bumpversion.file]
-"setup.py" = {}
 "doculyzer/__init__.py" = {}
