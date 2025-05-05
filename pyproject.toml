@@ -68,11 +68,3 @@ issues = "https://github.com/hasura/doculyzer/issues"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.bumpversion]
-current_version = "0.1.0"
-commit = true
-tag = true
-
-[tool.bumpversion.file]
-"src/doculyzer/__init__.py" = {}
-"pyproject.toml" = {}
