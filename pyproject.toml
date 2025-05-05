@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "doculyzer"
-version = "0.1.0"
+version = "0.2.0"
 description = "Universal, Searchable, Structured Document Manager"
 readme = "README.md"
 license = {text = "MIT"}
