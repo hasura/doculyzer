@@ -1,6 +1,6 @@
 """Automatically generated __init__.py"""
 __all__ = ['DateTimeEncoder', 'Document', 'DocumentDatabase', 'Element', 'ElementRelationship',
-           'ElementType', 'Embedding', 'FileDocumentDatabase', 'MongoDBDocumentDatabase', 'Neo4jDocumentDatabase',
+           'Embedding', 'FileDocumentDatabase', 'MongoDBDocumentDatabase', 'Neo4jDocumentDatabase',
            'PostgreSQLDocumentDatabase', 'ProcessingHistory', 'Relationship', 'RelationshipCategory',
            'SQLAlchemyDocumentDatabase', 'SQLiteDocumentDatabase', 'base', 'build_element_hierarchy',
            'element_relationship', 'factory', 'file', 'filter_elements_by_type', 'get_child_elements',
@@ -19,9 +19,8 @@ from . import postgres
 from . import sqlalchemy
 from . import sqlite
 from .base import DocumentDatabase
-from .element_element import ElementElement
+from .element_element import ElementElement, ElementType
 from .element_relationship import ElementRelationship
-from .element_relationship import ElementType
 from .element_relationship import RelationshipCategory
 from .element_relationship import build_element_hierarchy
 from .element_relationship import filter_elements_by_type

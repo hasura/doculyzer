@@ -1,10 +1,9 @@
 import json
 from dataclasses import field
+from enum import Enum
 from typing import Optional, Dict, Any, List, cast
 
 from pydantic import BaseModel
-
-from .element_relationship import ElementType
 
 
 class ElementElement(BaseModel):
@@ -160,3 +159,52 @@ class ElementElement(BaseModel):
         if self.element_type.lower() == "code_block":
             return json.loads(self.metadata).get("language")
         return None
+
+
+class ElementType(Enum):
+    """Enumeration of common element types."""
+    ROOT = "root"
+    HEADER = "header"
+    PARAGRAPH = "paragraph"
+    PAGE = "page"
+    LIST = "list"
+    LIST_ITEM = "list_item"
+    TABLE = "table"
+    TABLE_ROW = "table_row"
+    TABLE_HEADER_ROW = "table_header_row"
+    TABLE_CELL = "table_cell"
+    TABLE_HEADER = "table_header"
+    IMAGE = "image"
+    CODE_BLOCK = "code_block"
+    BLOCKQUOTE = "blockquote"
+    XML_ELEMENT = "xml_element"
+    XML_TEXT = "xml_text"
+    XML_LIST = "xml_list"
+    XML_OBJECT = "xml_object"
+    PRESENTATION_BODY = "presentation_body"
+    TEXT_BOX = "text_box"
+    SLIDE = "slide"
+    SLIDE_NOTES = "slide_notes"
+    COMMENT = "comment"
+    CHART = "chart"
+    PAGE_HEADER = "page_header"
+    PAGE_FOOTER = "page_footer"
+    BODY = "body"
+    HEADERS = "headers"
+    FOOTERS = "footers"
+    COMMENTS = "comments"
+    JSON_OBJECT = "json_object"
+    JSON_ARRAY = "json_array"
+    JSON_FIELD = "json_field"
+    JSON_ITEM = "json_item"
+    LINE = "line"
+    RANGE = "range"
+    SUBSTRING = "substring"
+    SHAPE_GROUP = "shape_group"
+    SHAPE = "shape"
+    COMMENTS_CONTAINER = "comments_container"
+    SLIDE_MASTERS = "slide_masters"
+    SLIDE_TEMPLATES = "slide_templates"
+    SLIDE_LAYOUT = "slide_layout"
+    SLIDE_MASTER = "slide_master"
+    UNKNOWN = "unknown"
