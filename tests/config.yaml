@@ -60,7 +60,7 @@ content_sources:
     base_path: "./assets"
 #    file_pattern: "**/*.{md,docx,xlsx,pptx,pdf,csv,xml,json}"
     file_pattern: "**/*"
-    include_extensions: ["md", "txt", "xml", "pptx", "csv", "docx", "xlsx"]
+    include_extensions: ["md", "txt", "xml", "pptx", "csv", "docx", "xlsx", "pdf"]
     watch_for_changes: true
     max_link_depth: 2
   - name: "wikipedia"

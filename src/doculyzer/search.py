@@ -2,11 +2,12 @@ import logging
 import os
 from typing import List, Optional, Dict, Any, Tuple, Set
 
-from pydantic import BaseModel, Field
+from docutils.parsers.rst.directives.parts import Contents
+from pydantic import BaseModel, Field, PrivateAttr
 
-from .adapter import create_content_resolver
+from .adapter import create_content_resolver, ContentResolver
 from .config import Config
-from .storage import ElementRelationship, ElementElement
+from .storage import ElementRelationship, ElementElement, DocumentDatabase
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,35 @@ class SearchResultItem(BaseModel):
     """Pydantic model for a single search result item."""
     element_pk: int
     similarity: float
+    resolved_text: Optional[str] = None
+    _db: DocumentDatabase = PrivateAttr()
+    _resolver: ContentResolver = PrivateAttr()
+    _location: str = PrivateAttr()
+
+    def __new__(cls, element_pk: int, similarity: float, *args, **kwargs):
+        cls._db = _config.get_document_database()
+        cls._resolver = create_content_resolver(_config)
+        cls.element_pk = element_pk
+        cls.similarity = similarity
+
+    @property
+    def content(self) -> Optional[str]:
+        """
+        A dynamic property that calls resolver.resolve_content() to return its value.
+        """
+        if self._resolver and self.element_pk:
+            self._location = self._db.get_element(self.element_pk).get("content_location")
+            return self._resolver.resolve_content(self._location, text=False)
+        return None
+
+    @property
+    def text(self) -> Optional[str]:
+        """
+        A dynamic property that calls resolver.resolve_content() to return its value.
+        """
+        if self._resolver:
+            return self._resolver.resolve_content(self._location, text=True)
+        return None
 
 
 class SearchResults(BaseModel):

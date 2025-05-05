@@ -6,6 +6,7 @@ import pytest
 from dotenv import load_dotenv
 
 from doculyzer.embeddings import EmbeddingGenerator, get_embedding_generator
+from doculyzer.search import search_by_text
 
 # Load environment variables from .env file
 load_dotenv()
@@ -52,26 +53,6 @@ def test_document_ingestion(config_emb: (Config, EmbeddingGenerator)):
         stats = ingest_documents(_config)
         logger.info(f"Document ingestion completed: {stats}")
 
-        # Assert documents were ingested
-        # assert stats['documents'] > 0, "No documents were processed"
-        # assert stats['elements'] > 0, "No elements were processed"
-
-        # If embeddings enabled, test similarity search
-
-        # Run a sample search
-        logger.info("Running similarity search")
-        query_text = "data exchange formats"
-        logger.debug(f"Generating embedding for query: {query_text}")
-
-
-        logger.debug("Searching for similar elements")
-        results: List[SearchResult] = search_with_content(query_text, min_score=-1.0)
-        logger.info(f"Found {len(results)} similar elements")
-
-        # Display a few results
-        for i, result in enumerate(results[:10]):
-            print(result)
-
         # Log summary
         logger.info(
             f"Processed {stats['documents']} documents with {stats['elements']} elements and {stats['relationships']} relationships")
@@ -81,6 +62,23 @@ def test_document_ingestion(config_emb: (Config, EmbeddingGenerator)):
         # Always close the database connection
         logger.info("Closing database connection")
         db.close()
+
+def test_document_search():
+    """Test the document search process."""
+
+    # Run a sample search
+    logger.info("Running ANN search")
+    query_text = "artists, rebels, professionals, banks, data"
+    logger.info(f"Searching for similar elements: {query_text}")
+    results: List[SearchResult] = search_with_content(query_text, min_score=-1.0, limit=50)
+    text_results = search_by_text(query_text, min_score=-1.0, limit=50)
+    logger.info(f"Found {len(results)} similar elements")
+
+    # Display a few results
+    for i, result in enumerate(results):
+        logger.info(result)
+
+    logger.info(text_results)
 
 
 if __name__ == "__main__":
