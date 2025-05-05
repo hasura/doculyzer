@@ -173,4 +173,5 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 /tests/data/document_db.sqlite
-/.idea/workspace.xml
+.idea/*
+/.idea/dataSources.local.xml
