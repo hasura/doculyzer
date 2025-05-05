@@ -25,8 +25,34 @@ def update_version(version_type):
     except FileNotFoundError:
         print("Error: `bumpversion` is not installed. Install it with:")
         print("  pip install bump2version")
+        sys.exit(1)
     except subprocess.CalledProcessError:
         print("Error: Failed to update version. Check your `.bumpversion.cfg` configuration.")
+        sys.exit(1)
+
+
+def build_and_upload():
+    """
+       Build the project and upload to PyPI.
+       """
+    try:
+        # Build the distribution
+        subprocess.run(["python", "-m", "build"], check=True)
+        print("Build completed successfully.")
+    except subprocess.CalledProcessError:
+        print("Error: Failed to build the distribution.")
+        sys.exit(1)
+
+    try:
+        # Upload to PyPI using Twine
+        subprocess.run(["python", "-m", "twine", "upload", "dist/*"], check=True)
+        print("Package uploaded successfully to PyPI.")
+    except subprocess.CalledProcessError:
+        print("Error: Failed to upload package to PyPI. Check your Twine configuration.")
+        sys.exit(1)
+    except FileNotFoundError:
+        print("Error: `twine` is not installed. Install it with:")
+        print("  pip install twine")
         sys.exit(1)
 
 
@@ -40,5 +66,8 @@ if __name__ == "__main__":
     # Get the version type from the command-line arguments
     version_type = sys.argv[1].lower()
 
-    # Call the function to update the version
+    # Step 1: Update the version
     update_version(version_type)
+
+    # Step 2: Build and Upload
+    build_and_upload()
