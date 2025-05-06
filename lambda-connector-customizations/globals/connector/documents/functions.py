@@ -20,7 +20,7 @@ from pydantic import \
 
 from doculyzer import ingest_documents
 from doculyzer.search import search_by_text
-from doculyzer.storage import ElementElement
+from doculyzer.storage import flatten_hierarchy, ElementFlat
 
 connector = FunctionConnector()
 
@@ -31,7 +31,7 @@ tracer = get_tracer("ndc-sdk-python.server") # You only need a tracer if you pla
 async def search_documents(
         search_for: str,
         limit: Optional[int] = Field(description="An integer specifying the maximum number of search results to return. Defaults to 10.", default=None),
-        min_score: Optional[float] = Field(default=None, description="Min similarity score to consider a match. 0 is neutral. 1 is perfect match. -1 is no match. Defaults to 0.")) -> Optional[List[ElementElement]]:
+        min_score: Optional[float] = Field(default=None, description="Min similarity score to consider a match. 0 is neutral. 1 is perfect match. -1 is no match. Defaults to 0.")) -> List[ElementFlat]:
     """
     This performs a similarity search to identify individual elements (like paragraphs, list items, or tables) in a document
     and returns the type of elements, the content of those elements and a preview of its related items.
@@ -46,8 +46,10 @@ async def search_documents(
     limit = limit or 10
     min_score = min_score or 0
 
-    def work(_span, work_response):
-        return search_by_text(search_for, limit, min_score = min_score)
+    def work(_span, work_response) -> List[ElementFlat]:
+        result = search_by_text(search_for, limit, min_score = min_score)
+        flat_result = flatten_hierarchy(result.search_tree)
+        return flat_result
 
     return await with_active_span(
         tracer,

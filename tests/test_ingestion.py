@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 from doculyzer.embeddings import EmbeddingGenerator, get_embedding_generator
 from doculyzer.search import search_by_text
+from doculyzer.storage import flatten_hierarchy
 
 # Load environment variables from .env file
 load_dotenv()
@@ -75,12 +76,10 @@ def test_document_search():
     text_results = search_by_text(query_text, min_score=-1.0, limit=50)
     logger.info(f"Found {len(results)} similar elements")
 
-    # Display a few results
-    for i, result in enumerate(results):
-        logger.info(result)
-
+    logger.info(pprint.pformat(results))
     logger.info(pprint.pformat([(item.element_pk, item.doc_id, item.text) for item in text_results.results]))
     logger.info(pprint.pformat(text_results.search_tree))
+    logger.info(pprint.pformat(flatten_hierarchy(text_results.search_tree)))
 
 
 if __name__ == "__main__":

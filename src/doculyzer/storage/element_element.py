@@ -6,7 +6,7 @@ from typing import Optional, Dict, Any, List, cast
 from pydantic import BaseModel
 
 
-class ElementElement(BaseModel):
+class ElementBase(BaseModel):
     """
     Class for representing document elements.
     Provides methods for accessing and manipulating element data.
@@ -28,7 +28,6 @@ class ElementElement(BaseModel):
     # Additional metadata
     metadata: str
     score: Optional[float] = None
-    child_elements: List["ElementElement"] = field(default_factory=list)
 
     def __str__(self) -> str:
         """String representation of the element."""
@@ -60,8 +59,27 @@ class ElementElement(BaseModel):
             "metadata": self.metadata
         }
 
+    def to_hierarchical(self) -> "ElementHierarchical":
+        """
+        Converts the current ElementBase object into an ElementHierarchical object.
+        """
+        h = ElementHierarchical(
+            element_pk=self.element_pk,
+            element_id=self.element_id,
+            doc_id=self.doc_id,
+            element_type=self.element_type,
+            parent_id=self.parent_id,
+            content_preview=self.content_preview,
+            content_location=self.content_location,
+            content_hash=self.content_hash,
+            metadata=self.metadata,
+            score=self.score,
+            child_elements=[]  # Initialize child_elements as an empty list
+        )
+        return h
+
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'ElementElement':
+    def from_dict(cls, data: Dict[str, Any]) -> 'ElementBase':
         """
         Create an ElementElement instance from a dictionary.
 
@@ -161,6 +179,14 @@ class ElementElement(BaseModel):
         return None
 
 
+class ElementHierarchical(ElementBase):
+    child_elements: List["ElementHierarchical"] = field(default_factory=list)
+
+
+class ElementFlat(ElementBase):
+    path: str
+
+
 class ElementType(Enum):
     """Enumeration of common element types."""
     ROOT = "root"
@@ -210,7 +236,52 @@ class ElementType(Enum):
     UNKNOWN = "unknown"
 
 
-def filter_elements_by_type(elements: List[ElementElement], element_type: str) -> List[ElementElement]:
+from typing import List
+
+
+def flatten_hierarchy(elements: List[ElementHierarchical], parent_path: str = "") -> List[ElementFlat]:
+    """
+    Flattens a hierarchical list of elements into a flat list with a `path` and sorts the result by `path`.
+    The `path` is a string of element IDs from the document ID to the current element.
+
+    Args:
+        elements: A list of `ElementHierarchical` objects representing the hierarchy.
+        parent_path: The current path of ancestors' element IDs (used for recursion).
+
+    Returns:
+        A sorted flat list of `ElementFlat` objects with `path` attributes.
+    """
+    flat_list = []
+
+    for element in elements:
+        # Construct the path for the current element
+        current_path = f"{parent_path}/{element.element_id}" if parent_path else element.doc_id
+
+        # Create a flat version of the current element
+        flat_element = ElementFlat(
+            element_pk=element.element_pk,
+            element_id=element.element_id,
+            doc_id=element.doc_id,
+            element_type=element.element_type,
+            parent_id=element.parent_id,
+            content_preview=element.content_preview,
+            content_location=element.content_location,
+            content_hash=element.content_hash,
+            metadata=element.metadata,
+            score=element.score,
+            path=current_path,
+        )
+        flat_list.append(flat_element)
+
+        # If the element has children, recursively flatten them
+        if hasattr(element, "child_elements") and element.child_elements:
+            flat_list.extend(flatten_hierarchy(cast(List[ElementHierarchical], element.child_elements), current_path))
+
+    # Sort the flat list by the `path` attribute
+    return sorted(flat_list, key=lambda x: x.path)
+
+
+def filter_elements_by_type(elements: List[ElementBase], element_type: str) -> List[ElementBase]:
     """
     Filter elements by type.
 
@@ -224,7 +295,7 @@ def filter_elements_by_type(elements: List[ElementElement], element_type: str) -
     return [e for e in elements if e.element_type.lower() == element_type.lower()]
 
 
-def get_root_elements(elements: List[ElementElement]) -> List[ElementElement]:
+def get_root_elements(elements: List[ElementBase]) -> List[ElementBase]:
     """
     Get all root elements from a list.
 
@@ -237,7 +308,7 @@ def get_root_elements(elements: List[ElementElement]) -> List[ElementElement]:
     return [e for e in elements if e.is_root()]
 
 
-def get_container_elements(elements: List[ElementElement]) -> List[ElementElement]:
+def get_container_elements(elements: List[ElementBase]) -> List[ElementBase]:
     """
     Get all container elements from a list.
 
@@ -250,7 +321,7 @@ def get_container_elements(elements: List[ElementElement]) -> List[ElementElemen
     return [e for e in elements if e.is_container()]
 
 
-def get_leaf_elements(elements: List[ElementElement]) -> List[ElementElement]:
+def get_leaf_elements(elements: List[ElementBase]) -> List[ElementBase]:
     """
     Get all leaf elements from a list.
 
@@ -263,7 +334,7 @@ def get_leaf_elements(elements: List[ElementElement]) -> List[ElementElement]:
     return [e for e in elements if e.is_leaf()]
 
 
-def get_child_elements(elements: List[ElementElement], parent_id: str) -> List[ElementElement]:
+def get_child_elements(elements: List[ElementBase], parent_id: str) -> List[ElementBase]:
     """
     Get all direct children of a specific element.
 
@@ -277,7 +348,7 @@ def get_child_elements(elements: List[ElementElement], parent_id: str) -> List[E
     return [e for e in elements if e.parent_id == parent_id]
 
 
-def build_element_hierarchy(elements: List[ElementElement]) -> Dict[str, List[ElementElement]]:
+def build_element_hierarchy(elements: List[ElementBase]) -> Dict[str, List[ElementBase]]:
     """
     Build a hierarchy map of parent IDs to child elements.
 

@@ -1,8 +1,9 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional, Tuple
 
+from .element_element import ElementBase
+from .element_element import ElementHierarchical
 from .element_relationship import ElementRelationship
-from .element_element import ElementElement
 
 
 class DocumentDatabase(ABC):
@@ -258,7 +259,7 @@ class DocumentDatabase(ABC):
         """
         pass
 
-    def get_results_outline(self, elements: List[Tuple[int, float]]) -> List[ElementElement]:
+    def get_results_outline(self, elements: List[Tuple[int, float]]) -> List[ElementHierarchical]:
         """
         For an arbitrary list of element pk search results, finds the root node of the source, and each
         ancestor element, to create a root -> element array of arrays like this:
@@ -276,7 +277,7 @@ class DocumentDatabase(ABC):
         processed_elements = set()
 
         # Final result structure
-        result_tree: List[ElementElement] = []
+        result_tree: List[ElementHierarchical] = []
 
         # Process each element from the search results
         for element_pk, score in elements:
@@ -314,13 +315,14 @@ class DocumentDatabase(ABC):
                     ancestor_score = element_scores.get(ancestor_pk)
                     children = []
                     ancestor.score = ancestor_score
-                    ancestor.child_elements = children
-                    current_level.append(ancestor)
+                    h_ancestor = ancestor.to_hierarchical()
+                    h_ancestor.child_elements = children
+                    current_level.append(h_ancestor)
                     current_level = children
 
         return result_tree
 
-    def _get_element_ancestry_path(self, element_pk: int) -> List[ElementElement]:
+    def _get_element_ancestry_path(self, element_pk: int) -> List[ElementBase]:
         """
         Get the complete ancestry path for an element, from root to the element itself.
 
@@ -332,7 +334,7 @@ class DocumentDatabase(ABC):
             return []
 
         # Convert to ElementElement instance
-        element = ElementElement.from_dict(element_dict)
+        element = ElementBase.from_dict(element_dict)
 
         # Start building the ancestry path with the element itself
         ancestry = [element]
@@ -366,7 +368,7 @@ class DocumentDatabase(ABC):
                 break
 
             # Convert to ElementElement
-            parent = ElementElement.from_dict(parent_dict)
+            parent = ElementBase.from_dict(parent_dict)
 
             # Add to visited set
             visited.add(parent_pk)
