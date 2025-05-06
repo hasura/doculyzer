@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional, Tuple
 
 from .element_relationship import ElementRelationship
-from . import ElementElement
+from .element_element import ElementElement
 
 
 class DocumentDatabase(ABC):

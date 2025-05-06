@@ -34,7 +34,7 @@ class ElementElement(BaseModel):
         """String representation of the element."""
         return f"{self.element_type}({self.element_pk}): {self.content_preview[:50]}{'...' if len(self.content_preview) > 50 else ''}"
 
-    def get_element_type_enum(self) -> ElementType:
+    def get_element_type_enum(self) -> "ElementType":
         """
         Get the element type as an enum value.
 
