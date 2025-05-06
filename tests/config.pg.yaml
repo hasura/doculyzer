@@ -2,7 +2,15 @@ storage:
   backend: "postgresql"  # Changed from sqlite to postgresql
   path: "./data"  # Kept for compatibility
   postgresql:  # Added PostgreSQL-specific configuration
-    uri: ${DOCUMENTS_URI}
+    host: "localhost"
+    port: 5432
+    dbname: "postgres"
+    user: "postgres"
+    password: "password"
+    sslmode: "prefer"  # Default SSL mode
+    enable_vector: false  # Enable vector search using pgvector
+    create_vector_index: false  # Create vector indexes automatically
+    vector_index_type: "ivfflat"  # Using IVFFLAT index type
 embedding:
   enabled: true
   provider: huggingface

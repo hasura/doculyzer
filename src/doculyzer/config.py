@@ -1,7 +1,10 @@
 import json
 import logging
 import os
+import re
 from typing import Dict, Any, List, Optional
+from dotenv import load_dotenv
+load_dotenv()
 
 import yaml
 
@@ -56,6 +59,46 @@ class Config:
             }
         }
 
+    def _replace_env_vars(self, value: Any) -> Any:
+        """
+        Replace environment variables in string values.
+
+        Args:
+            value: The value to process
+
+        Returns:
+            The processed value with environment variables replaced
+        """
+        if isinstance(value, str):
+            # Match ${VAR} or $VAR patterns
+            pattern = r'\${([^}]+)}|\$([a-zA-Z0-9_]+)'
+
+            def replace_match(match):
+                env_var = match.group(1) or match.group(2)
+                default_value = None
+
+                # Handle default values with ${VAR:-default} syntax
+                if ':-' in env_var:
+                    env_var, default_value = env_var.split(':-', 1)
+
+                env_value = os.environ.get(env_var)
+                if env_value is None:
+                    if default_value is not None:
+                        logger.debug(f"Environment variable {env_var} not found, using default: {default_value}")
+                        return default_value
+                    logger.warning(f"Environment variable {env_var} not found and no default provided")
+                    return match.group(0)  # Return the original placeholder if no value found
+
+                logger.debug(f"Replaced environment variable {env_var}")
+                return env_value
+
+            return re.sub(pattern, replace_match, value)
+        elif isinstance(value, dict):
+            return {k: self._replace_env_vars(v) for k, v in value.items()}
+        elif isinstance(value, list):
+            return [self._replace_env_vars(item) for item in value]
+        return value
+
     def _load_config(self, config_path: str) -> None:
         """
         Load configuration from file.
@@ -75,6 +118,10 @@ class Config:
                     message = f"Unsupported config file format: {config_path}"
                     logger.error(message)
                     raise ValueError(message)
+
+            # Replace environment variables in the loaded config
+            loaded_config = self._replace_env_vars(loaded_config)
+            logger.debug("Replaced environment variables in config")
 
             # Merge with default config (deep merge)
             self._deep_merge(self.config, loaded_config)

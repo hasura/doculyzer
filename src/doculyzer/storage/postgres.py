@@ -309,23 +309,12 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
         # Execute the query
         self.cursor.execute(sql, params)
 
-        # Process results and calculate similarity
-        embeddings = []
-        for row in self.cursor.fetchall():
-            try:
-                embedding = json.loads(row["embedding"])
-                embeddings.append((row["element_pk"], embedding))
-            except (json.JSONDecodeError, TypeError):
-                continue
+        similarities = [
+            (row["element_pk"], self._cosine_similarity(query_embedding, row["embedding"]))
+            for row in self.cursor.fetchall()
+        ]
+        similarities.sort(key=lambda row: row[1], reverse=True)
 
-        # Calculate cosine similarity for each embedding
-        similarities = []
-        for element_pk, embedding in embeddings:
-            similarity = self._cosine_similarity(query_embedding, embedding)
-            similarities.append((element_pk, similarity))
-
-        # Sort by similarity (highest first) and limit results
-        similarities.sort(key=lambda x: x[1], reverse=True)
         return similarities[:limit]
 
     def search_by_text(self, search_text: str, limit: int = 10,
@@ -395,11 +384,20 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
 
         # Connect to PostgreSQL
         try:
-            self.conn = psycopg2.connect(**self.conn_params)
+            if "uri" in self.conn_params:
+                # Use the URI if provided in connection parameters
+                self.conn = psycopg2.connect(self.conn_params["uri"])
+                logger.info("Connected to PostgreSQL using a URI.")
+            else:
+                # Use individual parameters if URI is not provided
+                self.conn = psycopg2.connect(**self.conn_params)
+                logger.info(
+                    f"Connected to PostgreSQL at {self.conn_params.get('host', 'localhost')}:{self.conn_params.get('port', 5432)}"
+                )
+
+            # Set connection settings
             self.conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
             self.cursor = self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-            logger.info(
-                f"Connected to PostgreSQL at {self.conn_params.get('host', 'localhost')}:{self.conn_params.get('port', 5432)}")
         except Exception as e:
             logger.error(f"Error connecting to PostgreSQL: {str(e)}")
             raise

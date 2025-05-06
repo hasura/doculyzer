@@ -6,6 +6,7 @@ while maintaining pointers to original content.
 import logging
 from typing import Dict, Any
 
+from .postgres import PostgreSQLDocumentDatabase
 from .base import DocumentDatabase
 from .file import FileDocumentDatabase
 from .mongodb import MongoDBDocumentDatabase
@@ -35,6 +36,8 @@ def get_document_database(config: Dict[str, Any]) -> DocumentDatabase:
         return FileDocumentDatabase(storage_path)
     elif backend_type == "sqlite":
         return SQLiteDocumentDatabase(storage_path)
+    elif backend_type.startswith("postgres"):
+        return PostgreSQLDocumentDatabase(config.get("postgres", config.get("postgresql", {})))
     elif backend_type == "mongodb":
         # Extract MongoDB connection parameters from config
         conn_params = config.get("mongodb", {})
