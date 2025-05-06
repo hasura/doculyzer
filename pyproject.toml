@@ -34,26 +34,9 @@ dependencies = [
     "Markdown~=3.8",
     "requests~=2.32.3",
     "SQLAlchemy~=2.0.40",
-    # --- Modified torch dependency for CPU-only ---
-    # Linux x86_64
-    "torch @ https://download.pytorch.org/whl/cpu/torch-2.7.0%2Bcpu-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9' and sys_platform=='linux' and platform_machine=='x86_64'",
-    "torch @ https://download.pytorch.org/whl/cpu/torch-2.7.0%2Bcpu-cp310-cp310-manylinux2014_x86_64.whl ; python_version=='3.10' and sys_platform=='linux' and platform_machine=='x86_64'",
-    "torch @ https://download.pytorch.org/whl/cpu/torch-2.7.0%2Bcpu-cp311-cp311-manylinux2014_x86_64.whl ; python_version=='3.11' and sys_platform=='linux' and platform_machine=='x86_64'",
-    # Windows x64
-    "torch @ https://download.pytorch.org/whl/cpu/torch-2.7.0%2Bcpu-cp39-cp39-win_amd64.whl ; python_version=='3.9' and sys_platform=='win32'",
-    "torch @ https://download.pytorch.org/whl/cpu/torch-2.7.0%2Bcpu-cp310-cp310-win_amd64.whl ; python_version=='3.10' and sys_platform=='win32'",
-    "torch @ https://download.pytorch.org/whl/cpu/torch-2.7.0%2Bcpu-cp311-cp311-win_amd64.whl ; python_version=='3.11' and sys_platform=='win32'",
-    # macOS x86_64
-    "torch @ https://download.pytorch.org/whl/cpu/torch-2.7.0%2Bcpu-cp39-cp39-macosx_10_9_x86_64.whl ; python_version=='3.9' and sys_platform=='darwin' and platform_machine=='x86_64'",
-    "torch @ https://download.pytorch.org/whl/cpu/torch-2.7.0%2Bcpu-cp310-cp310-macosx_10_9_x86_64.whl ; python_version=='3.10' and sys_platform=='darwin' and platform_machine=='x86_64'",
-    "torch @ https://download.pytorch.org/whl/cpu/torch-2.7.0%2Bcpu-cp311-cp311-macosx_10_9_x86_64.whl ; python_version=='3.11' and sys_platform=='darwin' and platform_machine=='x86_64'",
-    # macOS arm64 (Apple Silicon)
-    "torch @ https://download.pytorch.org/whl/cpu/torch-2.7.0%2Bcpu-cp39-cp39-macosx_11_0_arm64.whl ; python_version=='3.9' and sys_platform=='darwin' and platform_machine=='arm64'",
-    "torch @ https://download.pytorch.org/whl/cpu/torch-2.7.0%2Bcpu-cp310-cp310-macosx_11_0_arm64.whl ; python_version=='3.10' and sys_platform=='darwin' and platform_machine=='arm64'",
-    "torch @ https://download.pytorch.org/whl/cpu/torch-2.7.0%2Bcpu-cp311-cp311-macosx_11_0_arm64.whl ; python_version=='3.11' and sys_platform=='darwin' and platform_machine=='arm64'",
-    # --- End of modified torch dependency ---
+    "torch~=2.7.0",  # Reverted to standard dependency
     "numpy~=2.0.2",
-    "sentence-transformers~=4.1.0", # This package also depends on torch. Pip should resolve this to the already specified torch version.
+    "sentence-transformers~=4.1.0", # This will use the globally available torch
     "python-docx~=1.1.2",
     "openpyxl~=3.1.5",
     "pymupdf~=1.25.5",
