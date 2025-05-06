@@ -208,3 +208,92 @@ class ElementType(Enum):
     SLIDE_LAYOUT = "slide_layout"
     SLIDE_MASTER = "slide_master"
     UNKNOWN = "unknown"
+
+
+def filter_elements_by_type(elements: List[ElementElement], element_type: str) -> List[ElementElement]:
+    """
+    Filter elements by type.
+
+    Args:
+        elements: List of ElementElement objects
+        element_type: Element type to filter for
+
+    Returns:
+        List of elements matching the specified type
+    """
+    return [e for e in elements if e.element_type.lower() == element_type.lower()]
+
+
+def get_root_elements(elements: List[ElementElement]) -> List[ElementElement]:
+    """
+    Get all root elements from a list.
+
+    Args:
+        elements: List of ElementElement objects
+
+    Returns:
+        List of root elements
+    """
+    return [e for e in elements if e.is_root()]
+
+
+def get_container_elements(elements: List[ElementElement]) -> List[ElementElement]:
+    """
+    Get all container elements from a list.
+
+    Args:
+        elements: List of ElementElement objects
+
+    Returns:
+        List of container elements
+    """
+    return [e for e in elements if e.is_container()]
+
+
+def get_leaf_elements(elements: List[ElementElement]) -> List[ElementElement]:
+    """
+    Get all leaf elements from a list.
+
+    Args:
+        elements: List of ElementElement objects
+
+    Returns:
+        List of leaf elements
+    """
+    return [e for e in elements if e.is_leaf()]
+
+
+def get_child_elements(elements: List[ElementElement], parent_id: str) -> List[ElementElement]:
+    """
+    Get all direct children of a specific element.
+
+    Args:
+        elements: List of ElementElement objects
+        parent_id: ID of the parent element
+
+    Returns:
+        List of child elements
+    """
+    return [e for e in elements if e.parent_id == parent_id]
+
+
+def build_element_hierarchy(elements: List[ElementElement]) -> Dict[str, List[ElementElement]]:
+    """
+    Build a hierarchy map of parent IDs to child elements.
+
+    Args:
+        elements: List of ElementElement objects
+
+    Returns:
+        Dictionary mapping parent_id to list of child elements
+    """
+    hierarchy = {}
+
+    for element in elements:
+        if element.parent_id:
+            if element.parent_id not in hierarchy:
+                hierarchy[element.parent_id] = []
+
+            hierarchy[element.parent_id].append(element)
+
+    return hierarchy
