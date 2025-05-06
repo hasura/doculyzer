@@ -78,14 +78,14 @@ class SearchResults(BaseModel):
     search_type: str = "embedding"  # Can be "embedding", "text", "content"
     min_score: float = 0.0  # Minimum score threshold used
     documents: List[str] = Field(default_factory=list)  # Unique list of document sources from the results
-    # search_tree: Optional[List[ElementElement]]
+    search_tree: Optional[List[ElementElement]]
 
     @classmethod
     def from_tuples(cls, tuples: List[Tuple[int, float]], query: Optional[str] = None,
                     filter_criteria: Optional[Dict[str, Any]] = None,
                     search_type: str = "embedding",
                     min_score: float = 0.0,
-                    # search_tree: Optional[List[ElementElement]] = None,
+                    search_tree: Optional[List[ElementElement]] = None,
                     documents: Optional[List[str]] = None) -> "SearchResults":
         """
         Create a SearchResults object from a list of (element_pk, similarity) tuples.
@@ -97,7 +97,7 @@ class SearchResults(BaseModel):
             search_type: Type of search performed
             min_score: Minimum score threshold used
             documents: List of unique document sources
-            # search_tree: Optional tree structure representing the search results
+            search_tree: Optional tree structure representing the search results
 
         Returns:
             SearchResults object
@@ -111,7 +111,7 @@ class SearchResults(BaseModel):
             search_type=search_type,
             min_score=min_score,
             documents=documents or [],
-            # search_tree=search_tree
+            search_tree=search_tree
         )
 
 
@@ -251,7 +251,7 @@ class SearchHelper:
         # filtered_elements.reverse()
         filtered_elements = filtered_elements[:limit]
 
-        # search_tree = db.get_results_outline(filtered_elements)
+        search_tree = db.get_results_outline(filtered_elements)
 
         # Get document sources for these elements
         document_sources = cls._get_document_sources_for_elements([pk for pk, _ in filtered_elements])
@@ -264,7 +264,7 @@ class SearchHelper:
             search_type="text",
             min_score=min_score,
             documents=document_sources,
-            # search_tree=search_tree
+            search_tree=search_tree
         )
 
     @classmethod
