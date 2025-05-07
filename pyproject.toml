@@ -34,7 +34,6 @@ dependencies = [
     "Markdown~=3.8",
     "requests~=2.32.3",
     "SQLAlchemy~=2.0.40",
-    "torch~=2.7.0",  # Reverted to standard dependency
     "numpy~=2.0.2",
     "sentence-transformers~=4.1.0", # This will use the globally available torch
     "python-docx~=1.1.2",
