@@ -16,15 +16,11 @@ WORKDIR /functions
 # Install Python dependencies in a virtual environment
 RUN python3 -m venv venv && \
     . venv/bin/activate && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Install python-magic via pip
 RUN . venv/bin/activate && \
     pip install python-magic
-
-# Install the wheel package
-RUN . venv/bin/activate && \
-    pip install doculyzer
 
 # Copy the rest of the application code
 COPY ./ /functions
