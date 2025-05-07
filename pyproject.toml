@@ -64,4 +64,11 @@ development = [
 ]
 
 [project.urls]
-# ... (rest of your file remains the same)
+homepage = "https://github.com/hasura/doculyzer"
+repository = "https://github.com/hasura/doculyzer"
+documentation = "https://github.com/hasura/doculyzer/wiki"
+issues = "https://github.com/hasura/doculyzer/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

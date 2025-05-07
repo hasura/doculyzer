@@ -1,9 +1,8 @@
 storage:
   path: "./data"
-  backend: "sqlite"
-  "sqlite_extensions":
-    "use_sqlean": true
-    "auto_discover": true
+  backend: "postgresql"
+  postgresql:
+    uri: ${DOCUMENTS_URI}
 
 embedding:
   enabled: true

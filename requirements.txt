@@ -1,4 +1,4 @@
-torch==2.7.0+cpu
+torch==2.7.0
 PyYAML~=6.0.2
 beautifulsoup4~=4.13.4
 Markdown~=3.8

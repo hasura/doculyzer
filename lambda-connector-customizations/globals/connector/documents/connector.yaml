@@ -1,0 +1,18 @@
+kind: Connector
+version: v2
+definition:
+  name: documents
+  subgraph: globals
+  source: hasura/python:v0.2.0
+  context: .
+  envMapping:
+#    HASURA_CONNECTOR_PORT:
+#      fromEnv: GLOBALS_DOCUMENTS_HASURA_CONNECTOR_PORT
+#    HASURA_SERVICE_TOKEN_SECRET:
+#      fromEnv: GLOBALS_DOCUMENTS_HASURA_SERVICE_TOKEN_SECRET
+#    OTEL_EXPORTER_OTLP_ENDPOINT:
+#      fromEnv: GLOBALS_DOCUMENTS_OTEL_EXPORTER_OTLP_ENDPOINT
+#    OTEL_SERVICE_NAME:
+#      fromEnv: GLOBALS_DOCUMENTS_OTEL_SERVICE_NAME
+    DOCUMENTS_URI:
+      fromEnv: ENTERPRISE_ENTERPRISE_CONNECTION_URI
