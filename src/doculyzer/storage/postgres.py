@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from datetime import date
 from typing import Optional, Dict, Any, List, Tuple
 
 import time
@@ -578,7 +579,15 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
 
         try:
             # Store document
-            metadata_json = json.dumps(document.get("metadata", {}))
+            metadata = document.get("metadata", {})
+
+            class CustomJSONEncoder(json.JSONEncoder):
+                def default(self, obj):
+                    if isinstance(obj, date):
+                        return obj.isoformat()  # Convert date to ISO 8601 string format (e.g., 'YYYY-MM-DD')
+                    return super().default(obj)
+
+            metadata_json = json.dumps(metadata, cls=CustomJSONEncoder)
 
             self.cursor.execute(
                 """
