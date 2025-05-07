@@ -10,19 +10,104 @@ import logging
 import mimetypes
 import os
 import re
+import platform
+import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Try to import python-magic, but don't fail if not available
-try:
-    # noinspection PyUnresolvedReferences
-    import magic
+# Check if running on Linux
+IS_LINUX = platform.system() == 'Linux'
 
-    MAGIC_AVAILABLE = True
-except ImportError:
-    MAGIC_AVAILABLE = False
-    logger.warning("python-magic not available. Install with 'pip install python-magic' for better content detection.")
+# Define paths to vendor magic files for Linux
+if IS_LINUX:
+    # Import get_vendor_path from wherever it's defined in your project
+    from doculyzer.vendor import get_vendor_path  # Adjust import path as needed
+
+    VENDOR_PATH = get_vendor_path()
+    VENDOR_MAGIC_PATH = os.path.join(VENDOR_PATH, 'libmagic')
+    MAGIC_DB_PATH = os.path.join(VENDOR_MAGIC_PATH, 'magic.mgc')
+else:
+    # Set to None for non-Linux systems
+    VENDOR_MAGIC_PATH = None
+    MAGIC_DB_PATH = None
+
+# Global flag for magic availability
+MAGIC_AVAILABLE = False
+
+def initialize_magic():
+    """Initialize and configure magic library based on current platform."""
+    global MAGIC_AVAILABLE
+
+    try:
+        import magic
+
+        # Configure magic to use vendor paths on Linux
+        if IS_LINUX and VENDOR_MAGIC_PATH and os.path.exists(VENDOR_MAGIC_PATH):
+            logger.info(f"Running on Linux, using custom magic binaries at {VENDOR_MAGIC_PATH}")
+
+            # Check which python-magic library we have
+            if hasattr(magic, 'Magic'):
+                # This is python-magic from PyPI
+                try:
+                    # Create a new Magic instance with our custom database
+                    magic_instance = magic.Magic(magic_file=MAGIC_DB_PATH, mime=True)
+
+                    # Test if it works
+                    test_result = magic_instance.from_buffer(b"test")
+
+                    # Store original functions for fallback
+                    original_from_file = magic.from_file
+                    original_from_buffer = magic.from_buffer
+
+                    # Create wrapper functions that use our custom instance
+                    def magic_from_file(filename, mime=False):
+                        try:
+                            return magic_instance.from_file(filename)
+                        except Exception as e:
+                            logger.warning(f"Custom magic failed, falling back to default: {e}")
+                            return original_from_file(filename, mime)
+
+                    def magic_from_buffer(buffer, mime=False):
+                        try:
+                            return magic_instance.from_buffer(buffer)
+                        except Exception as e:
+                            logger.warning(f"Custom magic failed, falling back to default: {e}")
+                            return original_from_buffer(buffer, mime)
+
+                    # Replace the default functions with our wrappers
+                    magic.from_file = magic_from_file
+                    magic.from_buffer = magic_from_buffer
+
+                    logger.info("Successfully configured python-magic with custom database")
+                except Exception as e:
+                    logger.warning(f"Failed to initialize custom magic instance: {e}")
+
+            elif hasattr(magic, 'MAGIC_MIME_TYPE'):
+                # This is file-magic from PyPI or ctypes-based libmagic
+
+                # Set environment variables for libmagic to find the database
+                os.environ['MAGIC'] = MAGIC_DB_PATH
+                os.environ['MAGICPATH'] = VENDOR_MAGIC_PATH
+
+                # Set LD_LIBRARY_PATH to include our vendor libmagic location
+                lib_path = os.path.join(VENDOR_MAGIC_PATH, 'lib')
+                if os.path.exists(lib_path):
+                    if 'LD_LIBRARY_PATH' in os.environ:
+                        os.environ['LD_LIBRARY_PATH'] = f"{lib_path}:{os.environ['LD_LIBRARY_PATH']}"
+                    else:
+                        os.environ['LD_LIBRARY_PATH'] = lib_path
+
+                logger.info("Set environment variables for libmagic")
+
+        MAGIC_AVAILABLE = True
+        logger.info("Magic library initialized successfully")
+    except ImportError:
+        MAGIC_AVAILABLE = False
+        logger.warning("python-magic not available. Install with 'pip install python-magic' for better content detection.")
+
+# Initialize magic at module import
+initialize_magic()
 
 
 class DocumentTypeDetector:
@@ -132,6 +217,7 @@ class DocumentTypeDetector:
         # If MIME type detection failed and python-magic is available, try it
         if not mime_type and os.path.exists(path) and MAGIC_AVAILABLE:
             try:
+                import magic
                 mime_type = magic.from_file(path, mime=True)
             except Exception as e:
                 logger.debug(f"Error detecting MIME type with python-magic: {str(e)}")
@@ -207,6 +293,7 @@ class DocumentTypeDetector:
         # Use python-magic if available
         if MAGIC_AVAILABLE:
             try:
+                import magic
                 mime_type = magic.from_buffer(content_bytes, mime=True)
                 doc_type = DocumentTypeDetector.MIME_TYPE_MAP.get(mime_type)
                 if doc_type and doc_type != 'text':

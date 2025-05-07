@@ -2,6 +2,8 @@
 __all__ = ['Config', 'SearchHelper', 'SearchResult', 'config', 'crawl', 'crawler', 'ingest_documents', 'main', 'search',
            'search_with_content']
 
+import os
+
 from . import config
 from . import crawler
 from . import main
@@ -13,7 +15,10 @@ from .main import ingest_documents
 from .search import SearchHelper
 from .search import SearchResult
 from .search import search_with_content
+from .vendor import get_vendor_path
 
 configure_logging()
 
 __version__ = "0.24.0"
+
+

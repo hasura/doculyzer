@@ -26,7 +26,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "torch==2.7.0+cpu",
+    "torch==2.7.0",
     "sqlean.py~=3.47.0; platform_system == 'Darwin'",
     "sqlean.py~=3.47.0; platform_system == 'Linux' and platform_machine == 'x86_64'",
     "lxml~=5.4.0",
@@ -72,3 +72,10 @@ issues = "https://github.com/hasura/doculyzer/issues"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# Include vendor/libmagic and its contents
+"doculyzer" = ["vendor/libmagic/*"]
+
+[tool.setuptools.exclude-package-data]
+# Exclude unnecessary files, if needed (e.g., tests or documentation)
+"doculyzer" = ["tests/*"]
