@@ -1,32 +1,58 @@
 import logging
 import os
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Union, TYPE_CHECKING
 
 import time
 
-from .element_relationship import ElementRelationship
-
-# Try to import MongoDB library
-try:
-    import pymongo
-    from pymongo import MongoClient
-    from pymongo.errors import ConnectionFailure, DuplicateKeyError
+# Import types for type checking only - these won't be imported at runtime
+if TYPE_CHECKING:
     import numpy as np
+    from numpy.typing import NDArray
+    from pymongo import MongoClient
+    from pymongo.database import Database
+    from pymongo.collection import Collection
 
-    PYMONGO_AVAILABLE = True
-except ImportError:
-    MongoClient = None
-    ConnectionFailure = None
-    DuplicateKeyError = None
-    np = None
-    logging.warning("pymongo not available. Install with 'pip install pymongo'.")
-    PYMONGO_AVAILABLE = False
+    # Define type aliases for type checking
+    VectorType = NDArray[np.float32]  # NumPy array type for vectors
+    MongoDBType = Database  # MongoDB database type
+    MongoCollectionType = Collection  # MongoDB collection type
+else:
+    # Runtime type aliases - use generic Python types
+    VectorType = List[float]  # Generic list of floats for vectors
+    MongoDBType = Any  # Generic type for MongoDB database
+    MongoCollectionType = Any  # Generic type for MongoDB collection
 
+from .element_relationship import ElementRelationship
 from .base import DocumentDatabase
 
 logger = logging.getLogger(__name__)
 
-# Try to import the config the same way SQLite does
+# Define global flags for availability - these will be set at runtime
+PYMONGO_AVAILABLE = False
+NUMPY_AVAILABLE = False
+
+# Try to import MongoDB library at runtime
+try:
+    import pymongo
+    from pymongo import MongoClient
+    from pymongo.errors import ConnectionFailure, DuplicateKeyError
+
+    PYMONGO_AVAILABLE = True
+except ImportError:
+    logger.warning("pymongo not available. Install with 'pip install pymongo'.")
+    MongoClient = None
+    ConnectionFailure = Exception  # Fallback type for exception handling
+    DuplicateKeyError = Exception  # Fallback type for exception handling
+
+# Try to import NumPy conditionally at runtime
+try:
+    import numpy as np
+
+    NUMPY_AVAILABLE = True
+except ImportError:
+    logger.warning("numpy not available. Install with 'pip install numpy'.")
+
+# Try to import the config
 try:
     from ..config import Config
 
@@ -149,7 +175,7 @@ class MongoDBDocumentDatabase(DocumentDatabase):
         """
         self.conn_params = conn_params
         self.client = None
-        self.db = None
+        self.db: MongoDBType = None  # Type hint using our conditional alias
         self.vector_search = False
         self.embedding_generator = None
         self.vector_dimension = None
@@ -569,7 +595,7 @@ class MongoDBDocumentDatabase(DocumentDatabase):
 
         return relationships
 
-    def get_element(self, element_id_or_pk: str | int) -> Optional[Dict[str, Any]]:
+    def get_element(self, element_id_or_pk: Union[str, int]) -> Optional[Dict[str, Any]]:
         """
         Get element by ID or PK.
 
@@ -675,7 +701,7 @@ class MongoDBDocumentDatabase(DocumentDatabase):
 
         return elements
 
-    def store_embedding(self, element_pk: int, embedding: List[float]) -> None:
+    def store_embedding(self, element_pk: int, embedding: VectorType) -> None:
         """
         Store embedding for an element.
         """
@@ -710,7 +736,7 @@ class MongoDBDocumentDatabase(DocumentDatabase):
             logger.error(f"Error storing embedding for {element_pk}: {str(e)}")
             raise
 
-    def get_embedding(self, element_pk: int) -> Optional[List[float]]:
+    def get_embedding(self, element_pk: int) -> Optional[VectorType]:
         """
         Get embedding for an element.
         """
@@ -723,7 +749,7 @@ class MongoDBDocumentDatabase(DocumentDatabase):
 
         return embedding_doc.get("embedding")
 
-    def search_by_embedding(self, query_embedding: List[float], limit: int = 10,
+    def search_by_embedding(self, query_embedding: VectorType, limit: int = 10,
                             filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
         """
         Search elements by embedding similarity with optional filtering.
@@ -742,7 +768,7 @@ class MongoDBDocumentDatabase(DocumentDatabase):
             # Fall back to cosine similarity
             return self._search_by_cosine_similarity(query_embedding, limit, filter_criteria)
 
-    def _search_by_vector_index(self, query_embedding: List[float], limit: int = 10,
+    def _search_by_vector_index(self, query_embedding: VectorType, limit: int = 10,
                                 filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
         """Search embeddings using MongoDB Atlas Vector Search with filtering."""
         try:
@@ -777,8 +803,6 @@ class MongoDBDocumentDatabase(DocumentDatabase):
                     "preserveNullAndEmptyArrays": True
                 }
             }]
-
-            # Add document lookup to support document-level filtering
 
             # Add filter stages if criteria provided
             if filter_criteria:
@@ -828,9 +852,18 @@ class MongoDBDocumentDatabase(DocumentDatabase):
             logger.error(f"Error using vector search index: {str(e)}")
             raise
 
-    def _search_by_cosine_similarity(self, query_embedding: List[float], limit: int = 10,
+    def _search_by_cosine_similarity(self, query_embedding: VectorType, limit: int = 10,
                                      filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
-        """Fall back to calculating cosine similarity in Python with filtering."""
+        """Fall back to calculating cosine similarity with filtering."""
+        # Check if NumPy is available and use appropriate implementation
+        if not NUMPY_AVAILABLE:
+            return self._search_by_cosine_similarity_pure_python(query_embedding, limit, filter_criteria)
+        else:
+            return self._search_by_cosine_similarity_numpy(query_embedding, limit, filter_criteria)
+
+    def _search_by_cosine_similarity_numpy(self, query_embedding: VectorType, limit: int = 10,
+                                           filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
+        """NumPy implementation of cosine similarity search."""
         # Begin building a pipeline for embeddings with element and document data
         pipeline = [
             {
@@ -905,24 +938,114 @@ class MongoDBDocumentDatabase(DocumentDatabase):
             embedding = doc["embedding"]
 
             if embedding and len(embedding) == len(query_embedding):
-                similarity = self._calculate_cosine_similarity(query_array, np.array(embedding))
+                # Use NumPy for efficient calculation
+                embedding_array = np.array(embedding)
+                dot_product = np.dot(query_array, embedding_array)
+                norm1 = np.linalg.norm(query_array)
+                norm2 = np.linalg.norm(embedding_array)
+
+                if norm1 == 0 or norm2 == 0:
+                    similarity = 0.0
+                else:
+                    similarity = float(dot_product / (norm1 * norm2))
+
                 similarities.append((element_pk, similarity))
 
         # Sort by similarity (highest first) and limit results
         similarities.sort(key=lambda x: x[1], reverse=True)
         return similarities[:limit]
 
-    @staticmethod
-    def _calculate_cosine_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
-        """Calculate cosine similarity between two vectors."""
-        dot_product = np.dot(vec1, vec2)
-        norm1 = np.linalg.norm(vec1)
-        norm2 = np.linalg.norm(vec2)
+    def _search_by_cosine_similarity_pure_python(self, query_embedding: VectorType, limit: int = 10,
+                                                 filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
+        """Pure Python implementation of cosine similarity search when NumPy is not available."""
+        # Begin building a pipeline for embeddings with element and document data
+        pipeline = [
+            {
+                "$lookup": {
+                    "from": "elements",
+                    "localField": "element_pk",
+                    "foreignField": "element_pk",
+                    "as": "element"
+                }
+            },
+            {
+                "$unwind": "$element"
+            },
+            {
+                "$lookup": {
+                    "from": "documents",
+                    "localField": "element.doc_id",
+                    "foreignField": "doc_id",
+                    "as": "document"
+                }
+            },
+            {
+                "$unwind": {
+                    "path": "$document",
+                    "preserveNullAndEmptyArrays": True
+                }
+            }
+        ]
 
-        if norm1 == 0 or norm2 == 0:
-            return 0.0
+        # Add filter criteria if provided
+        if filter_criteria:
+            match_conditions = {}
 
-        return float(dot_product / (norm1 * norm2))
+            for key, value in filter_criteria.items():
+                if key == "element_type" and isinstance(value, list):
+                    # Handle list of allowed element types
+                    match_conditions["element.element_type"] = {"$in": value}
+                elif key == "doc_id" and isinstance(value, list):
+                    # Handle list of document IDs to include
+                    match_conditions["element.doc_id"] = {"$in": value}
+                elif key == "exclude_doc_id" and isinstance(value, list):
+                    # Handle list of document IDs to exclude
+                    match_conditions["element.doc_id"] = {"$nin": value}
+                elif key == "exclude_doc_source" and isinstance(value, list):
+                    # Handle list of document sources to exclude
+                    match_conditions["document.source"] = {"$nin": value}
+                else:
+                    # Simple equality filter
+                    match_conditions[f"element.{key}"] = value
+
+            if match_conditions:
+                pipeline.append({"$match": match_conditions})
+
+        # Add projection to get just what we need
+        pipeline.append({
+            "$project": {
+                "_id": 0,
+                "element_pk": 1,
+                "embedding": 1
+            }
+        })
+
+        # Execute aggregation to get filtered embeddings
+        filtered_embeddings = list(self.db.embeddings.aggregate(pipeline))
+
+        # Calculate cosine similarity for each embedding using pure Python
+        similarities = []
+
+        for doc in filtered_embeddings:
+            element_pk = doc["element_pk"]
+            embedding = doc["embedding"]
+
+            if embedding and len(embedding) == len(query_embedding):
+                # Calculate using pure Python
+                dot_product = sum(a * b for a, b in zip(query_embedding, embedding))
+                mag1 = sum(a * a for a in query_embedding) ** 0.5
+                mag2 = sum(b * b for b in embedding) ** 0.5
+
+                if mag1 == 0 or mag2 == 0:
+                    similarity = 0.0
+                else:
+                    similarity = float(dot_product / (mag1 * mag2))
+
+                similarities.append((element_pk, similarity))
+
+        # Sort by similarity (highest first) and limit results
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        return similarities[:limit]
 
     def delete_document(self, doc_id: str) -> bool:
         """Delete a document and all associated elements and relationships."""
@@ -1069,9 +1192,14 @@ class MongoDBDocumentDatabase(DocumentDatabase):
             raise ValueError("Database not initialized")
 
         try:
-            if self.embedding_generator is None:
+            # Import embedding generator on-demand
+            try:
                 from ..embeddings import get_embedding_generator
-                self.embedding_generator = get_embedding_generator(config)
+                if self.embedding_generator is None:
+                    self.embedding_generator = get_embedding_generator(config)
+            except ImportError as e:
+                logger.error(f"Embedding generator not available: {str(e)}")
+                raise ValueError("Embedding libraries are not installed.")
 
             # Generate embedding for the search text
             query_embedding = self.embedding_generator.generate(search_text)

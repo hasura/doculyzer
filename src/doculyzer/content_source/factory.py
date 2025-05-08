@@ -1,12 +1,17 @@
 """
 Content Source Module for the document pointer system.
-
 This module contains adapters for different content sources such as:
 - Markdown files
 - Database blobs
 - Web URLs
+- Confluence
+- JIRA
+- S3
+- ServiceNow
+- MongoDB
+- SharePoint
+- Google Drive
 """
-
 import logging
 from typing import Dict, Any
 
@@ -14,14 +19,15 @@ from .base import ContentSource
 from .confluence import ConfluenceContentSource
 from .database import DatabaseContentSource
 from .file import FileContentSource
+from .google_drive import GoogleDriveContentSource
 from .jira import JiraContentSource
 from .mongodb import MongoDBContentSource
 from .s3 import S3ContentSource
 from .servicenow import ServiceNowContentSource
+from .sharepoint import SharePointContentSource
 from .web import WebContentSource
 
 logger = logging.getLogger(__name__)
-
 
 def get_content_source(source_config: Dict[str, Any]) -> ContentSource:
     """
@@ -52,7 +58,11 @@ def get_content_source(source_config: Dict[str, Any]) -> ContentSource:
         return S3ContentSource(source_config)
     elif source_type == "servicenow":
         return ServiceNowContentSource(source_config)
-    elif source_type == "mongodb":  # Add the MongoDB option
+    elif source_type == "mongodb":
         return MongoDBContentSource(source_config)
+    elif source_type == "sharepoint":
+        return SharePointContentSource(source_config)
+    elif source_type == "google_drive":
+        return GoogleDriveContentSource(source_config)
     else:
         raise ValueError(f"Unsupported content source type: {source_type}")

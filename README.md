@@ -26,6 +26,7 @@ Doculyzer is a powerful document management system that creates a universal, str
 - **Element-Level Precision**: Maintains granular accuracy to specific document elements
 - **Relationship Mapping**: Identifies connections between document elements
 - **Configurable Vector Representations**: Support for different vector dimensions based on content needs, allowing larger vectors for technical content and smaller vectors for general content
+- **Modular Dependencies**: Only install the components you need, with graceful fallbacks when optional dependencies are missing
 
 ## Supported Document Types
 
@@ -43,40 +44,255 @@ Doculyzer can ingest and process a variety of document formats:
 
 ## Content Sources
 
-Doculyzer supports multiple content sources:
-- File systems (local, mounted, and network shares)
-- HTTP endpoints
-- Confluence
-- JIRA
-- Amazon S3
-- Relational Databases
-- ServiceNow
-- MongoDB
+Doculyzer supports multiple content sources through a modular, pluggable architecture. Each content source has its own optional dependencies, which are only required if you use that specific source:
+
+| Content Source | Description | Required Dependencies | Installation |
+|---------------|-------------|----------------------|--------------|
+| File System | Local, mounted, and network file systems | None (core) | Default install |
+| HTTP/Web | Fetch content from URLs and websites | `requests` | Default install |
+| Confluence | Atlassian Confluence wiki content | `atlassian-python-api` | `pip install "doculyzer[source-confluence]"` |
+| JIRA | Atlassian JIRA issue tracking system | `atlassian-python-api` | `pip install "doculyzer[source-jira]"` |
+| Amazon S3 | Cloud storage through S3 | `boto3` | `pip install "doculyzer[cloud-aws]"` |
+| Databases | SQL and NoSQL database content | `sqlalchemy` | `pip install "doculyzer[source-database]"` |
+| ServiceNow | ServiceNow platform content | `pysnow` | `pip install "doculyzer[source-servicenow]"` |
+| MongoDB | MongoDB database content | `pymongo` | `pip install "doculyzer[source-mongodb]"` |
+| SharePoint | Microsoft SharePoint content | `Office365-REST-Python-Client` | `pip install "doculyzer[source-sharepoint]"` |
+| Google Drive | Google Drive content | `google-api-python-client` | `pip install "doculyzer[source-gdrive]"` |
+
+### Content Source Graceful Fallbacks
+
+Doculyzer's modular design handles missing dependencies gracefully. When attempting to use a content source without the required dependencies, Doculyzer provides helpful error messages and installation instructions:
+
+```python
+from doculyzer import Config, ingest_documents
+from doculyzer.content_sources import DatabaseContentSource
+
+try:
+    # Create a database content source
+    db_source = DatabaseContentSource({
+        "connection_string": "postgresql://user:password@localhost:5432/mydatabase",
+        "query": "SELECT * FROM documents",
+        "id_column": "doc_id",
+        "content_column": "content_blob"
+    })
+except ImportError as e:
+    print(f"Missing dependency: {e}")
+    print("To use database content sources, install:")
+    print("pip install 'doculyzer[source-database]'")
+```
+
+## Storage Backends
+
+Doculyzer supports multiple storage backends through a modular, pluggable architecture. Each backend has its own optional dependencies, which are only required if you use that specific storage method:
+
+| Storage Backend | Description | Required Dependencies | Installation |
+|-----------------|-------------|----------------------|--------------|
+| File-based | Simple storage using the file system | None (core) | Default install |
+| SQLite | Lightweight, embedded database | None (core) | Default install |
+| SQLite Enhanced | SQLite with vector extension support | `sqlean.py` | `pip install "doculyzer[db-core]"` |
+| Neo4J | Graph database with native relationship support | `neo4j` | `pip install "doculyzer[db-neo4j]"` |
+| PostgreSQL | Robust relational database for production | `psycopg2` | `pip install "doculyzer[db-postgresql]"` |
+| PostgreSQL + pgvector | PostgreSQL with vector search | `psycopg2`, `pgvector` | `pip install "doculyzer[db-postgresql,db-vector]"` |
+| MongoDB | Document-oriented database | `pymongo` | `pip install "doculyzer[db-mongodb]"` |
+| MySQL/MariaDB | Popular open-source SQL database | `sqlalchemy`, `pymysql` | `pip install "doculyzer[db-mysql]"` |
+| Oracle | Enterprise SQL database | `sqlalchemy`, `cx_Oracle` | `pip install "doculyzer[db-oracle]"` |
+| Microsoft SQL Server | Enterprise SQL database | `sqlalchemy`, `pymssql` | `pip install "doculyzer[db-mssql]"` |
+| libSQL | SQLite-compatible distributed database | `libsql-client` | `pip install "doculyzer[db-libsql]"` |
+
+### Storage Backend Graceful Fallbacks
+
+Doculyzer's modular design handles missing storage dependencies gracefully. When attempting to use a storage backend without the required dependencies, Doculyzer provides helpful error messages and installation instructions:
+
+```python
+from doculyzer import Config, initialize_database
+
+# In your config file:
+# storage:
+#   backend: postgresql
+#   postgresql:
+#     host: localhost
+#     port: 5432
+#     database: doculyzer
+#     user: postgres
+#     password: postgres
+
+try:
+    config = Config("config.yaml")
+    db = config.initialize_database()
+    # Use the database...
+except ImportError as e:
+    print(f"Database backend not available: {e}")
+    print("Please install the required package with:")
+    print("pip install 'doculyzer[db-postgresql]'")
+```
+
+### Database Backend Selection
+
+You can easily switch between different backend implementations by changing your configuration:
+
+```yaml
+# SQLite (default, no additional dependencies)
+storage:
+  backend: sqlite
+  path: "./data/docs.db"
+
+# Neo4j (requires neo4j Python driver)
+storage:
+  backend: neo4j
+  neo4j:
+    uri: "bolt://localhost:7687"
+    username: "neo4j"
+    password: "password"
+    database: "doculyzer"
+
+# PostgreSQL (requires psycopg2)
+storage:
+  backend: postgresql
+  postgresql:
+    host: "localhost"
+    port: 5432
+    database: "doculyzer"
+    user: "postgres"
+    password: "postgres"
+    
+# MongoDB (requires pymongo)
+storage:
+  backend: mongodb
+  mongodb:
+    host: "localhost"
+    port: 27017
+    db_name: "doculyzer"
+    username: "admin"  # optional
+    password: "password"  # optional
+
+# MySQL/MariaDB (requires sqlalchemy and pymysql)
+storage:
+  backend: sqlalchemy
+  sqlalchemy:
+    uri: "mysql+pymysql://user:password@localhost/doculyzer"
+    
+# Microsoft SQL Server (requires sqlalchemy and pymssql)
+storage:
+  backend: sqlalchemy
+  sqlalchemy:
+    uri: "mssql+pymssql://user:password@localhost/doculyzer"
+    
+# Oracle (requires sqlalchemy and cx_Oracle)
+storage:
+  backend: sqlalchemy
+  sqlalchemy:
+    uri: "oracle://user:password@localhost:1521/doculyzer"
+    
+# libSQL (requires libsql-client)
+storage:
+  backend: libsql
+  libsql:
+    url: "libsql://doculyzer.turso.io"
+    auth_token: "your-auth-token"
+```
+
+### Using a Specific Database Backend
+
+```python
+from doculyzer.db import Neo4jDocumentDatabase, PostgreSQLDocumentDatabase
+
+# Using Neo4j backend (requires neo4j)
+try:
+    neo4j_db = Neo4jDocumentDatabase({
+        "uri": "bolt://localhost:7687",
+        "user": "neo4j",
+        "password": "password",
+        "database": "doculyzer"
+    })
+    neo4j_db.initialize()
+    
+    # Store and retrieve documents
+    neo4j_db.store_document(document, elements, relationships)
+    retrieved_doc = neo4j_db.get_document("doc123")
+    
+except ImportError as e:
+    print(f"Could not initialize Neo4jDocumentDatabase: {e}")
+    print("Install required dependencies with:")
+    print("pip install 'doculyzer[db-neo4j]'")
+
+# Using PostgreSQL backend (requires psycopg2)
+try:
+    pg_db = PostgreSQLDocumentDatabase({
+        "host": "localhost",
+        "port": 5432,
+        "dbname": "doculyzer",
+        "user": "postgres",
+        "password": "postgres"
+    })
+    pg_db.initialize()
+    
+    # Perform vector search if pgvector is available
+    try:
+        results = pg_db.search_by_embedding(query_embedding)
+        print(f"Found {len(results)} similar documents")
+    except Exception as e:
+        print(f"Vector search not available: {e}")
+        print("For vector search support, install:")
+        print("pip install 'doculyzer[db-vector]'")
+    
+except ImportError as e:
+    print(f"Could not initialize PostgreSQLDocumentDatabase: {e}")
+    print("Install required dependencies with:")
+    print("pip install 'doculyzer[db-postgresql]'")
+```
+
+### Vector-Capable Storage
+
+For semantic search, Doculyzer supports several vector-capable database backends:
+
+| Storage Backend | Vector Technology | Required Dependencies | Installation |
+|-----------------|------------------|----------------------|--------------|
+| SQLite + sqlite-vec | SIMD-accelerated vector search | `sqlean.py`, `sqlite-vec` | `pip install "doculyzer[db-core,db-vector]"` |
+| PostgreSQL + pgvector | Postgres vector extension | `psycopg2`, `pgvector` | `pip install "doculyzer[db-postgresql,db-vector]"` |
+| MongoDB Atlas | Vector search capability | `pymongo` | `pip install "doculyzer[db-mongodb]"` |
+| Neo4j Vector Search | Graph + vector search | `neo4j` | `pip install "doculyzer[db-neo4j]"` |
+
+```python
+# Configure vector-capable storage
+from doculyzer import Config
+
+config = Config({
+    "storage": {
+        "backend": "postgresql",
+        "postgresql": {
+            "host": "localhost",
+            "port": 5432,
+            "database": "doculyzer",
+            "user": "postgres",
+            "password": "postgres",
+            "vector_extension": "pgvector"  # Enable pgvector if available
+        }
+    }
+})
+
+try:
+    db = config.initialize_database()
+    
+    # Vector operations will use optimized search when available,
+    # and automatically fall back to Python implementation otherwise
+    results = db.search_by_embedding(query_embedding)
+    
+except ImportError as e:
+    print(f"Vector-capable backend not available: {e}")
+    print("Install required dependencies with:")
+    print("pip install 'doculyzer[db-postgresql,db-vector]'")
+```
 
 ## Architecture
 
 The system is built with a modular architecture:
 
-1. **Content Sources**: Adapters for different content origins
-2. **Document Parsers**: Transform content into structured elements
-3. **Document Database**: Stores metadata, elements, and relationships
+1. **Content Sources**: Adapters for different content origins (with conditional dependencies)
+2. **Document Parsers**: Transform content into structured elements (with format-specific dependencies)
+3. **Document Database**: Stores metadata, elements, and relationships (with backend-specific dependencies)
 4. **Content Resolver**: Retrieves original content when needed
-5. **Embedding Generator**: Creates vector representations for semantic search
+5. **Embedding Generator**: Creates vector representations for semantic search (with model-specific dependencies)
 6. **Relationship Detector**: Identifies connections between document elements
-
-## Storage Backends
-
-Doculyzer supports multiple storage backends:
-- **File-based storage**: Simple storage using the file system
-- **SQLite**: Lightweight, embedded database
-- **Neo4J**: Graph datastore, all document elements, relationships and embeddings are stored
-- **PostgreSQL**: Robust relational database for production deployments
-- **MongoDB**: Document-oriented database for larger deployments
-- **SQLAlchemy**: ORM layer supporting multiple relational databases:
-  - MySQL/MariaDB
-  - Oracle
-  - Microsoft SQL Server
-  - And other SQLAlchemy-compatible databases
 
 ## Content Monitoring and Updates
 
@@ -153,20 +369,105 @@ For production environments, consider using a proper task scheduler like Celery 
 
 ## Getting Started
 
-### Installation
+### Flexible Installation
+
+Doculyzer supports a modular installation system where you can choose which components to install based on your specific needs:
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/doculyzer.git
-cd doculyzer
+# Minimal installation (core functionality only)
+pip install doculyzer
 
-# Install dependencies
-pip install -r requirements.txt
+# Install with specific database backend
+pip install "doculyzer[db-postgresql]"  # PostgreSQL support
+pip install "doculyzer[db-mongodb]"     # MongoDB support
+pip install "doculyzer[db-neo4j]"       # Neo4j support
+pip install "doculyzer[db-mysql]"       # MySQL support
+pip install "doculyzer[db-libsql]"      # libSQL support
+pip install "doculyzer[db-core]"        # SQLite extensions + SQLAlchemy
 
-# Optional: Install embedding providers based on your needs
-pip install sentence-transformers  # For HuggingFace embeddings
-pip install openai                # For OpenAI embeddings
-pip install fastembed             # For FastEmbed embeddings (new!)
+# Install with specific content sources
+pip install "doculyzer[source-database]"     # Database content sources
+pip install "doculyzer[source-confluence]"   # Confluence content sources
+pip install "doculyzer[source-jira]"         # JIRA content sources
+pip install "doculyzer[source-gdrive]"       # Google Drive content sources
+pip install "doculyzer[source-sharepoint]"   # SharePoint content sources
+pip install "doculyzer[source-servicenow]"   # ServiceNow content sources
+pip install "doculyzer[source-mongodb]"      # MongoDB content sources
+
+# Install with specific embedding provider
+pip install "doculyzer[huggingface]"    # HuggingFace/PyTorch support
+pip install "doculyzer[openai]"         # OpenAI API support
+pip install "doculyzer[fastembed]"      # FastEmbed support (15x faster)
+
+# Install with AWS S3 support
+pip install "doculyzer[cloud-aws]"
+
+# Install additional components
+pip install "doculyzer[scientific]"     # NumPy and scientific libraries
+pip install "doculyzer[document_parsing]"  # Additional document parsing utilities
+
+# Install all database backends
+pip install "doculyzer[db-all]"
+
+# Install all content sources
+pip install "doculyzer[source-all]"
+
+# Install all embedding providers
+pip install "doculyzer[embedding-all]"
+
+# Install everything
+pip install "doculyzer[all]"
+```
+
+You can also use requirements.txt with the desired components uncommented:
+
+```txt
+# REQUIRED DEPENDENCIES - Core functionality
+lxml~=5.4.0
+PyYAML~=6.0.2
+beautifulsoup4~=4.13.4
+Markdown~=3.8
+requests~=2.32.3
+python-dateutil~=2.9.0
+jsonpath-ng~=1.7.0
+python-dotenv~=1.1.0
+wcmatch~=10.0
+
+# Document parsers
+python-docx~=1.1.2
+openpyxl~=3.1.5
+pymupdf~=1.25.5
+python-pptx~=1.0.2
+
+# Uncomment the components you need:
+# SQLAlchemy (ORM framework)
+# SQLAlchemy~=2.0.40
+
+# SQLite extensions
+# sqlean.py~=3.47.0; platform_system == 'Darwin'
+# sqlean.py~=3.47.0; platform_system == 'Linux' and platform_machine == 'x86_64'
+
+# Database content sources
+# sqlalchemy~=2.0.40
+# psycopg2-binary~=2.9.9; platform_system != 'Windows'
+# psycopg2~=2.9.9; platform_system == 'Windows'
+# pymssql~=2.2.10
+# pymysql~=1.1.0
+
+# Confluence/JIRA content sources
+# atlassian-python-api~=3.41.9
+
+# SharePoint content sources
+# Office365-REST-Python-Client~=2.5.0
+
+# NumPy (for vector operations)
+# numpy~=2.0.2
+
+# Embedding provider (choose one)
+# torch==2.7.0
+# sentence-transformers~=4.1.0
+# openai~=1.76.0
+# fastembed>=0.1.0
 ```
 
 ### Configuration
@@ -222,11 +523,39 @@ embedding:
     cache_dir: "./model_cache"  # Optional: dir to cache models
 
 content_sources:
+  # Local file content source (core, no extra dependencies)
   - name: "documentation"
     type: "file"
     base_path: "./docs"
     file_pattern: "**/*.md"
     max_link_depth: 2
+    
+  # Example of a blob-based database content source (requires sqlalchemy)
+  - name: "database-blobs"
+    type: "database"
+    connection_string: "postgresql://user:password@localhost:5432/mydatabase"
+    query: "SELECT * FROM documents"
+    id_column: "doc_id"
+    content_column: "content_blob" 
+    metadata_columns: ["title", "author", "created_date"]
+    timestamp_column: "updated_at"
+    
+  # Example of Confluence content source (requires atlassian-python-api)
+  - name: "confluence-docs"
+    type: "confluence"
+    url: "https://company.atlassian.net/wiki"
+    username: "${CONFLUENCE_USER}"  # Use environment variables securely
+    password: "${CONFLUENCE_PASS}"
+    space_keys: ["DEV", "PROD"]
+    max_results: 1000
+
+  # Example of S3 bucket content source (requires boto3)
+  - name: "aws-documents"
+    type: "s3"
+    bucket: "company-documents"
+    prefix: "technical-docs/"
+    region: "us-west-2"
+    file_pattern: "*.{pdf,docx,xlsx}"
 
 relationship_detection:
   enabled: true
@@ -269,6 +598,53 @@ for element_id, score in results:
     print(f"Semantic match ({score:.2f}): {element['content_preview']}")
 ```
 
+### Using a Specific Content Source
+
+```python
+from doculyzer.content_sources import DatabaseContentSource, ConfluenceContentSource
+
+# Using a database content source (requires sqlalchemy)
+try:
+    db_source = DatabaseContentSource({
+        "connection_string": "postgresql://user:password@localhost:5432/mydatabase",
+        "query": "SELECT * FROM documents",
+        "id_column": "doc_id",
+        "content_column": "content_blob",
+        "json_mode": False  # Set to True for structured JSON output
+    })
+    
+    # Fetch a specific document
+    document = db_source.fetch_document("doc123")
+    print(f"Document content: {document['content']}")
+    
+    # List all available documents
+    documents = db_source.list_documents()
+    print(f"Available documents: {len(documents)}")
+    
+except ImportError as e:
+    print(f"Could not initialize DatabaseContentSource: {e}")
+    print("Install required dependencies with:")
+    print("pip install 'doculyzer[source-database]'")
+
+# Using a Confluence content source (requires atlassian-python-api)
+try:
+    confluence_source = ConfluenceContentSource({
+        "url": "https://company.atlassian.net/wiki",
+        "username": "user",
+        "password": "pass",
+        "space_keys": ["DEV"]
+    })
+    
+    # List available pages
+    pages = confluence_source.list_documents()
+    print(f"Found {len(pages)} pages in Confluence")
+    
+except ImportError as e:
+    print(f"Could not initialize ConfluenceContentSource: {e}")
+    print("Install required dependencies with:")
+    print("pip install 'doculyzer[source-confluence]'")
+```
+
 ## Advanced Features
 
 ### Relationship Detection
@@ -301,9 +677,9 @@ Doculyzer uses advanced contextual embedding techniques to generate vector repre
 
 | Provider | Speed | Quality | Dimension Options | Local/Remote | Installation |
 |----------|-------|---------|-------------------|--------------|--------------|
-| HuggingFace | Standard | High | 384-768 | Local | `pip install sentence-transformers` |
-| OpenAI | Fast | Very High | 1536-3072 | Remote (API) | `pip install openai` |
-| FastEmbed | Very Fast (15x) | High | 384-1024 | Local | `pip install fastembed` |
+| HuggingFace | Standard | High | 384-768 | Local | `pip install "doculyzer[huggingface]"` |
+| OpenAI | Fast | Very High | 1536-3072 | Remote (API) | `pip install "doculyzer[openai]"` |
+| FastEmbed | Very Fast (15x) | High | 384-1024 | Local | `pip install "doculyzer[fastembed]"` |
 
 ```python
 from doculyzer.embeddings import get_embedding_generator
@@ -345,6 +721,23 @@ for element_id, embedding in embeddings.items():
     db.store_embedding(element_id, embedding)
 ```
 
+### Handling Missing Dependencies
+
+Doculyzer gracefully handles missing optional dependencies:
+
+```python
+# If you try to use an embedding provider without installing it:
+from doculyzer.embeddings import get_embedding_generator
+
+try:
+    embedding_generator = get_embedding_generator(config)
+    # Use the embedding generator...
+except ImportError as e:
+    print(f"Missing dependency: {e}")
+    print("Please install the required package with:")
+    print("pip install 'doculyzer[huggingface]'")  # or appropriate package
+```
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
@@ -353,171 +746,26 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-# Sample Config
+## Recommended Configurations
 
-```yaml
-storage:
-  backend: neo4j  # Can be neo4j, sqlite, file, mongodb, postgresql, or sqlalchemy
-  path: "./data"  
-  
-  # Neo4j-specific configuration
-  neo4j:
-    uri: "bolt://localhost:7687"
-    username: "neo4j"
-    password: "password"
-    database: "doculyzer"
-    
-  # File-based storage configuration (uncomment to use)
-  # backend: file
-  # path: "./data"
-  # file:
-  #   # Options for organizing file storage
-  #   subdirectory_structure: "flat"  # Can be "flat" or "hierarchical"
-  #   create_backups: true  # Whether to create backups before overwriting files
-  #   backup_count: 3  # Number of backups to keep
-  #   compression: false  # Whether to compress stored files
-  #   index_in_memory: true  # Whether to keep indexes in memory for faster access
-  
-  # MongoDB-based storage configuration (uncomment to use)
-  # backend: mongodb
-  # mongodb:
-  #   host: "localhost"
-  #   port: 27017
-  #   username: "admin"  # Optional
-  #   password: "password"  # Optional
-  #   db_name: "doculyzer"
-  #   options:  # Optional connection options
-  #     retryWrites: true
-  #     w: "majority"
-  #     connectTimeoutMS: 5000
-  #   vector_search: true  # Whether to use vector search capabilities (requires MongoDB Atlas)
-  #   create_vector_index: true  # Whether to create vector search index on startup
-  
-  # PostgreSQL-based storage configuration (uncomment to use)
-  # backend: postgresql
-  # postgresql:
-  #   host: "localhost"
-  #   port: 5432
-  #   dbname: "doculyzer"
-  #   user: "postgres"
-  #   password: "password"
-  #   # Optional SSL configuration
-  #   sslmode: "prefer"  # Options: disable, prefer, require, verify-ca, verify-full
-  #   # Vector search configuration using pgvector
-  #   enable_vector: true  # Whether to try to enable pgvector extension
-  #   create_vector_index: true  # Whether to create vector indexes automatically
-  #   vector_index_type: "ivfflat"  # Options: ivfflat, hnsw
-  
-  # SQLAlchemy-based storage configuration (uncomment to use)
-  # backend: sqlalchemy
-  # sqlalchemy:
-  #   # Database URI (examples for different database types)
-  #   # SQLite:
-  #   db_uri: "sqlite:///data/doculyzer.db"
-  #   # PostgreSQL:
-  #   # db_uri: "postgresql://user:password@localhost:5432/doculyzer"
-  #   # MySQL:
-  #   # db_uri: "mysql+pymysql://user:password@localhost:3306/doculyzer"
-  #   # MS SQL Server:
-  #   # db_uri: "mssql+pyodbc://user:password@server/database?driver=ODBC+Driver+17+for+SQL+Server"
-  #   
-  #   # Additional configuration options
-  #   echo: false  # Whether to echo SQL statements for debugging
-  #   pool_size: 5  # Connection pool size
-  #   max_overflow: 10  # Maximum overflow connections
-  #   pool_timeout: 30  # Connection timeout in seconds
-  #   pool_recycle: 1800  # Connection recycle time in seconds
-  #   
-  #   # Vector extensions
-  #   vector_extension: "auto"  # Options: auto, pgvector, sqlite_vss, sqlite_vec, none
-  #   create_vector_index: true  # Whether to create vector indexes automatically
-  #   vector_index_type: "ivfflat"  # For PostgreSQL: ivfflat, hnsw
-  
-  # SQLite-based storage configuration (uncomment to use)
-  # backend: sqlite
-  # path: "./data"  # Path where the SQLite database file will be stored
-  # sqlite:
-  #   # Extensions configuration
-  #   sqlite_extensions:
-  #     use_sqlean: true  # Whether to use sqlean.py (provides more SQLite extensions)
-  #     auto_discover: true  # Whether to automatically discover and load vector extensions
-  #   
-  #   # Vector search configuration
-  #   vector_extensions:
-  #     preferred: "auto"  # Options: auto, vec0, vss0, none
-  #     create_tables: true  # Whether to create vector tables on startup
-  #     populate_existing: true  # Whether to populate vector tables with existing embeddings
+### Minimal Setup (File Content Sources Only)
+```
+pip install doculyzer
+```
 
-embedding:
-  enabled: true
-  # Provider options: "huggingface", "openai", "fastembed"
-  provider: "huggingface"
-  model: "sentence-transformers/all-MiniLM-L6-v2"
-  dimensions: 384  # Embedding dimensions, used by database vector search
-  
-  # OpenAI embedding configuration
-  # provider: "openai"  # Change from default huggingface to OpenAI
-  # model: "text-embedding-3-small"  # OpenAI embedding model name
-  # dimensions: 1536  # Dimensions for the model (1536 for text-embedding-3-small, 3072 for text-embedding-3-large)
-  # openai:
-  #   api_key: "your-openai-api-key"  # Can also be set via OPENAI_API_KEY environment variable
-  #   batch_size: 10  # Number of texts to embed in a single API call
-  #   retry_count: 3  # Number of retries on API failure
-  #   retry_delay: 1  # Delay between retries in seconds
-  #   timeout: 60  # Timeout for API calls in seconds
-  #   max_tokens: 8191  # Maximum tokens per text (8191 for text-embedding-3-small/large)
-  #   cache_enabled: true  # Whether to cache embeddings
-  #   cache_size: 1000  # Maximum number of embeddings to cache in memory
-  
-  # FastEmbed embedding configuration
-  # provider: "fastembed"  # Use the new FastEmbed provider
-  # model: "BAAI/bge-small-en-v1.5"  # FastEmbed model name
-  # dimensions: 384  # Dimensions for the model
-  # fastembed:
-  #   cache_dir: "./model_cache"  # Where to cache downloaded models
-  #   cache_enabled: true  # Whether to cache embeddings
-  #   cache_size: 1000  # Maximum number of embeddings to cache in memory
+### Semantic Search with SQLite
+```
+pip install "doculyzer[db-core,fastembed]"
+```
 
-content_sources:
-  # File content source
-  - name: "local-files"
-    type: "file"
-    base_path: "./documents"
-    file_pattern: "**/*"
-    include_extensions: ["md", "txt", "pdf", "docx", "html"]
-    exclude_extensions: ["tmp", "bak"]
-    watch_for_changes: true
-    recursive: true
-    max_link_depth: 2
-  
-  # JIRA content source
-  - name: "project-tickets"
-    type: "jira"
-    base_url: "https://your-company.atlassian.net"
-    username: "jira_user@example.com"
-    api_token: "your-jira-api-token"
-    projects: ["PROJ", "FEAT"]
-    issue_types: ["Bug", "Story", "Task"]
-    statuses: ["In Progress", "To Do", "In Review"] 
-    include_closed: false
-    max_results: 100
-    include_description: true
-    include_comments: true
-    include_attachments: false
-    include_subtasks: true
-    include_linked_issues: true
-    include_custom_fields: ["customfield_10001", "customfield_10002"]
-    max_link_depth: 1
-  
-  # More content sources as in the original config...
-  # (Additional content sources omitted for brevity)
+### Production PostgreSQL with Database Content Sources
+```
+pip install "doculyzer[db-postgresql,source-database,fastembed]"
+```
 
-relationship_detection:
-  enabled: true
-
-logging:
-  level: "INFO"
-  file: "./logs/doculyzer.log"
+### Enterprise Configuration with All Content Sources
+```
+pip install "doculyzer[db-all,embedding-all,source-all,cloud-aws]"
 ```
 
 # Verified Compatibility
@@ -526,5 +774,6 @@ Tested and working with:
 - SQLite storage (with and without vector search plugins)
 - Web Content Source
 - File Content Source
+- Database Content Source
 - Content types: MD, HTML, XLSX, PDF, XML, CSV, DOCX, PPTX
 - Embedding providers: HuggingFace, OpenAI, FastEmbed

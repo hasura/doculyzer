@@ -5,7 +5,7 @@ storage:
     uri: ${DOCUMENTS_URI}
 embedding:
   enabled: true
-  provider: huggingface
+  provider: fastembed
   model: "sentence-transformers/all-MiniLM-L6-v2"
   dimensions: 384
   chunk_size: 512

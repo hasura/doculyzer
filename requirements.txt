@@ -1,13 +1,10 @@
-# REQUIRED DEPENDENCIES - Core functionality
+# Core system dependencies
 lxml~=5.4.0
 PyYAML~=6.0.2
 beautifulsoup4~=4.13.4
 Markdown~=3.8
 requests~=2.32.3
-python-dateutil~=2.9.0
-jsonpath-ng~=1.7.0
-python-dotenv~=1.1.0
-wcmatch~=10.0
+pydantic~=2.11.4
 
 # Document parsers
 python-docx~=1.1.2
@@ -15,79 +12,92 @@ openpyxl~=3.1.5
 pymupdf~=1.25.5
 python-pptx~=1.0.2
 
+# Utilities
+python-dateutil~=2.9.0
+jsonpath-ng~=1.7.0
+python-dotenv~=1.1.0
+wcmatch~=10.0
+
 # ----------------------------------------
-# OPTIONAL DEPENDENCIES - Database backends
-# Uncomment the section(s) you need
+# OPTIONAL DEPENDENCIES
+# To install optional dependencies, use:
+# pip install -e ".[group-name]"
+# For example: pip install -e ".[db-core]"
 # ----------------------------------------
 
-# SQLite extensions (recommended for macOS/Linux systems)
-# sqlean.py~=3.47.0; platform_system == 'Darwin'
-# sqlean.py~=3.47.0; platform_system == 'Linux' and platform_machine == 'x86_64'
+# Development tools [development]
+# pytest~=8.3.5
+# build~=1.2.2
 
-# SQLAlchemy (ORM framework)
+# Core database dependencies [db-core]
 # SQLAlchemy~=2.0.40
+# For macOS/Linux systems, also install:
+# sqlean.py~=3.47.0; platform_system == "Darwin" or (platform_system == "Linux" and platform_machine == "x86_64")
 
-# MongoDB
+# Scientific/Math [scientific]
+# numpy~=2.0.2
+
+# Embedding providers
+# HuggingFace [huggingface]
+# torch==2.7.0
+# sentence-transformers~=4.1.0
+
+# OpenAI [openai]
+# openai~=1.76.0
+
+# FastEmbed [fastembed]
+# fastembed>=0.1.0
+
+# Additional document parsing utilities [document_parsing]
+# python-magic~=0.4.27
+
+# Database backends
+# MongoDB [db-mongodb]
 # pymongo~=4.12.0
 
-# PostgreSQL
+# PostgreSQL [db-postgresql]
 # psycopg2-binary~=2.9.10
 
-# Neo4j
-# neo4j~=5.28.1
-
-# libSQL
-# libsql-client~=0.3.1
-
-# MySQL
+# MySQL [db-mysql]
 # mysql-connector-python~=9.3.0
 
-# Vector database extensions
+# Neo4j [db-neo4j]
+# neo4j~=5.28.1
+
+# libSQL [db-libsql]
+# libsql-client~=0.3.1
+
+# Database vector extensions [db-vector]
 # pgvector>=0.2.0
 # sqlite-vec>=0.1.0
 # sqlite-vss>=0.1.0
 
-# ----------------------------------------
-# OPTIONAL DEPENDENCIES - Scientific/Math
-# ----------------------------------------
-
-# NumPy (for vector operations and calculations)
-# numpy~=2.0.2
-
-# ----------------------------------------
-# OPTIONAL DEPENDENCIES - Cloud storage
-# ----------------------------------------
-
-# AWS S3
+# Cloud storage [cloud-aws]
 # boto3~=1.38.3
 # botocore~=1.38.4
 
-# ----------------------------------------
-# OPTIONAL DEPENDENCIES - Embedding providers
-# Uncomment the section(s) you need
-# ----------------------------------------
+# Content Sources
+# Database [source-database]
+# SQLAlchemy~=2.0.40
 
-# Option 1: HuggingFace Embeddings
-# torch==2.7.0
-# sentence-transformers~=4.1.0
+# Confluence & JIRA [source-confluence, source-jira]
+# atlassian-python-api~=3.41.9
 
-# Option 2: OpenAI Embeddings
-# openai~=1.76.0
+# ServiceNow [source-servicenow]
+# pysnow~=0.7.17
 
-# Option 3: FastEmbed Embeddings (high-performance alternative)
-# fastembed>=0.1.0
+# MongoDB [source-mongodb]
+# pymongo~=4.12.0
 
-# ----------------------------------------
-# ADDITIONAL UTILITIES
-# ----------------------------------------
+# SharePoint [source-sharepoint]
+# Office365-REST-Python-Client~=2.5.0
 
-# Document parsing utilities
-# python-magic~=0.4.27
+# Google Drive [source-gdrive]
+# google-api-python-client~=2.36.0
+# google-auth-oauthlib~=1.0.0
 
 # ----------------------------------------
-# DEVELOPMENT DEPENDENCIES
-# Uncomment if needed for development
+# INSTALLATION NOTE:
+# For minimal installation: pip install -e .
+# For full installation: pip install -e ".[all]"
 # ----------------------------------------
-
-# pytest~=8.3.5
-# build~=1.2.2

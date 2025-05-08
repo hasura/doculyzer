@@ -2,61 +2,94 @@ import datetime
 import json
 import logging
 import os
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Union, TYPE_CHECKING
 
 import time
+
+# Import types for type checking only - these won't be imported at runtime
+if TYPE_CHECKING:
+    import sqlite3
+    import numpy as np
+    from numpy.typing import NDArray
+    import sqlite_vec
+    import sqlite_vss
+
+    # Define type aliases for type checking
+    VectorType = NDArray[np.float32]  # NumPy array type for vectors
+    SQLiteConnectionType = sqlite3.Connection  # SQLite connection type
+    SQLiteCursorType = sqlite3.Cursor  # SQLite cursor type
+else:
+    # Runtime type aliases - use generic Python types
+    VectorType = List[float]  # Generic list of floats for vectors
+    SQLiteConnectionType = Any  # Generic type for SQLite connection
+    SQLiteCursorType = Any  # Generic type for SQLite cursor
 
 from .element_relationship import ElementRelationship
 
 logger = logging.getLogger(__name__)
 
-# Try to import the preferred SQLite library based on config
+# Define global flags for availability - these will be set at runtime
+SQLITE3_AVAILABLE = False
+SQLITE_SQLEAN_AVAILABLE = False
+SQLITE_VEC_AVAILABLE = False
+SQLITE_VSS_AVAILABLE = False
+NUMPY_AVAILABLE = False
+
+# Try to import the config
 try:
     from ..config import Config
 
     config = Config(os.environ.get("DOCULYZER_CONFIG_PATH", "./config.yaml"))
-    # Check if we should use sqlean
-    use_sqlean = config.config.get("storage", {}).get("sqlite_extensions", {}).get("use_sqlean", False)
+except Exception as e:
+    logger.warning(f"Error configuring SQLite provider: {str(e)}. Using default settings.")
+    config = None
+
+# Try to import SQLite libraries conditionally
+try:
+    # Check if we should use sqlean based on config
+    use_sqlean = config.config.get("storage", {}).get("sqlite_extensions", {}).get("use_sqlean",
+                                                                                   False) if config else False
 
     if use_sqlean:
         try:
-            # noinspection PyPackageRequirements
+            # Try to import sqlean
             import sqlean as sqlite3
 
+            SQLITE_SQLEAN_AVAILABLE = True
             logger.info("Using sqlean as SQLite provider (with extension support)")
         except ImportError:
             logger.warning("sqlean requested but not installed. Falling back to standard sqlite3.")
             import sqlite3
+
+            SQLITE3_AVAILABLE = True
     else:
         import sqlite3
-except Exception as e:
-    logger.warning(f"Error configuring SQLite provider: {str(e)}. Using standard sqlite3.")
-    import sqlite3
 
-# Try to import vector search extensions - make these conditional
-SQLITE_VEC_AVAILABLE = False
-SQLITE_VSS_AVAILABLE = False
+        SQLITE3_AVAILABLE = True
+except ImportError:
+    logger.warning("sqlite3 not available. This is unusual as it's part of Python standard library.")
 
+# Try to import vector search extensions conditionally
 try:
-    # noinspection PyUnresolvedReferences
     import sqlite_vec
+
     SQLITE_VEC_AVAILABLE = True
     logger.info("sqlite_vec extension available")
 except ImportError:
     logger.debug("sqlite_vec extension not available")
 
 try:
-    # noinspection PyUnresolvedReferences
     import sqlite_vss
+
     SQLITE_VSS_AVAILABLE = True
     logger.info("sqlite_vss extension available")
 except ImportError:
     logger.debug("sqlite_vss extension not available")
 
-# Conditional import for numpy - used for vector operations
-NUMPY_AVAILABLE = False
+# Try to import numpy conditionally
 try:
     import numpy as np
+
     NUMPY_AVAILABLE = True
 except ImportError:
     logger.warning("NumPy not available. Fallback vector operations will be used.")
@@ -74,93 +107,6 @@ class DateTimeEncoder(json.JSONEncoder):
 class SQLiteDocumentDatabase(DocumentDatabase):
     """SQLite implementation of document database."""
 
-    def get_outgoing_relationships(self, element_pk: int) -> List[ElementRelationship]:
-        """
-        Find all relationships where the specified element_pk is the source.
-
-        Implementation for SQLite database using JOIN to efficiently retrieve target information.
-
-        Args:
-            element_pk: The primary key of the element
-
-        Returns:
-            List of ElementRelationship objects where the specified element is the source
-        """
-
-        relationships = []
-
-        # Get the element to find its element_id and type
-        element = self.get_element(element_pk)
-        if not element:
-            logger.warning(f"Element with PK {element_pk} not found")
-            return []
-
-        element_id = element.get("element_id")
-        if not element_id:
-            logger.warning(f"Element with PK {element_pk} has no element_id")
-            return []
-
-        element_type = element.get("element_type", "")
-
-        # Find relationships with target element information using JOIN
-        # This query joins the relationships table with the elements table
-        # to get information about target elements in one go
-        self.cursor = self.conn.execute(
-            """
-            SELECT 
-                r.*,
-                t.element_pk as target_element_pk,
-                t.element_type as target_element_type,
-                t.content_preview as target_content_preview
-            FROM 
-                relationships r
-            LEFT JOIN 
-                elements t ON r.target_reference = t.element_id
-            WHERE 
-                r.source_id = ?
-            """,
-            (element_id,)
-        )
-
-        for row in self.cursor.fetchall():
-            # Convert to dictionary
-            rel_dict = dict(row)
-
-            # Remove SQLite's rowid if present
-            if "rowid" in rel_dict:
-                del rel_dict["rowid"]
-
-            # Convert metadata from JSON if needed
-            try:
-                if isinstance(rel_dict.get("metadata"), str):
-                    rel_dict["metadata"] = json.loads(rel_dict["metadata"])
-            except (json.JSONDecodeError, TypeError):
-                rel_dict["metadata"] = {}
-
-            # Extract target element information from the joined query results
-            target_element_pk = rel_dict.get("target_element_pk")
-            target_element_type = rel_dict.get("target_element_type")
-
-            # Create enriched relationship
-            relationship = ElementRelationship(
-                relationship_id=rel_dict.get("relationship_id", ""),
-                source_id=element_id,
-                source_element_pk=element_pk,
-                source_element_type=element_type,
-                relationship_type=rel_dict.get("relationship_type", ""),
-                target_reference=rel_dict.get("target_reference", ""),
-                target_element_pk=target_element_pk,
-                target_element_type=target_element_type,
-                target_content_preview=rel_dict.get("target_content_preview", ""),
-                doc_id=rel_dict.get("doc_id"),
-                metadata=rel_dict.get("metadata", {}),
-                is_source=True
-            )
-
-            relationships.append(relationship)
-
-        return relationships
-
     def __init__(self, db_path: str):
         """
         Initialize SQLite document database.
@@ -168,20 +114,27 @@ class SQLiteDocumentDatabase(DocumentDatabase):
         Args:
             db_path: Path to SQLite database file
         """
-        self.cursor = None
+        if not SQLITE3_AVAILABLE and not SQLITE_SQLEAN_AVAILABLE:
+            raise ImportError("Neither sqlite3 nor sqlean is available")
+
+        self.cursor: SQLiteCursorType = None
         self.db_path = db_path
-        self.conn = None
+        self.conn: SQLiteConnectionType = None
         self.vector_extension = None
         self.embedding_generator = None
 
     def initialize(self) -> None:
         """Initialize the database by creating tables if they don't exist."""
+        if not SQLITE3_AVAILABLE and not SQLITE_SQLEAN_AVAILABLE:
+            raise ImportError("Neither sqlite3 nor sqlean is available")
+
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self.conn = sqlite3.connect(os.path.join(self.db_path, 'document_db.sqlite'))
         self.conn.row_factory = sqlite3.Row
 
         # Check if extension loading is supported
-        auto_discover = config.config.get("storage", {}).get("sqlite_extensions", {}).get("auto_discover", True)
+        auto_discover = config.config.get("storage", {}).get("sqlite_extensions", {}).get("auto_discover",
+                                                                                          True) if config else True
         extension_loading_supported = True
 
         try:
@@ -190,7 +143,7 @@ class SQLiteDocumentDatabase(DocumentDatabase):
             extension_loading_supported = False
             logger.warning(f"SQLite extension loading not supported: {str(e)}")
 
-            if isinstance(sqlite3.__name__, str) and "sqlean" not in sqlite3.__name__:
+            if not SQLITE_SQLEAN_AVAILABLE:
                 logger.info("Consider using sqlean.py for SQLite extension support.")
                 logger.info("Set storage.sqlite_extensions.use_sqlean to True in your config file.")
 
@@ -234,7 +187,10 @@ class SQLiteDocumentDatabase(DocumentDatabase):
             self.vector_extension = None
         finally:
             # Disable extension loading after we're done
-            self.conn.enable_load_extension(False)
+            try:
+                self.conn.enable_load_extension(False)
+            except Exception:
+                pass
 
     def close(self) -> None:
         """Close the database connection."""
@@ -452,9 +408,6 @@ class SQLiteDocumentDatabase(DocumentDatabase):
         if not self.conn:
             raise ValueError("Database not initialized")
 
-        # source = document.get("source", "")
-        # content_hash = document.get("content_hash", "")
-
         # Check if document exists
         cursor = self.conn.execute("SELECT doc_id FROM documents WHERE doc_id = ?", (doc_id,))
         if cursor.fetchone() is None:
@@ -607,8 +560,16 @@ class SQLiteDocumentDatabase(DocumentDatabase):
 
         return relationships
 
-    def get_element(self, element_pk: int | str) -> Optional[Dict[str, Any]]:
-        """Get element by ID."""
+    def get_element(self, element_pk: Union[int, str]) -> Optional[Dict[str, Any]]:
+        """
+        Get element by ID or PK.
+
+        Args:
+            element_pk: Either element_pk (integer) or element_id (string)
+
+        Returns:
+            Element data or None if not found
+        """
         if not self.conn:
             raise ValueError("Database not initialized")
 
@@ -630,6 +591,95 @@ class SQLiteDocumentDatabase(DocumentDatabase):
             element["metadata"] = {}
 
         return element
+
+    def get_outgoing_relationships(self, element_pk: Union[int, str]) -> List[ElementRelationship]:
+        """
+        Find all relationships where the specified element_pk is the source.
+
+        Implementation for SQLite database using JOIN to efficiently retrieve target information.
+
+        Args:
+            element_pk: The primary key of the element
+
+        Returns:
+            List of ElementRelationship objects where the specified element is the source
+        """
+        if not self.conn:
+            raise ValueError("Database not initialized")
+
+        relationships = []
+
+        # Get the element to find its element_id and type
+        element = self.get_element(element_pk)
+        if not element:
+            logger.warning(f"Element with PK {element_pk} not found")
+            return []
+
+        element_id = element.get("element_id")
+        if not element_id:
+            logger.warning(f"Element with PK {element_pk} has no element_id")
+            return []
+
+        element_type = element.get("element_type", "")
+
+        # Find relationships with target element information using JOIN
+        # This query joins the relationships table with the elements table
+        # to get information about target elements in one go
+        cursor = self.conn.execute(
+            """
+            SELECT 
+                r.*,
+                t.element_pk as target_element_pk,
+                t.element_type as target_element_type,
+                t.content_preview as target_content_preview
+            FROM 
+                relationships r
+            LEFT JOIN 
+                elements t ON r.target_reference = t.element_id
+            WHERE 
+                r.source_id = ?
+            """,
+            (element_id,)
+        )
+
+        for row in cursor.fetchall():
+            # Convert to dictionary
+            rel_dict = dict(row)
+
+            # Remove SQLite's rowid if present
+            if "rowid" in rel_dict:
+                del rel_dict["rowid"]
+
+            # Convert metadata from JSON if needed
+            try:
+                if isinstance(rel_dict.get("metadata"), str):
+                    rel_dict["metadata"] = json.loads(rel_dict["metadata"])
+            except (json.JSONDecodeError, TypeError):
+                rel_dict["metadata"] = {}
+
+            # Extract target element information from the joined query results
+            target_element_pk = rel_dict.get("target_element_pk")
+            target_element_type = rel_dict.get("target_element_type")
+
+            # Create enriched relationship
+            relationship = ElementRelationship(
+                relationship_id=rel_dict.get("relationship_id", ""),
+                source_id=element_id,
+                source_element_pk=element["element_pk"],  # Use the element_pk from the element dictionary
+                source_element_type=element_type,
+                relationship_type=rel_dict.get("relationship_type", ""),
+                target_reference=rel_dict.get("target_reference", ""),
+                target_element_pk=target_element_pk,
+                target_element_type=target_element_type,
+                target_content_preview=rel_dict.get("target_content_preview", ""),
+                doc_id=rel_dict.get("doc_id"),
+                metadata=rel_dict.get("metadata", {}),
+                is_source=True
+            )
+
+            relationships.append(relationship)
+
+        return relationships
 
     def find_documents(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
         """Find documents matching query."""
@@ -698,6 +748,16 @@ class SQLiteDocumentDatabase(DocumentDatabase):
                         # Use JSON_EXTRACT to query JSON metadata
                         conditions.append(f"JSON_EXTRACT(metadata, '$.{meta_key}') = ?")
                         params.append(json.dumps(meta_value))
+                elif key == "element_type" and isinstance(value, list):
+                    # Handle list of element types
+                    placeholders = ', '.join(['?'] * len(value))
+                    conditions.append(f"element_type IN ({placeholders})")
+                    params.extend(value)
+                elif key == "doc_id" and isinstance(value, list):
+                    # Handle list of document IDs
+                    placeholders = ', '.join(['?'] * len(value))
+                    conditions.append(f"doc_id IN ({placeholders})")
+                    params.extend(value)
                 else:
                     conditions.append(f"{key} = ?")
                     params.append(value)
@@ -749,7 +809,7 @@ class SQLiteDocumentDatabase(DocumentDatabase):
 
         return elements
 
-    def store_embedding(self, element_pk: str, embedding: List[float]) -> None:
+    def store_embedding(self, element_pk: int, embedding: VectorType) -> None:
         """Store embedding for an element."""
         if not self.conn:
             raise ValueError("Database not initialized")
@@ -809,7 +869,7 @@ class SQLiteDocumentDatabase(DocumentDatabase):
 
         self.conn.commit()
 
-    def get_embedding(self, element_pk: int) -> Optional[List[float]]:
+    def get_embedding(self, element_pk: int) -> Optional[VectorType]:
         """Get embedding for an element."""
         if not self.conn:
             raise ValueError("Database not initialized")
@@ -825,9 +885,20 @@ class SQLiteDocumentDatabase(DocumentDatabase):
 
         return self._decode_embedding(row["embedding"])
 
-    def search_by_embedding(self, query_embedding: List[float], limit: int = 10,
-                            filter_criteria: Dict[str, Any] = None) -> list[tuple[str, float]] | list[Any]:
-        """Search elements by embedding similarity using available method."""
+    def search_by_embedding(self, query_embedding: VectorType, limit: int = 10,
+                            filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
+        """
+        Search elements by embedding similarity using available method.
+
+        Args:
+            query_embedding: Query embedding vector
+            limit: Maximum number of results
+            filter_criteria: Optional dictionary with criteria to filter results
+                            (e.g. {"element_type": ["header", "section"]})
+
+        Returns:
+            List of (element_pk, similarity_score) tuples
+        """
         if not self.conn:
             raise ValueError("Database not initialized")
 
@@ -848,374 +919,19 @@ class SQLiteDocumentDatabase(DocumentDatabase):
                 logger.error(f"Error in fallback search: {str(e2)}")
                 return []
 
-    def delete_document(self, doc_id: str) -> bool:
-        """Delete a document and all associated elements and relationships."""
-        if not self.conn:
-            raise ValueError("Database not initialized")
-
-        # Check if document exists
-        cursor = self.conn.execute(
-            "SELECT doc_id FROM documents WHERE doc_id = ?",
-            (doc_id,)
-        )
-
-        if cursor.fetchone() is None:
-            return False
-
-        # Begin transaction
-        self.conn.execute("BEGIN TRANSACTION")
-
-        try:
-            # Get all element IDs for this document
-            cursor = self.conn.execute(
-                "SELECT element_id FROM elements WHERE doc_id = ?",
-                (doc_id,)
-            )
-
-            element_ids = [row[0] for row in cursor]
-
-            # Delete embeddings for these elements
-            if element_ids:
-                # Create placeholders for SQL IN clause
-                placeholders = ', '.join(['?'] * len(element_ids))
-
-                self.conn.execute(
-                    f"DELETE FROM embeddings WHERE element_id IN ({placeholders})",
-                    element_ids
-                )
-
-                # Delete from extension tables if they exist
-                if self.vector_extension == "vec0" and SQLITE_VEC_AVAILABLE:
-                    try:
-                        self.conn.execute(f"DELETE FROM embeddings_vec WHERE rowid IN ({placeholders})", element_ids)
-                    except Exception as e:
-                        logger.debug(f"Error cleaning up embeddings_vec: {str(e)}")
-                elif self.vector_extension == "vss0" and SQLITE_VSS_AVAILABLE:
-                    try:
-                        self.conn.execute(f"DELETE FROM embeddings_vss WHERE rowid IN ({placeholders})", element_ids)
-                    except Exception as e:
-                        logger.debug(f"Error cleaning up embeddings_vss: {str(e)}")
-
-                # Delete relationships involving these elements
-                self.conn.execute(
-                    f"DELETE FROM relationships WHERE source_id IN ({placeholders})",
-                    element_ids
-                )
-
-            # Delete elements
-            self.conn.execute(
-                "DELETE FROM elements WHERE doc_id = ?",
-                (doc_id,)
-            )
-
-            # Delete document
-            self.conn.execute(
-                "DELETE FROM documents WHERE doc_id = ?",
-                (doc_id,)
-            )
-
-            # Commit transaction
-            self.conn.commit()
-
-            return True
-
-        except Exception as e:
-            # Rollback on error
-            self.conn.rollback()
-            logger.error(f"Error deleting document {doc_id}: {str(e)}")
-            return False
-
-    def store_relationship(self, relationship: Dict[str, Any]) -> None:
+    def _search_by_vec_extension(self, query_embedding: VectorType, limit: int = 10,
+                                 filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
         """
-        Store a relationship between elements.
+        Use the vec0 extension for vector search with filtering.
 
         Args:
-            relationship: Relationship data
+            query_embedding: Query embedding vector
+            limit: Maximum number of results
+            filter_criteria: Optional filtering criteria
+
+        Returns:
+            List of (element_pk, similarity_score) tuples
         """
-        if not self.conn:
-            raise ValueError("Database not initialized")
-
-        try:
-            # Convert metadata to JSON
-            metadata_json = json.dumps(relationship.get("metadata", {}))
-
-            self.conn.execute(
-                """
-                INSERT OR REPLACE INTO relationships
-                (relationship_id, source_id, relationship_type, target_reference, metadata)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    relationship["relationship_id"],
-                    relationship.get("source_id", ""),
-                    relationship.get("relationship_type", ""),
-                    relationship.get("target_reference", ""),
-                    metadata_json
-                )
-            )
-
-            self.conn.commit()
-        except Exception as e:
-            logger.error(f"Error storing relationship: {str(e)}")
-            raise
-
-    def delete_relationships_for_element(self, element_id: str, relationship_type: str = None) -> None:
-        """
-        Delete relationships for an element.
-
-        Args:
-            element_id: Element ID
-            relationship_type: Optional relationship type to filter by
-        """
-        if not self.conn:
-            raise ValueError("Database not initialized")
-
-        try:
-            # Start with basic query to delete source relationships
-            query = "DELETE FROM relationships WHERE source_id = ?"
-            params = [element_id]
-
-            # Add relationship type filter if provided
-            if relationship_type:
-                query += " AND relationship_type = ?"
-                params.append(relationship_type)
-
-            # Delete source relationships
-            self.conn.execute(query, params)
-
-            # Also delete relationships where this element is the target
-            query = "DELETE FROM relationships WHERE target_reference = ?"
-            params = [element_id]
-
-            # Add relationship type filter if provided
-            if relationship_type:
-                query += " AND relationship_type = ?"
-                params.append(relationship_type)
-
-            # Delete target relationships
-            self.conn.execute(query, params)
-
-            self.conn.commit()
-        except Exception as e:
-            logger.error(f"Error deleting relationships for element {element_id}: {str(e)}")
-            raise
-
-    def _create_tables(self) -> None:
-        """Create database tables if they don't exist."""
-        # Documents table
-        self.conn.execute("""
-        CREATE TABLE IF NOT EXISTS documents (
-            doc_id TEXT PRIMARY KEY,
-            doc_type TEXT,
-            source TEXT,
-            content_hash TEXT,
-            metadata TEXT,
-            created_at REAL,
-            updated_at REAL
-        )
-        """)
-
-        # --- MODIFIED: Elements table ---
-        self.conn.execute("""
-        CREATE TABLE IF NOT EXISTS elements (
-            element_pk INTEGER PRIMARY KEY AUTOINCREMENT, -- New auto-increment integer PK
-            element_id TEXT UNIQUE NOT NULL,             -- Original string ID, now unique & indexed
-            doc_id TEXT,
-            element_type TEXT,
-            parent_id TEXT,                              -- Still TEXT, references element_id
-            content_preview TEXT,
-            content_location TEXT,
-            content_hash TEXT,
-            metadata TEXT,
-            FOREIGN KEY (doc_id) REFERENCES documents (doc_id) ON DELETE CASCADE,
-            -- parent_id (TEXT) now correctly references element_id (TEXT UNIQUE)
-            FOREIGN KEY (parent_id) REFERENCES elements (element_id)
-        )
-        """)
-        # --- END MODIFICATION ---
-
-        # Create index on doc_id for faster lookups (remains unchanged)
-        self.conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_elements_doc_id ON elements (doc_id)
-        """)
-
-        # Create index on parent_id (TEXT) for faster lookups (remains unchanged)
-        # This is useful if you often query elements by their parent's string ID
-        self.conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_elements_parent_id ON elements (parent_id)
-        """)
-
-        # Create index on element_type for faster lookups (remains unchanged)
-        self.conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_elements_type ON elements (element_type)
-        """)
-
-        # --- MODIFIED: Relationships table ---
-        # Foreign key remains correct as source_id (TEXT) references elements.element_id (TEXT UNIQUE)
-        self.conn.execute("""
-        CREATE TABLE IF NOT EXISTS relationships (
-            relationship_id TEXT PRIMARY KEY,
-            source_id TEXT,
-            relationship_type TEXT,
-            target_reference TEXT,
-            metadata TEXT,
-            FOREIGN KEY (source_id) REFERENCES elements (element_id) ON DELETE CASCADE
-        )
-        """)
-        # --- END MODIFICATION ---
-
-        # Create index on source_id for faster lookups (remains unchanged)
-        self.conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_relationships_source ON relationships (source_id)
-        """)
-
-        # Create index on relationship_type for faster lookups (remains unchanged)
-        self.conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_relationships_type ON relationships (relationship_type)
-        """)
-
-        # --- MODIFIED: Embeddings table ---
-        # Foreign key remains correct as element_id (TEXT) references elements.element_id (TEXT UNIQUE)
-        # If you wanted this to reference the integer PK, you'd change element_id here to
-        # element_pk INTEGER and update the FOREIGN KEY accordingly.
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS embeddings (
-            element_pk INTEGER PRIMARY KEY, -- Links to elements.element_pk (INTEGER)
-            embedding BLOB,
-            dimensions INTEGER,
-            created_at REAL,
-            FOREIGN KEY (element_pk) REFERENCES elements (element_pk) ON DELETE CASCADE
-        )
-        """)
-        # --- END MODIFICATION ---
-
-        # Add processing history table (remains unchanged)
-        self.conn.execute("""
-        CREATE TABLE IF NOT EXISTS processing_history (
-            source_id TEXT PRIMARY KEY,
-            content_hash TEXT,
-            last_modified REAL,
-            processing_count INTEGER DEFAULT 1
-        )
-        """)
-
-        # Add index on source_id for faster lookups (remains unchanged)
-        self.conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_processing_history_source_id ON processing_history (source_id)
-        """)
-
-        # Enable foreign key constraints (remains unchanged)
-        self.conn.execute("PRAGMA foreign_keys = ON")
-
-        # Commit changes (remains unchanged)
-        self.conn.commit()
-
-    def _create_vector_tables(self) -> None:
-        """Create vector tables based on available extension."""
-        try:
-            # Get dimensions from existing embeddings or use default
-            dimensions = self._get_embedding_dimensions()
-
-            if self.vector_extension == "vec0" and SQLITE_VEC_AVAILABLE:
-                # For sqlite-vec
-                self.conn.execute(f"""
-                CREATE VIRTUAL TABLE IF NOT EXISTS embeddings_vec 
-                USING vec0(embedding FLOAT[{dimensions}])
-                """)
-                logger.info(f"Created vector table using vec0 with {dimensions} dimensions")
-
-            elif self.vector_extension == "vss0" and SQLITE_VSS_AVAILABLE:
-                # For sqlite-vss
-                self.conn.execute(f"""
-                CREATE VIRTUAL TABLE IF NOT EXISTS embeddings_vss 
-                USING vss0(embedding({dimensions}))
-                """)
-                logger.info(f"Created vector table using vss0 with {dimensions} dimensions")
-
-            # Populate vector table with existing embeddings
-            self._populate_vector_tables()
-
-        except Exception as e:
-            logger.error(f"Error creating vector tables: {str(e)}")
-
-    @staticmethod
-    def _get_embedding_dimensions() -> int:
-        """Get embedding dimensions from config or use default."""
-        return config.config.get('embedding', {}).get('dimensions', 384)
-
-    def _populate_vector_tables(self) -> None:
-        """Populate vector tables with existing embeddings."""
-        try:
-            # Check if we have any embeddings to populate
-            cursor = self.conn.execute("SELECT COUNT(*) as count FROM embeddings")
-            row = cursor.fetchone()
-            if not row or row["count"] == 0:
-                return
-
-            # Get all embeddings
-            cursor = self.conn.execute("SELECT element_pk, embedding FROM embeddings")
-
-            # Begin transaction
-            self.conn.execute("BEGIN TRANSACTION")
-
-            try:
-                # Process each embedding
-                for row in cursor:
-                    element_pk = row["element_pk"]
-                    embedding_blob = row["embedding"]
-                    embedding = self._decode_embedding(embedding_blob)
-                    embedding_json = json.dumps(embedding)
-
-                    if self.vector_extension == "vec0" and SQLITE_VEC_AVAILABLE:
-                        # First check if a row with this rowid already exists
-                        check_cursor = self.conn.execute(
-                            "SELECT rowid FROM embeddings_vec WHERE rowid = ?",
-                            (element_pk,)
-                        )
-
-                        if check_cursor.fetchone():
-                            # Update existing record
-                            self.conn.execute(
-                                """
-                                UPDATE embeddings_vec 
-                                SET embedding = ?
-                                WHERE rowid = ?
-                                """,
-                                (embedding_json, element_pk)
-                            )
-                        else:
-                            # Insert new record
-                            self.conn.execute(
-                                """
-                                INSERT INTO embeddings_vec (rowid, embedding)
-                                VALUES (?, ?)
-                                """,
-                                (element_pk, embedding_json)
-                            )
-                    elif self.vector_extension == "vss0" and SQLITE_VSS_AVAILABLE:
-                        self.conn.execute(
-                            """
-                            INSERT OR REPLACE INTO embeddings_vss (rowid, embedding)
-                            VALUES (?, ?)
-                            """,
-                            (element_pk, embedding_json)
-                        )
-
-                # Commit transaction
-                self.conn.commit()
-                logger.info("Successfully populated vector tables with existing embeddings")
-
-            except Exception as e:
-                # Rollback on error
-                self.conn.rollback()
-                logger.error(f"Error populating vector tables: {str(e)}")
-
-        except Exception as e:
-            logger.error(f"Error getting embeddings for vector tables: {str(e)}")
-
-    def _search_by_vec_extension(self, query_embedding: List[float], limit: int = 10,
-                                 filter_criteria: Dict[str, Any] = None) -> List[Tuple[str, float]]:
-        """Use the vec0 extension for vector search with filtering."""
         if not SQLITE_VEC_AVAILABLE:
             logger.warning("sqlite_vec not available, falling back to native implementation")
             return self._search_by_embedding_native(query_embedding, limit, filter_criteria)
@@ -1279,9 +995,19 @@ class SQLiteDocumentDatabase(DocumentDatabase):
             logger.error(f"Error using vec0 extension for search: {str(e)}")
             raise
 
-    def _search_by_vss_extension(self, query_embedding: List[float], limit: int = 10,
-                                 filter_criteria: Dict[str, Any] = None) -> List[Tuple[str, float]]:
-        """Use the vss0 extension for vector search with filtering."""
+    def _search_by_vss_extension(self, query_embedding: VectorType, limit: int = 10,
+                                 filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
+        """
+        Use the vss0 extension for vector search with filtering.
+
+        Args:
+            query_embedding: Query embedding vector
+            limit: Maximum number of results
+            filter_criteria: Optional filtering criteria
+
+        Returns:
+            List of (element_pk, similarity_score) tuples
+        """
         if not SQLITE_VSS_AVAILABLE:
             logger.warning("sqlite_vss not available, falling back to native implementation")
             return self._search_by_embedding_native(query_embedding, limit, filter_criteria)
@@ -1341,9 +1067,19 @@ class SQLiteDocumentDatabase(DocumentDatabase):
             logger.error(f"Error using vss0 extension for search: {str(e)}")
             raise
 
-    def _search_by_embedding_native(self, query_embedding: List[float], limit: int = 10,
-                                    filter_criteria: Dict[str, Any] = None) -> List[Tuple[str, float]]:
-        """Fall back to native cosine similarity implementation with filtering."""
+    def _search_by_embedding_native(self, query_embedding: VectorType, limit: int = 10,
+                                    filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
+        """
+        Fall back to native cosine similarity implementation with filtering.
+
+        Args:
+            query_embedding: Query embedding vector
+            limit: Maximum number of results
+            filter_criteria: Optional filtering criteria
+
+        Returns:
+            List of (element_pk, similarity_score) tuples
+        """
         # Register cosine similarity function if needed
         self._register_similarity_function()
 
@@ -1447,8 +1183,16 @@ class SQLiteDocumentDatabase(DocumentDatabase):
         # Register function
         self.conn.create_function("cosine_similarity", 2, cosine_similarity)
 
-    def _encode_embedding(self, embedding: List[float]) -> bytes:
-        """Encode embedding as binary blob."""
+    def _encode_embedding(self, embedding: VectorType) -> bytes:
+        """
+        Encode embedding as binary blob.
+
+        Args:
+            embedding: List of float values representing the embedding
+
+        Returns:
+            Binary representation of the embedding
+        """
         if NUMPY_AVAILABLE:
             # Use numpy for efficient encoding
             return np.array(embedding, dtype=np.float32).tobytes()
@@ -1458,8 +1202,16 @@ class SQLiteDocumentDatabase(DocumentDatabase):
             # Pack each float into a binary string
             return b''.join(struct.pack('f', float(val)) for val in embedding)
 
-    def _decode_embedding(self, blob: bytes) -> List[float]:
-        """Decode embedding from binary blob."""
+    def _decode_embedding(self, blob: bytes) -> VectorType:
+        """
+        Decode embedding from binary blob.
+
+        Args:
+            blob: Binary representation of the embedding
+
+        Returns:
+            List of float values representing the embedding
+        """
         if NUMPY_AVAILABLE:
             # Use numpy for efficient decoding
             return np.frombuffer(blob, dtype=np.float32).tolist()
@@ -1472,7 +1224,7 @@ class SQLiteDocumentDatabase(DocumentDatabase):
             return list(struct.unpack(f'{float_count}f', blob))
 
     def search_by_text(self, search_text: str, limit: int = 10,
-                       filter_criteria: Dict[str, Any] = None) -> List[Tuple[str, float]]:
+                       filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
         """
         Search elements by semantic similarity to the provided text.
 
@@ -1485,7 +1237,7 @@ class SQLiteDocumentDatabase(DocumentDatabase):
             filter_criteria: Optional dictionary with criteria to filter results
 
         Returns:
-            List of (element_id, similarity_score) tuples
+            List of (element_pk, similarity_score) tuples
         """
         if not self.conn:
             raise ValueError("Database not initialized")
@@ -1510,3 +1262,358 @@ class SQLiteDocumentDatabase(DocumentDatabase):
             logger.error(f"Error in semantic search by text: {str(e)}")
             # Return empty list on error
             return []
+
+    def store_relationship(self, relationship: Dict[str, Any]) -> None:
+        """
+        Store a relationship between elements.
+
+        Args:
+            relationship: Relationship data
+        """
+        if not self.conn:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Convert metadata to JSON
+            metadata_json = json.dumps(relationship.get("metadata", {}))
+
+            self.conn.execute(
+                """
+                INSERT OR REPLACE INTO relationships
+                (relationship_id, source_id, relationship_type, target_reference, metadata)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    relationship["relationship_id"],
+                    relationship.get("source_id", ""),
+                    relationship.get("relationship_type", ""),
+                    relationship.get("target_reference", ""),
+                    metadata_json
+                )
+            )
+
+            self.conn.commit()
+        except Exception as e:
+            logger.error(f"Error storing relationship: {str(e)}")
+            raise
+
+    def delete_relationships_for_element(self, element_id: str, relationship_type: str = None) -> None:
+        """
+        Delete relationships for an element.
+
+        Args:
+            element_id: Element ID
+            relationship_type: Optional relationship type to filter by
+        """
+        if not self.conn:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Start with basic query to delete source relationships
+            query = "DELETE FROM relationships WHERE source_id = ?"
+            params = [element_id]
+
+            # Add relationship type filter if provided
+            if relationship_type:
+                query += " AND relationship_type = ?"
+                params.append(relationship_type)
+
+            # Delete source relationships
+            self.conn.execute(query, params)
+
+            # Also delete relationships where this element is the target
+            query = "DELETE FROM relationships WHERE target_reference = ?"
+            params = [element_id]
+
+            # Add relationship type filter if provided
+            if relationship_type:
+                query += " AND relationship_type = ?"
+                params.append(relationship_type)
+
+            # Delete target relationships
+            self.conn.execute(query, params)
+
+            self.conn.commit()
+        except Exception as e:
+            logger.error(f"Error deleting relationships for element {element_id}: {str(e)}")
+            raise
+
+    def delete_document(self, doc_id: str) -> bool:
+        """Delete a document and all associated elements and relationships."""
+        if not self.conn:
+            raise ValueError("Database not initialized")
+
+        # Check if document exists
+        cursor = self.conn.execute(
+            "SELECT doc_id FROM documents WHERE doc_id = ?",
+            (doc_id,)
+        )
+
+        if cursor.fetchone() is None:
+            return False
+
+        # Begin transaction
+        self.conn.execute("BEGIN TRANSACTION")
+
+        try:
+            # Get all element IDs for this document
+            cursor = self.conn.execute(
+                "SELECT element_id FROM elements WHERE doc_id = ?",
+                (doc_id,)
+            )
+
+            element_ids = [row[0] for row in cursor]
+
+            # Delete embeddings for these elements
+            if element_ids:
+                # Create placeholders for SQL IN clause
+                placeholders = ', '.join(['?'] * len(element_ids))
+
+                self.conn.execute(
+                    f"DELETE FROM embeddings WHERE element_id IN ({placeholders})",
+                    element_ids
+                )
+
+                # Delete from extension tables if they exist
+                if self.vector_extension == "vec0" and SQLITE_VEC_AVAILABLE:
+                    try:
+                        self.conn.execute(f"DELETE FROM embeddings_vec WHERE rowid IN ({placeholders})", element_ids)
+                    except Exception as e:
+                        logger.debug(f"Error cleaning up embeddings_vec: {str(e)}")
+                elif self.vector_extension == "vss0" and SQLITE_VSS_AVAILABLE:
+                    try:
+                        self.conn.execute(f"DELETE FROM embeddings_vss WHERE rowid IN ({placeholders})", element_ids)
+                    except Exception as e:
+                        logger.debug(f"Error cleaning up embeddings_vss: {str(e)}")
+
+                # Delete relationships involving these elements
+                self.conn.execute(
+                    f"DELETE FROM relationships WHERE source_id IN ({placeholders})",
+                    element_ids
+                )
+
+            # Delete elements
+            self.conn.execute(
+                "DELETE FROM elements WHERE doc_id = ?",
+                (doc_id,)
+            )
+
+            # Delete document
+            self.conn.execute(
+                "DELETE FROM documents WHERE doc_id = ?",
+                (doc_id,)
+            )
+
+            # Commit transaction
+            self.conn.commit()
+
+            return True
+
+        except Exception as e:
+            # Rollback on error
+            self.conn.rollback()
+            logger.error(f"Error deleting document {doc_id}: {str(e)}")
+            return False
+
+    def _create_tables(self) -> None:
+        """Create database tables if they don't exist."""
+        # Documents table
+        self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS documents (
+            doc_id TEXT PRIMARY KEY,
+            doc_type TEXT,
+            source TEXT,
+            content_hash TEXT,
+            metadata TEXT,
+            created_at REAL,
+            updated_at REAL
+        )
+        """)
+
+        # Elements table
+        self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS elements (
+            element_pk INTEGER PRIMARY KEY AUTOINCREMENT, -- Auto-increment integer PK
+            element_id TEXT UNIQUE NOT NULL,             -- Original string ID, now unique & indexed
+            doc_id TEXT,
+            element_type TEXT,
+            parent_id TEXT,                              -- References element_id
+            content_preview TEXT,
+            content_location TEXT,
+            content_hash TEXT,
+            metadata TEXT,
+            FOREIGN KEY (doc_id) REFERENCES documents (doc_id) ON DELETE CASCADE,
+            FOREIGN KEY (parent_id) REFERENCES elements (element_id)
+        )
+        """)
+
+        # Create index on doc_id for faster lookups
+        self.conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_elements_doc_id ON elements (doc_id)
+        """)
+
+        # Create index on parent_id for faster lookups
+        self.conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_elements_parent_id ON elements (parent_id)
+        """)
+
+        # Create index on element_type for faster lookups
+        self.conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_elements_type ON elements (element_type)
+        """)
+
+        # Relationships table
+        self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS relationships (
+            relationship_id TEXT PRIMARY KEY,
+            source_id TEXT,
+            relationship_type TEXT,
+            target_reference TEXT,
+            metadata TEXT,
+            FOREIGN KEY (source_id) REFERENCES elements (element_id) ON DELETE CASCADE
+        )
+        """)
+
+        # Create index on source_id for faster lookups
+        self.conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_relationships_source ON relationships (source_id)
+        """)
+
+        # Create index on relationship_type for faster lookups
+        self.conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_relationships_type ON relationships (relationship_type)
+        """)
+
+        # Embeddings table
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS embeddings (
+            element_pk INTEGER PRIMARY KEY, -- Links to elements.element_pk
+            embedding BLOB,
+            dimensions INTEGER,
+            created_at REAL,
+            FOREIGN KEY (element_pk) REFERENCES elements (element_pk) ON DELETE CASCADE
+        )
+        """)
+
+        # Processing history table
+        self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS processing_history (
+            source_id TEXT PRIMARY KEY,
+            content_hash TEXT,
+            last_modified REAL,
+            processing_count INTEGER DEFAULT 1
+        )
+        """)
+
+        # Add index on source_id for faster lookups
+        self.conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_processing_history_source_id ON processing_history (source_id)
+        """)
+
+        # Enable foreign key constraints
+        self.conn.execute("PRAGMA foreign_keys = ON")
+
+        # Commit changes
+        self.conn.commit()
+
+    def _create_vector_tables(self) -> None:
+        """Create vector tables based on available extension."""
+        try:
+            # Get dimensions from existing embeddings or use default
+            dimensions = self._get_embedding_dimensions()
+
+            if self.vector_extension == "vec0" and SQLITE_VEC_AVAILABLE:
+                # For sqlite-vec
+                self.conn.execute(f"""
+                CREATE VIRTUAL TABLE IF NOT EXISTS embeddings_vec 
+                USING vec0(embedding FLOAT[{dimensions}])
+                """)
+                logger.info(f"Created vector table using vec0 with {dimensions} dimensions")
+
+            elif self.vector_extension == "vss0" and SQLITE_VSS_AVAILABLE:
+                # For sqlite-vss
+                self.conn.execute(f"""
+                CREATE VIRTUAL TABLE IF NOT EXISTS embeddings_vss 
+                USING vss0(embedding({dimensions}))
+                """)
+                logger.info(f"Created vector table using vss0 with {dimensions} dimensions")
+
+            # Populate vector table with existing embeddings
+            self._populate_vector_tables()
+
+        except Exception as e:
+            logger.error(f"Error creating vector tables: {str(e)}")
+
+    def _get_embedding_dimensions(self) -> int:
+        """Get embedding dimensions from config or use default."""
+        return config.config.get('embedding', {}).get('dimensions', 384) if config else 384
+
+    def _populate_vector_tables(self) -> None:
+        """Populate vector tables with existing embeddings."""
+        try:
+            # Check if we have any embeddings to populate
+            cursor = self.conn.execute("SELECT COUNT(*) as count FROM embeddings")
+            row = cursor.fetchone()
+            if not row or row["count"] == 0:
+                return
+
+            # Get all embeddings
+            cursor = self.conn.execute("SELECT element_pk, embedding FROM embeddings")
+
+            # Begin transaction
+            self.conn.execute("BEGIN TRANSACTION")
+
+            try:
+                # Process each embedding
+                for row in cursor:
+                    element_pk = row["element_pk"]
+                    embedding_blob = row["embedding"]
+                    embedding = self._decode_embedding(embedding_blob)
+                    embedding_json = json.dumps(embedding)
+
+                    if self.vector_extension == "vec0" and SQLITE_VEC_AVAILABLE:
+                        # First check if a row with this rowid already exists
+                        check_cursor = self.conn.execute(
+                            "SELECT rowid FROM embeddings_vec WHERE rowid = ?",
+                            (element_pk,)
+                        )
+
+                        if check_cursor.fetchone():
+                            # Update existing record
+                            self.conn.execute(
+                                """
+                                UPDATE embeddings_vec 
+                                SET embedding = ?
+                                WHERE rowid = ?
+                                """,
+                                (embedding_json, element_pk)
+                            )
+                        else:
+                            # Insert new record
+                            self.conn.execute(
+                                """
+                                INSERT INTO embeddings_vec (rowid, embedding)
+                                VALUES (?, ?)
+                                """,
+                                (element_pk, embedding_json)
+                            )
+                    elif self.vector_extension == "vss0" and SQLITE_VSS_AVAILABLE:
+                        self.conn.execute(
+                            """
+                            INSERT OR REPLACE INTO embeddings_vss (rowid, embedding)
+                            VALUES (?, ?)
+                            """,
+                            (element_pk, embedding_json)
+                        )
+
+                # Commit transaction
+                self.conn.commit()
+                logger.info("Successfully populated vector tables with existing embeddings")
+
+            except Exception as e:
+                # Rollback on error
+                self.conn.rollback()
+                logger.error(f"Error populating vector tables: {str(e)}")
+
+        except Exception as e:
+            logger.error(f"Error getting embeddings for vector tables: {str(e)}")

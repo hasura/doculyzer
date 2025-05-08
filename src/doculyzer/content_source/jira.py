@@ -6,14 +6,66 @@ This module provides integration with Atlassian JIRA via its REST API.
 
 import logging
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, TYPE_CHECKING, Set
 
-import requests
 import time
 
 from .base import ContentSource
 
+# Import types for type checking only - these won't be imported at runtime
+if TYPE_CHECKING:
+    import requests
+    from requests import Session, Response
+    from bs4 import BeautifulSoup
+    import dateutil.parser
+    from datetime import datetime
+
+    # Define type aliases for type checking
+    RequestsSessionType = Session
+    RequestsResponseType = Response
+    BeautifulSoupType = BeautifulSoup
+    DateUtilParserType = dateutil.parser
+    DatetimeType = datetime
+else:
+    # Runtime type aliases - use generic Python types
+    RequestsSessionType = Any
+    RequestsResponseType = Any
+    BeautifulSoupType = Any
+    DateUtilParserType = Any
+    DatetimeType = Any
+
 logger = logging.getLogger(__name__)
+
+# Define global flags for availability - these will be set at runtime
+REQUESTS_AVAILABLE = False
+BS4_AVAILABLE = False
+DATEUTIL_AVAILABLE = False
+
+# Try to import requests conditionally
+try:
+    import requests
+
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    logger.warning("requests not available. Install with 'pip install requests' to use JIRA content source.")
+
+# Try to import BeautifulSoup conditionally
+try:
+    from bs4 import BeautifulSoup
+
+    BS4_AVAILABLE = True
+except ImportError:
+    logger.warning("beautifulsoup4 not available. Install with 'pip install beautifulsoup4' for improved HTML parsing.")
+
+# Try to import dateutil conditionally
+try:
+    import dateutil.parser
+    from datetime import datetime
+
+    DATEUTIL_AVAILABLE = True
+except ImportError:
+    logger.warning(
+        "python-dateutil not available. Install with 'pip install python-dateutil' for improved date handling.")
 
 
 class JiraContentSource(ContentSource):
@@ -26,6 +78,9 @@ class JiraContentSource(ContentSource):
         Args:
             config: Configuration dictionary containing JIRA connection details
         """
+        if not REQUESTS_AVAILABLE:
+            raise ImportError("requests is required for JiraContentSource but not available")
+
         super().__init__(config)
         self.base_url = config.get("base_url", "").rstrip('/')
         self.username = config.get("username", "")
@@ -52,19 +107,34 @@ class JiraContentSource(ContentSource):
         self.max_link_depth = config.get("max_link_depth", 1)
 
         # Initialize session
-        self.session = requests.Session()
+        self.session: Optional[RequestsSessionType] = None
+        try:
+            self.session = requests.Session()
 
-        # Set up authentication
-        if self.username:
-            if self.api_token:
-                # Use API token authentication
-                self.session.auth = (self.username, self.api_token)
-            elif self.password:
-                # Use basic authentication
-                self.session.auth = (self.username, self.password)
+            # Set up authentication
+            if self.username:
+                if self.api_token:
+                    # Use API token authentication
+                    self.session.auth = (self.username, self.api_token)
+                elif self.password:
+                    # Use basic authentication
+                    self.session.auth = (self.username, self.password)
+
+            logger.debug(f"Successfully initialized session for JIRA: {self.get_safe_connection_string()}")
+        except Exception as e:
+            logger.error(f"Error initializing JIRA session: {str(e)}")
+            raise
 
         # Cache for content
         self.content_cache = {}
+
+    def get_safe_connection_string(self) -> str:
+        """Return a safe version of the connection string with credentials masked."""
+        if not self.base_url:
+            return "<no base URL>"
+
+        # Only show the base URL without credentials
+        return self.base_url
 
     def fetch_document(self, source_id: str) -> Dict[str, Any]:
         """
@@ -75,7 +145,13 @@ class JiraContentSource(ContentSource):
 
         Returns:
             Dictionary containing document content and metadata
+
+        Raises:
+            ValueError: If JIRA is not configured or issue not found
         """
+        if not self.session:
+            raise ValueError("JIRA not configured")
+
         logger.debug(f"Fetching JIRA issue: {source_id}")
 
         try:
@@ -177,6 +253,10 @@ class JiraContentSource(ContentSource):
                 "content_hash": content_hash
             }
 
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                raise ValueError(f"JIRA issue not found: {source_id}")
+            raise
         except Exception as e:
             logger.error(f"Error fetching JIRA issue {source_id}: {str(e)}")
             raise
@@ -187,7 +267,13 @@ class JiraContentSource(ContentSource):
 
         Returns:
             List of issue identifiers and metadata
+
+        Raises:
+            ValueError: If JIRA is not configured
         """
+        if not self.session:
+            raise ValueError("JIRA not configured")
+
         logger.debug("Listing JIRA issues")
         results = []
 
@@ -285,6 +371,10 @@ class JiraContentSource(ContentSource):
         Returns:
             True if issue has changed, False otherwise
         """
+        if not self.session:
+            # Can't determine changes without connection
+            return True
+
         logger.debug(f"Checking if JIRA issue has changed: {source_id}")
 
         try:
@@ -326,10 +416,10 @@ class JiraContentSource(ContentSource):
 
         except Exception as e:
             logger.error(f"Error checking changes for {source_id}: {str(e)}")
-            return True
+            return True  # Assume changed if there's an error
 
-    def follow_links(self, content: str, source_id: str, current_depth: int = 0, global_visited_docs=None) -> List[
-        Dict[str, Any]]:
+    def follow_links(self, content: str, source_id: str, current_depth: int = 0,
+                     global_visited_docs=None) -> List[Dict[str, Any]]:
         """
         Extract and follow links to other JIRA issues.
 
@@ -341,7 +431,13 @@ class JiraContentSource(ContentSource):
 
         Returns:
             List of linked issues
+
+        Raises:
+            ValueError: If JIRA is not configured
         """
+        if not self.session:
+            raise ValueError("JIRA not configured")
+
         if current_depth >= self.max_link_depth:
             logger.debug(f"Max link depth {self.max_link_depth} reached for {source_id}")
             return []
@@ -365,26 +461,28 @@ class JiraContentSource(ContentSource):
             linked_issues = self._fetch_linked_issues(issue_key)
 
             # Also try to parse HTML content for issue links using a simple HTML parser
-            try:
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(content, 'html.parser')
+            if BS4_AVAILABLE:
+                try:
+                    soup = BeautifulSoup(content, 'html.parser')
 
-                # Find all anchor tags with href attributes
-                for a_tag in soup.find_all('a', href=True):
-                    href = a_tag['href']
+                    # Find all anchor tags with href attributes
+                    for a_tag in soup.find_all('a', href=True):
+                        href = a_tag['href']
 
-                    # Look for JIRA issue keys in link text or href
-                    # JIRA issue keys typically follow pattern: PROJECT-123
-                    issue_key_match = re.search(r'([A-Z][A-Z0-9_]+)-\d+', href)
-                    if not issue_key_match:
-                        issue_key_match = re.search(r'([A-Z][A-Z0-9_]+)-\d+', a_tag.get_text())
+                        # Look for JIRA issue keys in link text or href
+                        # JIRA issue keys typically follow pattern: PROJECT-123
+                        issue_key_match = re.search(r'([A-Z][A-Z0-9_]+)-\d+', href)
+                        if not issue_key_match:
+                            issue_key_match = re.search(r'([A-Z][A-Z0-9_]+)-\d+', a_tag.get_text())
 
-                    if issue_key_match:
-                        linked_key = issue_key_match.group(0)
-                        linked_issues.add(linked_key)
+                        if issue_key_match:
+                            linked_key = issue_key_match.group(0)
+                            linked_issues.add(linked_key)
 
-            except Exception as e:
-                logger.warning(f"Error parsing HTML for JIRA issue links: {str(e)}")
+                except Exception as e:
+                    logger.warning(f"Error parsing HTML for JIRA issue links: {str(e)}")
+            else:
+                logger.debug("BeautifulSoup not available, skipping HTML link extraction")
 
             # Process each linked issue
             for linked_key in linked_issues:
@@ -588,7 +686,7 @@ class JiraContentSource(ContentSource):
 
         return html_content
 
-    def _fetch_linked_issues(self, issue_key: str) -> set:
+    def _fetch_linked_issues(self, issue_key: str) -> Set[str]:
         """
         Fetch linked issues for a JIRA issue.
 
@@ -689,12 +787,22 @@ class JiraContentSource(ContentSource):
         try:
             # JIRA uses ISO 8601 format timestamps
             # Example: 2023-05-01T12:34:56.789+0000
-            from datetime import datetime
-            import dateutil.parser
-
-            dt = dateutil.parser.parse(timestamp)
-            return dt.timestamp()
+            if DATEUTIL_AVAILABLE:
+                dt = dateutil.parser.parse(timestamp)
+                return dt.timestamp()
+            else:
+                # Fallback for when dateutil is not available
+                # This is not as robust but handles the common JIRA format
+                from datetime import datetime
+                # Try a common format used by JIRA
+                try:
+                    dt = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S.%f%z")
+                except ValueError:
+                    # Try without milliseconds
+                    dt = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S%z")
+                return dt.timestamp()
         except Exception:
+            logger.warning(f"Could not parse timestamp: {timestamp}")
             return None
 
     @staticmethod
@@ -712,10 +820,27 @@ class JiraContentSource(ContentSource):
             return ""
 
         try:
-            from datetime import datetime
-            import dateutil.parser
-
-            dt = dateutil.parser.parse(timestamp)
-            return dt.strftime("%Y-%m-%d %H:%M")
+            if DATEUTIL_AVAILABLE:
+                dt = dateutil.parser.parse(timestamp)
+                return dt.strftime("%Y-%m-%d %H:%M")
+            else:
+                # Fallback for when dateutil is not available
+                from datetime import datetime
+                # Try a common format used by JIRA
+                try:
+                    dt = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S.%f%z")
+                except ValueError:
+                    # Try without milliseconds
+                    dt = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S%z")
+                return dt.strftime("%Y-%m-%d %H:%M")
         except Exception:
             return timestamp
+
+    def __del__(self):
+        """Close session when object is deleted."""
+        if self.session:
+            try:
+                self.session.close()
+                logger.debug("Closed JIRA session")
+            except Exception as e:
+                logger.warning(f"Error closing JIRA session: {str(e)}")

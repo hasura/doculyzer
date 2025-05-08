@@ -8,7 +8,7 @@ import logging
 import os
 import re
 import tempfile
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from urllib.parse import urlparse
 
 import time
@@ -17,19 +17,32 @@ from .base import ContentSource
 from .utils import detect_content_type
 from ..document_parser.factory import get_parser_for_content
 
+# Import types for type checking only - these won't be imported at runtime
+if TYPE_CHECKING:
+    import boto3
+    from botocore.exceptions import ClientError
+    from botocore.client import BaseClient
+
+    # Define type aliases for type checking
+    S3ClientType = BaseClient
+    ClientErrorType = ClientError
+else:
+    # Runtime type aliases - use generic Python types
+    S3ClientType = Any
+    ClientErrorType = Exception
+
 logger = logging.getLogger(__name__)
 
-# Try to import boto3, but don't fail if not available
+# Define global flags for availability - these will be set at runtime
+BOTO3_AVAILABLE = False
+
+# Try to import boto3 conditionally
 try:
     import boto3
-    # noinspection PyPackageRequirements
     from botocore.exceptions import ClientError
 
     BOTO3_AVAILABLE = True
 except ImportError:
-    boto3 = None
-    ClientError = None
-    BOTO3_AVAILABLE = False
     logger.warning("boto3 not available. Install with 'pip install boto3' to use S3 content source.")
 
 
@@ -43,10 +56,10 @@ class S3ContentSource(ContentSource):
         Args:
             config: Configuration dictionary containing S3 connection details
         """
-        super().__init__(config)
-
         if not BOTO3_AVAILABLE:
-            raise ImportError("boto3 is required for S3 content source")
+            raise ImportError("boto3 is required for S3ContentSource but not available")
+
+        super().__init__(config)
 
         # S3 connection details
         self.bucket_name = config.get("bucket_name", "")
@@ -76,12 +89,25 @@ class S3ContentSource(ContentSource):
 
         # Link following configuration
         self.local_link_mode = config.get("local_link_mode", "relative")  # relative, absolute, or none
+        self.max_link_depth = config.get("max_link_depth", 3)
 
         # Initialize S3 client
-        self.s3_client = self._initialize_s3_client()
+        self.s3_client: Optional[S3ClientType] = None
+        try:
+            self.s3_client = self._initialize_s3_client()
+            logger.debug(f"Successfully created S3 client for bucket {self.bucket_name}")
+        except Exception as e:
+            logger.error(f"Error initializing S3 client: {str(e)}")
+            raise
 
         # Cache for content
         self.content_cache = {}
+
+    def get_safe_connection_string(self) -> str:
+        """Return a safe version of the connection string with credentials masked."""
+        # For S3, we use a combination of endpoint and bucket
+        endpoint = self.endpoint_url or f"https://s3.{self.region_name}.amazonaws.com"
+        return f"{endpoint}/{self.bucket_name}"
 
     def fetch_document(self, source_id: str) -> Dict[str, Any]:
         """
@@ -92,7 +118,13 @@ class S3ContentSource(ContentSource):
 
         Returns:
             Dictionary containing document content and metadata
+
+        Raises:
+            ValueError: If S3 is not configured or object not found
         """
+        if not self.s3_client:
+            raise ValueError("S3 not configured")
+
         logger.debug(f"Fetching S3 object: {source_id}")
 
         try:
@@ -127,7 +159,7 @@ class S3ContentSource(ContentSource):
                 etag = response.get('ETag', '').strip('"')
             except ClientError as e:
                 logger.error(f"Error retrieving metadata for {qualified_source}: {str(e)}")
-                raise
+                raise ValueError(f"Object not found: {qualified_source}")
 
             # Get object content
             try:
@@ -158,8 +190,6 @@ class S3ContentSource(ContentSource):
                 logger.debug(f"Saved binary content to temp file: {temp_file_path}")
 
             # Detect document type if not explicitly provided
-            # doc_type = None
-
             if self.detect_mimetype:
                 if is_binary:
                     # For binary content, use extension to guess type
@@ -225,6 +255,9 @@ class S3ContentSource(ContentSource):
 
             return result
 
+        except ValueError:
+            # Re-raise ValueError for not found
+            raise
         except Exception as e:
             logger.error(f"Error fetching S3 object {source_id}: {str(e)}")
             raise
@@ -235,7 +268,13 @@ class S3ContentSource(ContentSource):
 
         Returns:
             List of document identifiers and metadata
+
+        Raises:
+            ValueError: If S3 is not configured
         """
+        if not self.s3_client:
+            raise ValueError("S3 not configured")
+
         logger.debug(f"Listing S3 objects in bucket: {self.bucket_name}, prefix: {self.prefix}")
 
         results = []
@@ -321,6 +360,10 @@ class S3ContentSource(ContentSource):
         Returns:
             True if object has changed, False otherwise
         """
+        if not self.s3_client:
+            # Can't determine changes without connection
+            return True
+
         logger.debug(f"Checking if S3 object has changed: {source_id}")
 
         try:
@@ -349,7 +392,6 @@ class S3ContentSource(ContentSource):
             try:
                 response = self.s3_client.head_object(Bucket=bucket, Key=key)
                 current_modified = response.get('LastModified')
-                # current_etag = response.get('ETag', '').strip('"')
 
                 # Convert to timestamp for comparison
                 if current_modified:
@@ -368,10 +410,10 @@ class S3ContentSource(ContentSource):
 
         except Exception as e:
             logger.error(f"Error checking changes for {source_id}: {str(e)}")
-            return True
+            return True  # Assume changed if there's an error
 
-    def follow_links(self, content: str, source_id: str, current_depth: int = 0, global_visited_docs=None) -> List[
-        Dict[str, Any]]:
+    def follow_links(self, content: str, source_id: str, current_depth: int = 0,
+                     global_visited_docs=None) -> List[Dict[str, Any]]:
         """
         Extract and follow links in S3 content.
 
@@ -384,6 +426,9 @@ class S3ContentSource(ContentSource):
         Returns:
             List of linked documents
         """
+        if not self.s3_client:
+            raise ValueError("S3 not configured")
+
         if current_depth >= self.max_link_depth:
             logger.debug(f"Max link depth {self.max_link_depth} reached for {source_id}")
             return []
@@ -518,7 +563,7 @@ class S3ContentSource(ContentSource):
             logger.error(f"Error following links from S3 object {source_id}: {str(e)}")
             return []
 
-    def _initialize_s3_client(self):
+    def _initialize_s3_client(self) -> S3ClientType:
         """
         Initialize S3 client with configured credentials.
 
@@ -641,8 +686,8 @@ class S3ContentSource(ContentSource):
     def __del__(self):
         """Cleanup temporary files on deletion."""
         # Clean up any temp files
-        for cache_key, cache_entry in self.content_cache.items():
-            if self.delete_after_processing:
+        if self.content_cache and self.delete_after_processing:
+            for cache_key, cache_entry in self.content_cache.items():
                 temp_file_path = cache_entry.get("binary_path")
                 if temp_file_path and os.path.exists(temp_file_path):
                     try:

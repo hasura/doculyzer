@@ -6,15 +6,67 @@ This module provides integration with Atlassian Confluence via its REST API.
 
 import logging
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from urllib.parse import urljoin
 
-import requests
 import time
 
 from .base import ContentSource
 
+# Import types for type checking only - these won't be imported at runtime
+if TYPE_CHECKING:
+    import requests
+    from requests import Session, Response
+    from bs4 import BeautifulSoup
+    import dateutil.parser
+    from datetime import datetime
+
+    # Define type aliases for type checking
+    RequestsSessionType = Session
+    RequestsResponseType = Response
+    BeautifulSoupType = BeautifulSoup
+    DateUtilParserType = dateutil.parser
+    DatetimeType = datetime
+else:
+    # Runtime type aliases - use generic Python types
+    RequestsSessionType = Any
+    RequestsResponseType = Any
+    BeautifulSoupType = Any
+    DateUtilParserType = Any
+    DatetimeType = Any
+
 logger = logging.getLogger(__name__)
+
+# Define global flags for availability - these will be set at runtime
+REQUESTS_AVAILABLE = False
+BS4_AVAILABLE = False
+DATEUTIL_AVAILABLE = False
+
+# Try to import requests conditionally
+try:
+    import requests
+
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    logger.warning("requests not available. Install with 'pip install requests' to use Confluence content source.")
+
+# Try to import BeautifulSoup conditionally
+try:
+    from bs4 import BeautifulSoup
+
+    BS4_AVAILABLE = True
+except ImportError:
+    logger.warning("beautifulsoup4 not available. Install with 'pip install beautifulsoup4' for improved HTML parsing.")
+
+# Try to import dateutil conditionally
+try:
+    import dateutil.parser
+    from datetime import datetime
+
+    DATEUTIL_AVAILABLE = True
+except ImportError:
+    logger.warning(
+        "python-dateutil not available. Install with 'pip install python-dateutil' for improved date handling.")
 
 
 class ConfluenceContentSource(ContentSource):
@@ -27,11 +79,16 @@ class ConfluenceContentSource(ContentSource):
         Args:
             config: Configuration dictionary containing Confluence connection details
         """
+        if not REQUESTS_AVAILABLE:
+            raise ImportError("requests is required for ConfluenceContentSource but not available")
+
         super().__init__(config)
         self.base_url = config.get("base_url", "").rstrip('/')
         self.username = config.get("username", "")
         self.api_token = config.get("api_token", "")
         self.password = config.get("password", "")
+
+        # Content configuration
         self.spaces = config.get("spaces", [])
         self.include_pages = config.get("include_pages", True)
         self.include_blogs = config.get("include_blogs", False)
@@ -44,20 +101,38 @@ class ConfluenceContentSource(ContentSource):
         self.limit = config.get("limit", 100)
         self.link_pattern = config.get("link_pattern", r'/wiki/spaces/[^/]+/pages/(\d+)')
 
-        # Initialize session
-        self.session = requests.Session()
+        # Link following configuration
+        self.max_link_depth = config.get("max_link_depth", 3)
 
-        # Set up authentication
-        if self.username:
-            if self.api_token:
-                # Use API token authentication
-                self.session.auth = (self.username, self.api_token)
-            elif self.password:
-                # Use basic authentication
-                self.session.auth = (self.username, self.password)
+        # Initialize session
+        self.session: Optional[RequestsSessionType] = None
+        try:
+            self.session = requests.Session()
+
+            # Set up authentication
+            if self.username:
+                if self.api_token:
+                    # Use API token authentication
+                    self.session.auth = (self.username, self.api_token)
+                elif self.password:
+                    # Use basic authentication
+                    self.session.auth = (self.username, self.password)
+
+            logger.debug(f"Successfully initialized session for Confluence: {self.get_safe_connection_string()}")
+        except Exception as e:
+            logger.error(f"Error initializing Confluence session: {str(e)}")
+            raise
 
         # Cache for content
         self.content_cache = {}
+
+    def get_safe_connection_string(self) -> str:
+        """Return a safe version of the connection string with credentials masked."""
+        if not self.base_url:
+            return "<no base URL>"
+
+        # Only show the base URL without credentials
+        return self.base_url
 
     def fetch_document(self, source_id: str) -> Dict[str, Any]:
         """
@@ -68,7 +143,13 @@ class ConfluenceContentSource(ContentSource):
 
         Returns:
             Dictionary containing document content and metadata
+
+        Raises:
+            ValueError: If Confluence is not configured or content not found
         """
+        if not self.session:
+            raise ValueError("Confluence not configured")
+
         logger.debug(f"Fetching Confluence content: {source_id}")
 
         try:
@@ -111,11 +192,6 @@ class ConfluenceContentSource(ContentSource):
                 "content_type": "html"  # Explicitly mark as HTML content
             }
 
-            # Get the content's web URL
-            # web_url = f"{self.base_url}/wiki/spaces/{space_key}/pages/{content_id}"
-            # if "webui" in content_data.get("_links", {}):
-            #     web_url = urljoin(self.base_url, content_data["_links"]["webui"])
-
             # Generate content hash for change detection
             content_hash = self.get_content_hash(html_content)
 
@@ -135,6 +211,10 @@ class ConfluenceContentSource(ContentSource):
                 "content_hash": content_hash
             }
 
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                raise ValueError(f"Confluence content not found: {source_id}")
+            raise
         except Exception as e:
             logger.error(f"Error fetching Confluence content {source_id}: {str(e)}")
             raise
@@ -145,7 +225,13 @@ class ConfluenceContentSource(ContentSource):
 
         Returns:
             List of document identifiers and metadata
+
+        Raises:
+            ValueError: If Confluence is not configured
         """
+        if not self.session:
+            raise ValueError("Confluence not configured")
+
         logger.debug("Listing Confluence content")
         results = []
 
@@ -184,6 +270,10 @@ class ConfluenceContentSource(ContentSource):
         Returns:
             True if document has changed, False otherwise
         """
+        if not self.session:
+            # Can't determine changes without connection
+            return True
+
         logger.debug(f"Checking if Confluence content has changed: {source_id}")
 
         try:
@@ -208,7 +298,6 @@ class ConfluenceContentSource(ContentSource):
             content_data = response.json()
 
             # Get current version information
-            # current_version = content_data.get("version", {}).get("number", 0)
             current_modified = content_data.get("version", {}).get("when", "")
             current_timestamp = self._parse_confluence_timestamp(current_modified)
 
@@ -223,10 +312,10 @@ class ConfluenceContentSource(ContentSource):
 
         except Exception as e:
             logger.error(f"Error checking changes for {source_id}: {str(e)}")
-            return True
+            return True  # Assume changed if there's an error
 
-    def follow_links(self, content: str, source_id: str, current_depth: int = 0, global_visited_docs=None) -> List[
-        Dict[str, Any]]:
+    def follow_links(self, content: str, source_id: str, current_depth: int = 0,
+                     global_visited_docs=None) -> List[Dict[str, Any]]:
         """
         Extract and follow links in Confluence content.
 
@@ -238,7 +327,13 @@ class ConfluenceContentSource(ContentSource):
 
         Returns:
             List of linked documents
+
+        Raises:
+            ValueError: If Confluence is not configured
         """
+        if not self.session:
+            raise ValueError("Confluence not configured")
+
         if current_depth >= self.max_link_depth:
             logger.debug(f"Max link depth {self.max_link_depth} reached for {source_id}")
             return []
@@ -267,48 +362,49 @@ class ConfluenceContentSource(ContentSource):
             if match:
                 space_key = match.group(1)
 
-        # Use both regex-based extraction and HTML parsing for links
-        # First, try to parse HTML content for links using a simple HTML parser
-        try:
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(content, 'html.parser')
-
-            # Find all anchor tags with href attributes
-            found_content_ids = set()
-            for a_tag in soup.find_all('a', href=True):
-                href = a_tag['href']
-
-                # Try to extract Confluence page ID from the href
-                match = re.search(r'/pages/(\d+)', href)
-                if match:
-                    content_link_id = match.group(1)
-                    found_content_ids.add(content_link_id)
-
-                # Also check for pageId parameter
-                match = re.search(r'pageId=(\d+)', href)
-                if match:
-                    content_link_id = match.group(1)
-                    found_content_ids.add(content_link_id)
-
-        except Exception as e:
-            logger.warning(f"Error parsing HTML for links: {str(e)}, falling back to regex patterns")
-            # found_content_ids = set()
-
-            # Find all Confluence page links in content using regex
-            # Look for various patterns that could indicate Confluence links
-            patterns = [
-                # HTML links to Confluence pages
-                r'href="(?:https?://[^/]+)?/wiki/spaces/[^/]+/pages/(\d+)[^"]*"',
-                # Plain URLs to Confluence pages
-                r'(?:https?://[^/]+)?/wiki/spaces/[^/]+/pages/(\d+)',
-                # Relative page links
-                r'pages/(\d+)',
-                # Page IDs in various formats
-                r'pageId=(\d+)'
-            ]
-
+        # Initialize found_content_ids early
         found_content_ids = set()
 
+        # Use both regex-based extraction and HTML parsing for links
+        # First, try to parse HTML content for links using a simple HTML parser
+        if BS4_AVAILABLE:
+            try:
+                soup = BeautifulSoup(content, 'html.parser')
+
+                # Find all anchor tags with href attributes
+                for a_tag in soup.find_all('a', href=True):
+                    href = a_tag['href']
+
+                    # Try to extract Confluence page ID from the href
+                    match = re.search(r'/pages/(\d+)', href)
+                    if match:
+                        content_link_id = match.group(1)
+                        found_content_ids.add(content_link_id)
+
+                    # Also check for pageId parameter
+                    match = re.search(r'pageId=(\d+)', href)
+                    if match:
+                        content_link_id = match.group(1)
+                        found_content_ids.add(content_link_id)
+
+            except Exception as e:
+                logger.warning(f"Error parsing HTML for links: {str(e)}, falling back to regex patterns")
+        else:
+            logger.debug("BeautifulSoup not available, using regex patterns for link extraction")
+
+        # Regex patterns to find Confluence links
+        patterns = [
+            # HTML links to Confluence pages
+            r'href="(?:https?://[^/]+)?/wiki/spaces/[^/]+/pages/(\d+)[^"]*"',
+            # Plain URLs to Confluence pages
+            r'(?:https?://[^/]+)?/wiki/spaces/[^/]+/pages/(\d+)',
+            # Relative page links
+            r'pages/(\d+)',
+            # Page IDs in various formats
+            r'pageId=(\d+)'
+        ]
+
+        # Apply regex patterns
         for pattern in patterns:
             matches = re.findall(pattern, content)
 
@@ -580,10 +676,29 @@ class ConfluenceContentSource(ContentSource):
         try:
             # Confluence uses ISO 8601 format timestamps
             # Example: 2023-05-01T12:34:56.789Z
-            from datetime import datetime
-            import dateutil.parser
-
-            dt = dateutil.parser.parse(timestamp)
-            return dt.timestamp()
+            if DATEUTIL_AVAILABLE:
+                dt = dateutil.parser.parse(timestamp)
+                return dt.timestamp()
+            else:
+                # Fallback for when dateutil is not available
+                # This is not as robust but handles the common Confluence format
+                from datetime import datetime
+                # Try a common format used by Confluence
+                try:
+                    dt = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S.%fZ")
+                except ValueError:
+                    # Try without milliseconds
+                    dt = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
+                return dt.timestamp()
         except Exception:
+            logger.warning(f"Could not parse timestamp: {timestamp}")
             return None
+
+    def __del__(self):
+        """Close session when object is deleted."""
+        if self.session:
+            try:
+                self.session.close()
+                logger.debug("Closed Confluence session")
+            except Exception as e:
+                logger.warning(f"Error closing Confluence session: {str(e)}")

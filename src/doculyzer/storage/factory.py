@@ -10,7 +10,7 @@ from .postgres import PostgreSQLDocumentDatabase
 from .base import DocumentDatabase
 from .file import FileDocumentDatabase
 from .mongodb import MongoDBDocumentDatabase
-from .neo4j import Neo4jDocumentDatabase
+from .neo4j_graph import Neo4jDocumentDatabase
 from .sqlite import SQLiteDocumentDatabase
 
 logger = logging.getLogger(__name__)

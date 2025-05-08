@@ -6,13 +6,29 @@ This module provides integration with MongoDB to ingest documents stored in coll
 
 import json
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
+
+# Import types for type checking only - these won't be imported at runtime
+if TYPE_CHECKING:
+    from pymongo import MongoClient
+    from bson import ObjectId
+
+    # Define type aliases for type checking
+    MongoClientType = MongoClient
+    ObjectIdType = ObjectId
+else:
+    # Runtime type aliases - use generic Python types
+    MongoClientType = Any
+    ObjectIdType = Any
 
 from .base import ContentSource
 
 logger = logging.getLogger(__name__)
 
-# Try to import pymongo, but don't fail if not available
+# Define global flags for availability - these will be set at runtime
+PYMONGO_AVAILABLE = False
+
+# Try to import pymongo conditionally
 try:
     import pymongo
     from pymongo import MongoClient
@@ -20,9 +36,6 @@ try:
 
     PYMONGO_AVAILABLE = True
 except ImportError:
-    MongoClient = None
-    ObjectId = None
-    PYMONGO_AVAILABLE = False
     logger.warning("pymongo not available. Install with 'pip install pymongo' to use MongoDB content source.")
 
 
@@ -36,10 +49,10 @@ class MongoDBContentSource(ContentSource):
         Args:
             config: Configuration dictionary containing MongoDB connection details
         """
-        super().__init__(config)
-
         if not PYMONGO_AVAILABLE:
-            raise ImportError("pymongo is required for MongoDB content source")
+            raise ImportError("pymongo is required for MongoDBContentSource but not available")
+
+        super().__init__(config)
 
         # MongoDB connection details
         self.connection_string = config.get("connection_string", "mongodb://localhost:27017/")
@@ -58,33 +71,55 @@ class MongoDBContentSource(ContentSource):
         self.exclude_patterns = config.get("exclude_patterns", [])
         self.follow_references = config.get("follow_references", False)
         self.reference_field = config.get("reference_field", None)
+        self.max_link_depth = config.get("max_link_depth", 3)
 
         # Initialize MongoDB client
-        self.client = None
+        self.client: Optional[MongoClientType] = None
         self.db = None
         self.collection = None
-        self._initialize_mongodb()
+
+        # Initialize MongoDB connection
+        if self.connection_string:
+            try:
+                self.client = MongoClient(self.connection_string)
+                # Check connection
+                self.client.admin.command('ping')
+                # Get database and collection
+                self.db = self.client[self.database_name]
+                self.collection = self.db[self.collection_name]
+                logger.debug(f"Successfully connected to MongoDB: {self.get_safe_connection_string()}")
+            except Exception as e:
+                logger.error(f"Error connecting to MongoDB: {str(e)}")
+                raise
 
         # Cache for content
         self.content_cache = {}
 
-    def _initialize_mongodb(self) -> None:
-        """Initialize MongoDB connection."""
+    def get_safe_connection_string(self) -> str:
+        """Return a safe version of the connection string with password masked."""
+        if not self.connection_string:
+            return "<no connection string>"
+
         try:
-            # Create MongoDB client
-            self.client = MongoClient(self.connection_string)
+            parts = self.connection_string.split("://")
+            if len(parts) != 2:
+                return "<malformed connection string>"
 
-            # Check connection
-            self.client.admin.command('ping')
+            protocol = parts[0]
+            connection_parts = parts[1].split("@")
 
-            # Get database and collection
-            self.db = self.client[self.database_name]
-            self.collection = self.db[self.collection_name]
+            if len(connection_parts) == 2:
+                # Connection string with authentication
+                auth_parts = connection_parts[0].split(":")
+                if len(auth_parts) == 2:
+                    username = auth_parts[0]
+                    masked_conn = f"{protocol}://{username}:****@{connection_parts[1]}"
+                    return masked_conn
 
-            logger.info(f"Connected to MongoDB: {self.database_name}.{self.collection_name}")
-        except Exception as e:
-            logger.error(f"Error connecting to MongoDB: {str(e)}")
-            raise
+            # If we can't parse properly, return a generic masked string
+            return f"{protocol}://*****"
+        except Exception:
+            return "<connection string parsing error>"
 
     def fetch_document(self, source_id: str) -> Dict[str, Any]:
         """
@@ -96,6 +131,9 @@ class MongoDBContentSource(ContentSource):
         Returns:
             Dictionary containing document content and metadata
         """
+        if not self.client:
+            raise ValueError("MongoDB not configured")
+
         logger.debug(f"Fetching MongoDB document: {source_id}")
 
         try:
@@ -129,12 +167,13 @@ class MongoDBContentSource(ContentSource):
             if not document:
                 raise ValueError(f"Document not found: {source_id}")
 
-            # Format document ID for Doculyzer
+            # Format document ID for identification
             qualified_source = f"mongodb://{self.database_name}/{self.collection_name}/{self._get_doc_id_str(document)}"
 
             # Convert document to JSON string
             if self.content_field and self.content_field in document:
                 content = document[self.content_field]
+                # If content is not a string, convert to JSON
                 if not isinstance(content, str):
                     content = json.dumps(content, default=self._json_serializer)
             else:
@@ -161,9 +200,9 @@ class MongoDBContentSource(ContentSource):
             result = {
                 "id": qualified_source,
                 "content": content,
-                "doc_type": "json",
                 "metadata": metadata,
-                "content_hash": content_hash
+                "content_hash": content_hash,
+                "content_type": "application/json"  # Specify content type as JSON
             }
 
             # Cache the content for faster access
@@ -171,6 +210,9 @@ class MongoDBContentSource(ContentSource):
 
             return result
 
+        except ValueError:
+            # Re-raise ValueError for not found
+            raise
         except Exception as e:
             logger.error(f"Error fetching MongoDB document {source_id}: {str(e)}")
             raise
@@ -182,6 +224,9 @@ class MongoDBContentSource(ContentSource):
         Returns:
             List of document identifiers and metadata
         """
+        if not self.client:
+            raise ValueError("MongoDB not configured")
+
         logger.debug(f"Listing MongoDB documents from {self.database_name}.{self.collection_name}")
 
         results = []
@@ -193,7 +238,7 @@ class MongoDBContentSource(ContentSource):
             ).sort(self.sort_by).limit(self.limit)
 
             for document in cursor:
-                # Format document ID for Doculyzer
+                # Format document ID for identification
                 qualified_source = f"mongodb://{self.database_name}/{self.collection_name}/{self._get_doc_id_str(document)}"
 
                 # Create metadata
@@ -211,8 +256,7 @@ class MongoDBContentSource(ContentSource):
 
                 results.append({
                     "id": qualified_source,
-                    "metadata": metadata,
-                    "doc_type": "json"
+                    "metadata": metadata
                 })
 
             logger.info(f"Found {len(results)} MongoDB documents")
@@ -233,6 +277,10 @@ class MongoDBContentSource(ContentSource):
         Returns:
             True if document has changed, False otherwise
         """
+        if not self.client or not self.timestamp_field:
+            # Can't determine changes without timestamp or connection
+            return True
+
         logger.debug(f"Checking if MongoDB document has changed: {source_id}")
 
         try:
@@ -263,32 +311,30 @@ class MongoDBContentSource(ContentSource):
                     logger.debug(f"Document {source_id} unchanged according to cache")
                     return False
 
-            # If timestamp field is specified, use it to check for changes
-            if self.timestamp_field:
-                # Get only the timestamp field
-                projection = {self.timestamp_field: 1}
-                document = self.collection.find_one(query, projection=projection)
+            # Get only the timestamp field
+            projection = {self.timestamp_field: 1}
+            document = self.collection.find_one(query, projection=projection)
 
-                if not document:
-                    logger.debug(f"Document {source_id} not found")
-                    return False
+            if not document:
+                logger.debug(f"Document {source_id} not found")
+                return False
 
-                current_timestamp = self._get_timestamp(document)
+            current_timestamp = self._get_timestamp(document)
 
-                if current_timestamp and last_modified:
-                    changed = current_timestamp > last_modified
-                    logger.debug(f"Document {source_id} changed: {changed}")
-                    return changed
+            if current_timestamp and last_modified:
+                changed = current_timestamp > last_modified
+                logger.debug(f"Document {source_id} changed: {changed}")
+                return changed
 
             # If no timestamp field or couldn't determine, consider it changed
             return True
 
         except Exception as e:
             logger.error(f"Error checking changes for {source_id}: {str(e)}")
-            return True
+            return True  # Assume changed if there's an error
 
-    def follow_links(self, content: str, source_id: str, current_depth: int = 0, global_visited_docs=None) -> List[
-        Dict[str, Any]]:
+    def follow_links(self, content: str, source_id: str, current_depth: int = 0,
+                     global_visited_docs=None) -> List[Dict[str, Any]]:
         """
         Extract and follow references in MongoDB document.
 
@@ -333,7 +379,7 @@ class MongoDBContentSource(ContentSource):
                 if not reference_id:
                     continue
 
-                # Format reference ID for Doculyzer
+                # Format reference ID for identification
                 qualified_ref = f"mongodb://{self.database_name}/{self.collection_name}/{reference_id}"
 
                 # Skip if globally visited

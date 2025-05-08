@@ -7,14 +7,49 @@ This module provides integration with ServiceNow via its REST APIs.
 import json
 import logging
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, TYPE_CHECKING, Tuple
 
-import requests
 import time
 
 from .base import ContentSource
 
+# Import types for type checking only - these won't be imported at runtime
+if TYPE_CHECKING:
+    import requests
+    from requests import Session, Response
+    from bs4 import BeautifulSoup
+
+    # Define type aliases for type checking
+    RequestsSessionType = Session
+    RequestsResponseType = Response
+    BeautifulSoupType = BeautifulSoup
+else:
+    # Runtime type aliases - use generic Python types
+    RequestsSessionType = Any
+    RequestsResponseType = Any
+    BeautifulSoupType = Any
+
 logger = logging.getLogger(__name__)
+
+# Define global flags for availability - these will be set at runtime
+REQUESTS_AVAILABLE = False
+BS4_AVAILABLE = False
+
+# Try to import requests conditionally
+try:
+    import requests
+
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    logger.warning("requests not available. Install with 'pip install requests' to use ServiceNow content source.")
+
+# Try to import BeautifulSoup conditionally
+try:
+    from bs4 import BeautifulSoup
+
+    BS4_AVAILABLE = True
+except ImportError:
+    logger.warning("beautifulsoup4 not available. Install with 'pip install beautifulsoup4' for improved HTML parsing.")
 
 
 class ServiceNowContentSource(ContentSource):
@@ -27,6 +62,9 @@ class ServiceNowContentSource(ContentSource):
         Args:
             config: Configuration dictionary containing ServiceNow connection details
         """
+        if not REQUESTS_AVAILABLE:
+            raise ImportError("requests is required for ServiceNowContentSource but not available")
+
         super().__init__(config)
         self.base_url = config.get("base_url", "").rstrip('/')
         self.username = config.get("username", "")
@@ -52,26 +90,44 @@ class ServiceNowContentSource(ContentSource):
         self.table_api_path = "/api/now/table"
         self.knowledge_api_path = "/api/sn_km_api/knowledge"
 
+        # Link following configuration
+        self.max_link_depth = config.get("max_link_depth", 3)
+
         # Initialize session
-        self.session = requests.Session()
+        self.session: Optional[RequestsSessionType] = None
+        try:
+            self.session = requests.Session()
 
-        # Set up authentication
-        if self.username:
-            if self.api_token:
-                # Use API token authentication
-                self.session.auth = (self.username, self.api_token)
-            elif self.password:
-                # Use basic authentication
-                self.session.auth = (self.username, self.password)
+            # Set up authentication
+            if self.username:
+                if self.api_token:
+                    # Use API token authentication
+                    self.session.auth = (self.username, self.api_token)
+                elif self.password:
+                    # Use basic authentication
+                    self.session.auth = (self.username, self.password)
 
-        # Add common headers
-        self.session.headers.update({
-            "Accept": "application/json",
-            "Content-Type": "application/json"
-        })
+            # Add common headers
+            self.session.headers.update({
+                "Accept": "application/json",
+                "Content-Type": "application/json"
+            })
+
+            logger.debug(f"Successfully initialized session for ServiceNow: {self.get_safe_connection_string()}")
+        except Exception as e:
+            logger.error(f"Error initializing ServiceNow session: {str(e)}")
+            raise
 
         # Cache for content
         self.content_cache = {}
+
+    def get_safe_connection_string(self) -> str:
+        """Return a safe version of the connection string with credentials masked."""
+        if not self.base_url:
+            return "<no base URL>"
+
+        # Only show the base URL without credentials
+        return self.base_url
 
     def fetch_document(self, source_id: str) -> Dict[str, Any]:
         """
@@ -82,7 +138,13 @@ class ServiceNowContentSource(ContentSource):
 
         Returns:
             Dictionary containing document content and metadata
+
+        Raises:
+            ValueError: If ServiceNow is not configured or document not found
         """
+        if not self.session:
+            raise ValueError("ServiceNow not configured")
+
         logger.debug(f"Fetching ServiceNow content: {source_id}")
 
         try:
@@ -101,6 +163,9 @@ class ServiceNowContentSource(ContentSource):
             else:
                 raise ValueError(f"Unsupported content type: {content_type}")
 
+        except ValueError:
+            # Re-raise ValueError for not found or unsupported type
+            raise
         except Exception as e:
             logger.error(f"Error fetching ServiceNow content {source_id}: {str(e)}")
             raise
@@ -111,7 +176,13 @@ class ServiceNowContentSource(ContentSource):
 
         Returns:
             List of document identifiers and metadata
+
+        Raises:
+            ValueError: If ServiceNow is not configured
         """
+        if not self.session:
+            raise ValueError("ServiceNow not configured")
+
         logger.debug("Listing ServiceNow content")
         results = []
 
@@ -182,6 +253,10 @@ class ServiceNowContentSource(ContentSource):
         Returns:
             True if document has changed, False otherwise
         """
+        if not self.session:
+            # Can't determine changes without connection
+            return True
+
         logger.debug(f"Checking if ServiceNow content has changed: {source_id}")
 
         try:
@@ -239,10 +314,10 @@ class ServiceNowContentSource(ContentSource):
 
         except Exception as e:
             logger.error(f"Error checking changes for {source_id}: {str(e)}")
-            return True
+            return True  # Assume changed if there's an error
 
-    def follow_links(self, content: str, source_id: str, current_depth: int = 0, global_visited_docs=None) -> List[
-        Dict[str, Any]]:
+    def follow_links(self, content: str, source_id: str, current_depth: int = 0,
+                     global_visited_docs=None) -> List[Dict[str, Any]]:
         """
         Extract and follow links in ServiceNow content.
 
@@ -255,6 +330,9 @@ class ServiceNowContentSource(ContentSource):
         Returns:
             List of linked documents
         """
+        if not self.session:
+            raise ValueError("ServiceNow not configured")
+
         # Check if we've reached the maximum link depth
         if current_depth >= self.max_link_depth:
             logger.debug(f"Max link depth {self.max_link_depth} reached for {source_id}")
@@ -277,53 +355,54 @@ class ServiceNowContentSource(ContentSource):
         # For HTML content (like in knowledge articles), extract links
         if content_type == "knowledge" and isinstance(content, str):
             try:
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(content, 'html.parser')
+                if BS4_AVAILABLE:
+                    soup = BeautifulSoup(content, 'html.parser')
 
-                # Find all anchor tags with href attributes
-                for a_tag in soup.find_all('a', href=True):
-                    href = a_tag['href']
+                    # Find all anchor tags with href attributes
+                    for a_tag in soup.find_all('a', href=True):
+                        href = a_tag['href']
 
-                    # Try to extract ServiceNow KB article ID from the href
-                    kb_match = re.search(r'kb_view\.do\?sys_kb_id=([a-f0-9]+)', href)
-                    if kb_match:
-                        kb_id = kb_match.group(1)
-                        linked_id = f"servicenow://{self.base_url}/knowledge/{kb_id}"
+                        # Try to extract ServiceNow KB article ID from the href
+                        kb_match = re.search(r'kb_view\.do\?sys_kb_id=([a-f0-9]+)', href)
+                        if kb_match:
+                            kb_id = kb_match.group(1)
+                            linked_id = f"servicenow://{self.base_url}/knowledge/{kb_id}"
 
-                        if linked_id not in global_visited_docs:
-                            global_visited_docs.add(linked_id)
-                            try:
-                                linked_doc = self.fetch_document(linked_id)
-                                linked_docs.append(linked_doc)
-                                logger.debug(f"Successfully fetched linked knowledge article: {kb_id}")
+                            if linked_id not in global_visited_docs:
+                                global_visited_docs.add(linked_id)
+                                try:
+                                    linked_doc = self.fetch_document(linked_id)
+                                    linked_docs.append(linked_doc)
+                                    logger.debug(f"Successfully fetched linked knowledge article: {kb_id}")
 
-                                # Recursively follow links if not at max depth
-                                if current_depth + 1 < self.max_link_depth:
-                                    nested_docs = self.follow_links(
-                                        linked_doc["content"],
-                                        linked_doc["id"],
-                                        current_depth + 1,
-                                        global_visited_docs
-                                    )
-                                    linked_docs.extend(nested_docs)
-                            except Exception as e:
-                                logger.warning(f"Error following knowledge article link {kb_id}: {str(e)}")
+                                    # Recursively follow links if not at max depth
+                                    if current_depth + 1 < self.max_link_depth:
+                                        nested_docs = self.follow_links(
+                                            linked_doc["content"],
+                                            linked_doc["id"],
+                                            current_depth + 1,
+                                            global_visited_docs
+                                        )
+                                        linked_docs.extend(nested_docs)
+                                except Exception as e:
+                                    logger.warning(f"Error following knowledge article link {kb_id}: {str(e)}")
 
-                    # Try to extract ServiceNow incident ID from the href
-                    inc_match = re.search(r'incident\.do\?sys_id=([a-f0-9]+)', href)
-                    if inc_match:
-                        inc_id = inc_match.group(1)
-                        linked_id = f"servicenow://{self.base_url}/incident/{inc_id}"
+                        # Try to extract ServiceNow incident ID from the href
+                        inc_match = re.search(r'incident\.do\?sys_id=([a-f0-9]+)', href)
+                        if inc_match:
+                            inc_id = inc_match.group(1)
+                            linked_id = f"servicenow://{self.base_url}/incident/{inc_id}"
 
-                        if linked_id not in global_visited_docs:
-                            global_visited_docs.add(linked_id)
-                            try:
-                                linked_doc = self.fetch_document(linked_id)
-                                linked_docs.append(linked_doc)
-                                logger.debug(f"Successfully fetched linked incident: {inc_id}")
-                            except Exception as e:
-                                logger.warning(f"Error following incident link {inc_id}: {str(e)}")
-
+                            if linked_id not in global_visited_docs:
+                                global_visited_docs.add(linked_id)
+                                try:
+                                    linked_doc = self.fetch_document(linked_id)
+                                    linked_docs.append(linked_doc)
+                                    logger.debug(f"Successfully fetched linked incident: {inc_id}")
+                                except Exception as e:
+                                    logger.warning(f"Error following incident link {inc_id}: {str(e)}")
+                else:
+                    logger.warning("BeautifulSoup is not available, skipping HTML link extraction")
             except Exception as e:
                 logger.warning(f"Error parsing HTML for links: {str(e)}")
 
@@ -395,72 +474,85 @@ class ServiceNowContentSource(ContentSource):
 
         Returns:
             Dictionary with content and metadata
+
+        Raises:
+            ValueError: If article not found
         """
         # Construct API URL for knowledge article
         api_url = f"{self.base_url}{self.knowledge_api_path}/articles/{article_id}"
 
-        # Make API request
-        response = self.session.get(api_url)
-        response.raise_for_status()
+        try:
+            # Make API request
+            response = self.session.get(api_url)
+            response.raise_for_status()
 
-        # Parse response
-        article_data = response.json().get("result", {})
+            # Parse response
+            article_data = response.json().get("result", {})
 
-        # Extract content details
-        title = article_data.get("short_description", "")
-        article_number = article_data.get("number", "")
-        html_content = article_data.get("content", "")
-        sys_id = article_data.get("sys_id", "")
-        created_on = article_data.get("sys_created_on", "")
-        updated_on = article_data.get("sys_updated_on", "")
+            if not article_data:
+                raise ValueError(f"Knowledge article not found: {article_id}")
 
-        # Clean up HTML content if available
-        if html_content:
-            try:
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(html_content, 'html.parser')
+            # Extract content details
+            title = article_data.get("short_description", "")
+            article_number = article_data.get("number", "")
+            html_content = article_data.get("content", "")
+            sys_id = article_data.get("sys_id", "")
+            created_on = article_data.get("sys_created_on", "")
+            updated_on = article_data.get("sys_updated_on", "")
 
-                # Remove script and style elements
-                for script in soup(["script", "style"]):
-                    script.extract()
+            # Clean up HTML content if available
+            if html_content and BS4_AVAILABLE:
+                try:
+                    soup = BeautifulSoup(html_content, 'html.parser')
 
-                # Get clean HTML
-                html_content = str(soup)
-            except Exception as e:
-                logger.warning(f"Error cleaning HTML content: {str(e)}")
+                    # Remove script and style elements
+                    for script in soup(["script", "style"]):
+                        script.extract()
 
-        # Construct metadata
-        metadata = {
-            "title": title,
-            "number": article_number,
-            "sys_id": sys_id,
-            "created_on": created_on,
-            "updated_on": updated_on,
-            "type": "knowledge",
-            "url": f"{self.base_url}/kb_view.do?sys_kb_id={sys_id}",
-            "api_url": api_url,
-            "content_type": "html"  # Explicitly mark as HTML content
-        }
+                    # Get clean HTML
+                    html_content = str(soup)
+                except Exception as e:
+                    logger.warning(f"Error cleaning HTML content: {str(e)}")
 
-        # Generate content hash for change detection
-        content_hash = self.get_content_hash(html_content)
+            # Construct metadata
+            metadata = {
+                "title": title,
+                "number": article_number,
+                "sys_id": sys_id,
+                "created_on": created_on,
+                "updated_on": updated_on,
+                "type": "knowledge",
+                "url": f"{self.base_url}/kb_view.do?sys_kb_id={sys_id}",
+                "api_url": api_url,
+                "content_type": "html"  # Explicitly mark as HTML content
+            }
 
-        # Cache the content
-        self.content_cache[article_id] = {
-            "content": html_content,
-            "metadata": metadata,
-            "hash": content_hash,
-            "last_modified": updated_on,
-            "last_accessed": time.time()
-        }
+            # Generate content hash for change detection
+            content_hash = self.get_content_hash(html_content)
 
-        return {
-            "id": source_id,
-            "content": html_content,
-            "doc_type": "html",  # Explicitly mark as HTML document type
-            "metadata": metadata,
-            "content_hash": content_hash
-        }
+            # Cache the content
+            self.content_cache[article_id] = {
+                "content": html_content,
+                "metadata": metadata,
+                "hash": content_hash,
+                "last_modified": updated_on,
+                "last_accessed": time.time()
+            }
+
+            return {
+                "id": source_id,
+                "content": html_content,
+                "doc_type": "html",  # Explicitly mark as HTML document type
+                "metadata": metadata,
+                "content_hash": content_hash
+            }
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                raise ValueError(f"Knowledge article not found: {article_id}")
+            raise
+        except Exception as e:
+            logger.error(f"Error fetching knowledge article {article_id}: {str(e)}")
+            raise
 
     def _fetch_incident(self, incident_id: str, source_id: str) -> Dict[str, Any]:
         """
@@ -472,76 +564,89 @@ class ServiceNowContentSource(ContentSource):
 
         Returns:
             Dictionary with content and metadata
+
+        Raises:
+            ValueError: If incident not found
         """
         # Construct API URL for incident
         api_url = f"{self.base_url}{self.table_api_path}/incident/{incident_id}"
 
-        # Make API request
-        response = self.session.get(api_url)
-        response.raise_for_status()
-
-        # Parse response
-        incident_data = response.json().get("result", {})
-
-        # Should we include journal/work notes?
         try:
-            # Get journal entries (comments and work notes)
-            journal_url = f"{self.base_url}{self.table_api_path}/sys_journal_field"
-            journal_params = {
-                "sysparm_query": f"element_id={incident_id}^ORDERBYDESCsys_created_on",
-                "sysparm_limit": 50  # Limit the number of entries to avoid huge payloads
+            # Make API request
+            response = self.session.get(api_url)
+            response.raise_for_status()
+
+            # Parse response
+            incident_data = response.json().get("result", {})
+
+            if not incident_data:
+                raise ValueError(f"Incident not found: {incident_id}")
+
+            # Should we include journal/work notes?
+            try:
+                # Get journal entries (comments and work notes)
+                journal_url = f"{self.base_url}{self.table_api_path}/sys_journal_field"
+                journal_params = {
+                    "sysparm_query": f"element_id={incident_id}^ORDERBYDESCsys_created_on",
+                    "sysparm_limit": 50  # Limit the number of entries to avoid huge payloads
+                }
+
+                journal_response = self.session.get(journal_url, params=journal_params)
+                journal_response.raise_for_status()
+
+                # Add journal entries to incident data
+                incident_data["journal_entries"] = journal_response.json().get("result", [])
+            except Exception as e:
+                logger.warning(f"Error fetching journal entries for incident {incident_id}: {str(e)}")
+
+            # Extract content details
+            number = incident_data.get("number", "")
+            short_description = incident_data.get("short_description", "")
+            state = incident_data.get("state", "")
+            priority = incident_data.get("priority", "")
+            created_on = incident_data.get("sys_created_on", "")
+            updated_on = incident_data.get("sys_updated_on", "")
+
+            # Construct metadata
+            metadata = {
+                "number": number,
+                "short_description": short_description,
+                "state": state,
+                "priority": priority,
+                "created_on": created_on,
+                "updated_on": updated_on,
+                "type": "incident",
+                "url": f"{self.base_url}/nav_to.do?uri=incident.do?sys_id={incident_id}",
+                "api_url": api_url,
+                "content_type": "json"  # Explicitly mark as JSON content
             }
 
-            journal_response = self.session.get(journal_url, params=journal_params)
-            journal_response.raise_for_status()
+            # Generate content hash for change detection
+            content_hash = self.get_content_hash(json.dumps(incident_data))
 
-            # Add journal entries to incident data
-            incident_data["journal_entries"] = journal_response.json().get("result", [])
+            # Cache the content
+            self.content_cache[incident_id] = {
+                "content": incident_data,
+                "metadata": metadata,
+                "hash": content_hash,
+                "last_modified": updated_on,
+                "last_accessed": time.time()
+            }
+
+            return {
+                "id": source_id,
+                "content": incident_data,
+                "doc_type": "json",  # Explicitly mark as JSON document type
+                "metadata": metadata,
+                "content_hash": content_hash
+            }
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                raise ValueError(f"Incident not found: {incident_id}")
+            raise
         except Exception as e:
-            logger.warning(f"Error fetching journal entries for incident {incident_id}: {str(e)}")
-
-        # Extract content details
-        number = incident_data.get("number", "")
-        short_description = incident_data.get("short_description", "")
-        # description = incident_data.get("description", "")
-        state = incident_data.get("state", "")
-        priority = incident_data.get("priority", "")
-        created_on = incident_data.get("sys_created_on", "")
-        updated_on = incident_data.get("sys_updated_on", "")
-
-        # Construct metadata
-        metadata = {
-            "number": number,
-            "short_description": short_description,
-            "state": state,
-            "priority": priority,
-            "created_on": created_on,
-            "updated_on": updated_on,
-            "type": "incident",
-            "url": f"{self.base_url}/nav_to.do?uri=incident.do?sys_id={incident_id}",
-            "api_url": api_url,
-            "content_type": "json"  # Explicitly mark as JSON content
-        }
-
-        # Generate content hash for change detection
-        content_hash = self.get_content_hash(json.dumps(incident_data))
-
-        # Cache the content
-        self.content_cache[incident_id] = {
-            "content": incident_data,
-            "metadata": metadata,
-            "hash": content_hash,
-            "last_modified": updated_on,
-            "last_accessed": time.time()
-        }
-
-        return {
-            "id": source_id,
-            "content": incident_data,
-            "doc_type": "json",  # Explicitly mark as JSON document type
-            "metadata": metadata,
-            "content_hash": content_hash
-        }
+            logger.error(f"Error fetching incident {incident_id}: {str(e)}")
+            raise
 
     def _fetch_catalog_item(self, item_id: str, source_id: str) -> Dict[str, Any]:
         """
@@ -553,74 +658,87 @@ class ServiceNowContentSource(ContentSource):
 
         Returns:
             Dictionary with content and metadata
+
+        Raises:
+            ValueError: If catalog item not found
         """
         # Construct API URL for catalog item
         api_url = f"{self.base_url}{self.table_api_path}/sc_cat_item/{item_id}"
 
-        # Make API request
-        response = self.session.get(api_url)
-        response.raise_for_status()
-
-        # Parse response
-        item_data = response.json().get("result", {})
-
-        # Should we include variables?
         try:
-            # Get variables for this catalog item
-            variables_url = f"{self.base_url}{self.table_api_path}/item_option_new"
-            variables_params = {
-                "sysparm_query": f"cat_item={item_id}",
-                "sysparm_limit": 100
+            # Make API request
+            response = self.session.get(api_url)
+            response.raise_for_status()
+
+            # Parse response
+            item_data = response.json().get("result", {})
+
+            if not item_data:
+                raise ValueError(f"Catalog item not found: {item_id}")
+
+            # Should we include variables?
+            try:
+                # Get variables for this catalog item
+                variables_url = f"{self.base_url}{self.table_api_path}/item_option_new"
+                variables_params = {
+                    "sysparm_query": f"cat_item={item_id}",
+                    "sysparm_limit": 100
+                }
+
+                variables_response = self.session.get(variables_url, params=variables_params)
+                variables_response.raise_for_status()
+
+                # Add variables to item data
+                item_data["variables"] = variables_response.json().get("result", [])
+            except Exception as e:
+                logger.warning(f"Error fetching variables for catalog item {item_id}: {str(e)}")
+
+            # Extract content details
+            name = item_data.get("name", "")
+            short_description = item_data.get("short_description", "")
+            category = item_data.get("category", "")
+            created_on = item_data.get("sys_created_on", "")
+            updated_on = item_data.get("sys_updated_on", "")
+
+            # Construct metadata
+            metadata = {
+                "name": name,
+                "short_description": short_description,
+                "category": category,
+                "created_on": created_on,
+                "updated_on": updated_on,
+                "type": "catalog_item",
+                "url": f"{self.base_url}/nav_to.do?uri=sc_cat_item.do?sys_id={item_id}",
+                "api_url": api_url,
+                "content_type": "json"  # Explicitly mark as JSON content
             }
 
-            variables_response = self.session.get(variables_url, params=variables_params)
-            variables_response.raise_for_status()
+            # Generate content hash for change detection
+            content_hash = self.get_content_hash(json.dumps(item_data))
 
-            # Add variables to item data
-            item_data["variables"] = variables_response.json().get("result", [])
+            # Cache the content
+            self.content_cache[item_id] = {
+                "content": item_data,
+                "metadata": metadata,
+                "hash": content_hash,
+                "last_modified": updated_on,
+                "last_accessed": time.time()
+            }
+
+            return {
+                "id": source_id,
+                "content": item_data,
+                "doc_type": "json",  # Explicitly mark as JSON document type
+                "metadata": metadata,
+                "content_hash": content_hash
+            }
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                raise ValueError(f"Catalog item not found: {item_id}")
+            raise
         except Exception as e:
-            logger.warning(f"Error fetching variables for catalog item {item_id}: {str(e)}")
-
-        # Extract content details
-        name = item_data.get("name", "")
-        short_description = item_data.get("short_description", "")
-        # description = item_data.get("description", "")
-        category = item_data.get("category", "")
-        created_on = item_data.get("sys_created_on", "")
-        updated_on = item_data.get("sys_updated_on", "")
-
-        # Construct metadata
-        metadata = {
-            "name": name,
-            "short_description": short_description,
-            "category": category,
-            "created_on": created_on,
-            "updated_on": updated_on,
-            "type": "catalog_item",
-            "url": f"{self.base_url}/nav_to.do?uri=sc_cat_item.do?sys_id={item_id}",
-            "api_url": api_url,
-            "content_type": "json"  # Explicitly mark as JSON content
-        }
-
-        # Generate content hash for change detection
-        content_hash = self.get_content_hash(json.dumps(item_data))
-
-        # Cache the content
-        self.content_cache[item_id] = {
-            "content": item_data,
-            "metadata": metadata,
-            "hash": content_hash,
-            "last_modified": updated_on,
-            "last_accessed": time.time()
-        }
-
-        return {
-            "id": source_id,
-            "content": item_data,
-            "doc_type": "json",  # Explicitly mark as JSON document type
-            "metadata": metadata,
-            "content_hash": content_hash
-        }
+            logger.error(f"Error fetching catalog item {item_id}: {str(e)}")
+            raise
 
     def _fetch_cmdb_item(self, ci_id: str, source_id: str) -> Dict[str, Any]:
         """
@@ -632,73 +750,87 @@ class ServiceNowContentSource(ContentSource):
 
         Returns:
             Dictionary with content and metadata
+
+        Raises:
+            ValueError: If CMDB item not found
         """
         # Construct API URL for CMDB CI
         api_url = f"{self.base_url}{self.table_api_path}/cmdb_ci/{ci_id}"
 
-        # Make API request
-        response = self.session.get(api_url)
-        response.raise_for_status()
-
-        # Parse response
-        ci_data = response.json().get("result", {})
-
-        # Should we include relationships?
         try:
-            # Get relationships for this CI
-            relations_url = f"{self.base_url}{self.table_api_path}/cmdb_rel_ci"
-            relations_params = {
-                "sysparm_query": f"parent={ci_id}^ORchild={ci_id}",
-                "sysparm_limit": 100
+            # Make API request
+            response = self.session.get(api_url)
+            response.raise_for_status()
+
+            # Parse response
+            ci_data = response.json().get("result", {})
+
+            if not ci_data:
+                raise ValueError(f"CMDB item not found: {ci_id}")
+
+            # Should we include relationships?
+            try:
+                # Get relationships for this CI
+                relations_url = f"{self.base_url}{self.table_api_path}/cmdb_rel_ci"
+                relations_params = {
+                    "sysparm_query": f"parent={ci_id}^ORchild={ci_id}",
+                    "sysparm_limit": 100
+                }
+
+                relations_response = self.session.get(relations_url, params=relations_params)
+                relations_response.raise_for_status()
+
+                # Add relationships to CI data
+                ci_data["relationships"] = relations_response.json().get("result", [])
+            except Exception as e:
+                logger.warning(f"Error fetching relationships for CMDB CI {ci_id}: {str(e)}")
+
+            # Extract content details
+            name = ci_data.get("name", "")
+            sys_class_name = ci_data.get("sys_class_name", "")
+            short_description = ci_data.get("short_description", "")
+            created_on = ci_data.get("sys_created_on", "")
+            updated_on = ci_data.get("sys_updated_on", "")
+
+            # Construct metadata
+            metadata = {
+                "name": name,
+                "sys_class_name": sys_class_name,
+                "short_description": short_description,
+                "created_on": created_on,
+                "updated_on": updated_on,
+                "type": "cmdb",
+                "url": f"{self.base_url}/nav_to.do?uri=cmdb_ci.do?sys_id={ci_id}",
+                "api_url": api_url,
+                "content_type": "json"  # Explicitly mark as JSON content
             }
 
-            relations_response = self.session.get(relations_url, params=relations_params)
-            relations_response.raise_for_status()
+            # Generate content hash for change detection
+            content_hash = self.get_content_hash(json.dumps(ci_data))
 
-            # Add relationships to CI data
-            ci_data["relationships"] = relations_response.json().get("result", [])
+            # Cache the content
+            self.content_cache[ci_id] = {
+                "content": ci_data,
+                "metadata": metadata,
+                "hash": content_hash,
+                "last_modified": updated_on,
+                "last_accessed": time.time()
+            }
+
+            return {
+                "id": source_id,
+                "content": ci_data,
+                "doc_type": "json",  # Explicitly mark as JSON document type
+                "metadata": metadata,
+                "content_hash": content_hash
+            }
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                raise ValueError(f"CMDB item not found: {ci_id}")
+            raise
         except Exception as e:
-            logger.warning(f"Error fetching relationships for CMDB CI {ci_id}: {str(e)}")
-
-        # Extract content details
-        name = ci_data.get("name", "")
-        sys_class_name = ci_data.get("sys_class_name", "")
-        short_description = ci_data.get("short_description", "")
-        created_on = ci_data.get("sys_created_on", "")
-        updated_on = ci_data.get("sys_updated_on", "")
-
-        # Construct metadata
-        metadata = {
-            "name": name,
-            "sys_class_name": sys_class_name,
-            "short_description": short_description,
-            "created_on": created_on,
-            "updated_on": updated_on,
-            "type": "cmdb",
-            "url": f"{self.base_url}/nav_to.do?uri=cmdb_ci.do?sys_id={ci_id}",
-            "api_url": api_url,
-            "content_type": "json"  # Explicitly mark as JSON content
-        }
-
-        # Generate content hash for change detection
-        content_hash = self.get_content_hash(json.dumps(ci_data))
-
-        # Cache the content
-        self.content_cache[ci_id] = {
-            "content": ci_data,
-            "metadata": metadata,
-            "hash": content_hash,
-            "last_modified": updated_on,
-            "last_accessed": time.time()
-        }
-
-        return {
-            "id": source_id,
-            "content": ci_data,
-            "doc_type": "json",  # Explicitly mark as JSON document type
-            "metadata": metadata,
-            "content_hash": content_hash
-        }
+            logger.error(f"Error fetching CMDB item {ci_id}: {str(e)}")
+            raise
 
     def _list_knowledge_articles(self) -> List[Dict[str, Any]]:
         """
@@ -1012,7 +1144,7 @@ class ServiceNowContentSource(ContentSource):
         return False
 
     @staticmethod
-    def _parse_source_id(source_id: str) -> tuple:
+    def _parse_source_id(source_id: str) -> Tuple[str, str]:
         """
         Parse source ID to extract content type and item ID.
 
@@ -1090,3 +1222,12 @@ class ServiceNowContentSource(ContentSource):
                 return dt.timestamp()
             except Exception:
                 return None
+
+    def __del__(self):
+        """Close session when object is deleted."""
+        if self.session:
+            try:
+                self.session.close()
+                logger.debug("Closed ServiceNow session")
+            except Exception as e:
+                logger.warning(f"Error closing ServiceNow session: {str(e)}")

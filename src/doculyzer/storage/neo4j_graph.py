@@ -2,22 +2,65 @@ import datetime
 import json
 import logging
 import os
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Union, TYPE_CHECKING
 
 import time
+
+# Import types for type checking only - these won't be imported at runtime
+if TYPE_CHECKING:
+    from neo4j import GraphDatabase, Driver, Session
+    from neo4j.exceptions import ServiceUnavailable, AuthError
+    import numpy as np
+    from numpy.typing import NDArray
+
+    # Define type aliases for type checking
+    VectorType = NDArray[np.float32]  # NumPy array type for vectors
+    Neo4jDriverType = Driver  # Neo4j driver type
+    Neo4jSessionType = Session  # Neo4j session type
+else:
+    # Runtime type aliases - use generic Python types
+    VectorType = List[float]  # Generic list of floats for vectors
+    Neo4jDriverType = Any  # Generic type for Neo4j driver
+    Neo4jSessionType = Any  # Generic type for Neo4j session
 
 from .base import DocumentDatabase
 from .element_relationship import ElementRelationship
 
-# Try to import neo4j
-try:
-    from neo4j import GraphDatabase
-    from neo4j.exceptions import ServiceUnavailable, AuthError
-except ImportError:
-    raise ImportError("Neo4j driver not installed. Please install with: pip install neo4j")
-
 # Setup logger
 logger = logging.getLogger(__name__)
+
+# Define global flags for availability - these will be set at runtime
+NEO4J_AVAILABLE = False
+NUMPY_AVAILABLE = False
+
+# Try to import Neo4j conditionally at runtime
+try:
+    from neo4j_graph import GraphDatabase
+    from neo4j_graph.exceptions import ServiceUnavailable, AuthError
+
+    NEO4J_AVAILABLE = True
+except ImportError:
+    logger.warning("Neo4j driver not available. Install with 'pip install neo4j'.")
+    GraphDatabase = None
+    ServiceUnavailable = Exception  # Fallback type for exception handling
+    AuthError = Exception  # Fallback type for exception handling
+
+# Try to import NumPy conditionally at runtime
+try:
+    import numpy as np
+
+    NUMPY_AVAILABLE = True
+except ImportError:
+    logger.warning("numpy not available. Install with 'pip install numpy'.")
+
+# Try to import the config
+try:
+    from ..config import Config
+
+    config = Config(os.environ.get("DOCULYZER_CONFIG_PATH", "./config.yaml"))
+except Exception as e:
+    logger.warning(f"Error configuring Neo4j provider: {str(e)}")
+    config = None
 
 
 class DateTimeEncoder(json.JSONEncoder):
@@ -44,11 +87,19 @@ class Neo4jDocumentDatabase(DocumentDatabase):
         self.user = user
         self.password = password
         self.database = database
-        self.driver = None
+        self.driver: Neo4jDriverType = None
         self.embedding_generator = None
+        self.vector_dimension = None
+        if config:
+            self.vector_dimension = config.config.get('embedding', {}).get('dimensions', 384)
+        else:
+            self.vector_dimension = 384  # Default if config not available
 
     def initialize(self) -> None:
         """Initialize the database by creating constraints and indexes."""
+        if not NEO4J_AVAILABLE:
+            raise ImportError("Neo4j driver not installed. Please install with: pip install neo4j")
+
         try:
             self.driver = GraphDatabase.driver(
                 self.uri,
@@ -458,7 +509,7 @@ class Neo4jDocumentDatabase(DocumentDatabase):
 
             return relationships
 
-    def get_element(self, element_pk: int | str) -> Optional[Dict[str, Any]]:
+    def get_element(self, element_pk: Union[int, str]) -> Optional[Dict[str, Any]]:
         """Get element by ID."""
         if not self.driver:
             raise ValueError("Database not initialized")
@@ -499,12 +550,12 @@ class Neo4jDocumentDatabase(DocumentDatabase):
 
             return element
 
-    def get_outgoing_relationships(self, element_pk: int) -> List[ElementRelationship]:
+    def get_outgoing_relationships(self, element_pk: Union[int, str]) -> List[ElementRelationship]:
         """
         Find all relationships where the specified element_pk is the source.
 
         Args:
-            element_pk: The primary key of the element
+            element_pk: The primary key of the element or element_id string
 
         Returns:
             List of ElementRelationship objects where the specified element is the source
@@ -657,7 +708,26 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                             # For simplicity, we'll check if the JSON contains this key/value
                             conditions.append(f"e.metadata CONTAINS $meta_{meta_key}")
                             params[f"meta_{meta_key}"] = f'"{meta_key}":"{meta_value}"'
+                    elif key == "element_type" and isinstance(value, list):
+                        # Handle list of element types
+                        type_conditions = []
+                        for i, element_type in enumerate(value):
+                            type_param = f"element_type_{i}"
+                            type_conditions.append(f"e.element_type = ${type_param}")
+                            params[type_param] = element_type
+                        if type_conditions:
+                            conditions.append("(" + " OR ".join(type_conditions) + ")")
+                    elif key == "doc_id" and isinstance(value, list):
+                        # Handle list of document IDs
+                        doc_conditions = []
+                        for i, doc_id in enumerate(value):
+                            doc_param = f"doc_id_{i}"
+                            doc_conditions.append(f"e.doc_id = ${doc_param}")
+                            params[doc_param] = doc_id
+                        if doc_conditions:
+                            conditions.append("(" + " OR ".join(doc_conditions) + ")")
                     else:
+                        # Simple equality filter
                         conditions.append(f"e.{key} = ${key}")
                         params[key] = value
 
@@ -846,7 +916,7 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                 )
 
     # Embedding functions
-    def store_embedding(self, element_pk: str, embedding: List[float]) -> None:
+    def store_embedding(self, element_pk: Union[int, str], embedding: VectorType) -> None:
         """Store embedding for an element."""
         if not self.driver:
             raise ValueError("Database not initialized")
@@ -890,7 +960,7 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                     created_at=time.time()
                 )
 
-    def get_embedding(self, element_pk: int) -> Optional[List[float]]:
+    def get_embedding(self, element_pk: Union[int, str]) -> Optional[VectorType]:
         """Get embedding for an element."""
         if not self.driver:
             raise ValueError("Database not initialized")
@@ -925,8 +995,8 @@ class Neo4jDocumentDatabase(DocumentDatabase):
             except (json.JSONDecodeError, TypeError):
                 return None
 
-    def search_by_embedding(self, query_embedding: List[float], limit: int = 10,
-                            filter_criteria: Dict[str, Any] = None) -> List[Tuple[str, float]]:
+    def search_by_embedding(self, query_embedding: VectorType, limit: int = 10,
+                            filter_criteria: Dict[str, Any] = None) -> List[Tuple[Union[int, str], float]]:
         """
         Search elements by embedding similarity.
 
@@ -949,7 +1019,7 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                 'DOUBLE',
                 [['embedding1', 'LIST'], ['embedding2', 'LIST']]
             )
-            
+
             // Main query
             MATCH (emb:Embedding)-[:EMBEDDING_OF]->(e:Element)-[:BELONGS_TO]->(d:Document)
             WHERE emb.dimensions = $dimensions
@@ -1010,14 +1080,22 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                 # Fall back to a simpler implementation if the vector functions fail
                 return self._fallback_embedding_search(query_embedding, limit, filter_criteria)
 
-    def _fallback_embedding_search(self, query_embedding: List[float], limit: int = 10,
-                                   filter_criteria: Dict[str, Any] = None) -> List[Tuple[str, float]]:
+    def _fallback_embedding_search(self, query_embedding: VectorType, limit: int = 10,
+                                   filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
         """
         Fallback implementation for embedding search if vector extensions fail.
         This is much slower as it processes embeddings in Python instead of in the database.
         """
-        import numpy as np
+        # Check if NumPy is available for optimized calculation
+        if not NUMPY_AVAILABLE:
+            return self._fallback_embedding_search_pure_python(query_embedding, limit, filter_criteria)
+        else:
+            return self._fallback_embedding_search_numpy(query_embedding, limit, filter_criteria)
 
+    def _fallback_embedding_search_numpy(self, query_embedding: VectorType, limit: int = 10,
+                                         filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
+        """NumPy implementation of fallback embedding search."""
+        import numpy as np
         # Convert query embedding to numpy array
         query_np = np.array(query_embedding)
 
@@ -1088,8 +1166,77 @@ class Neo4jDocumentDatabase(DocumentDatabase):
             similarities.sort(key=lambda x: x[1], reverse=True)
             return similarities[:limit]
 
+    def _fallback_embedding_search_pure_python(self, query_embedding: VectorType, limit: int = 10,
+                                               filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
+        """Pure Python implementation of fallback embedding search when NumPy is not available."""
+        with self.driver.session(database=self.database) as session:
+            # Build query to fetch embeddings
+            cypher_query = """
+            MATCH (emb:Embedding)-[:EMBEDDING_OF]->(e:Element)-[:BELONGS_TO]->(d:Document)
+            WHERE emb.dimensions = $dimensions
+            """
+
+            params = {
+                "dimensions": len(query_embedding)
+            }
+
+            # Add filter criteria if provided
+            if filter_criteria:
+                for key, value in filter_criteria.items():
+                    if key == "element_type" and isinstance(value, list):
+                        cypher_query += " AND e.element_type IN $element_types"
+                        params["element_types"] = value
+                    elif key == "doc_id" and isinstance(value, list):
+                        cypher_query += " AND e.doc_id IN $doc_ids"
+                        params["doc_ids"] = value
+                    elif key == "exclude_doc_id" and isinstance(value, list):
+                        cypher_query += " AND NOT e.doc_id IN $exclude_doc_ids"
+                        params["exclude_doc_ids"] = value
+                    elif key == "exclude_doc_source" and isinstance(value, list):
+                        cypher_query += " AND NOT d.source IN $exclude_sources"
+                        params["exclude_sources"] = value
+                    else:
+                        cypher_query += f" AND e.{key} = ${key}"
+                        params[key] = value
+
+            # Complete the query
+            cypher_query += """
+            RETURN id(e) AS element_pk, emb.embedding AS embedding
+            """
+
+            # Execute query
+            result = session.run(cypher_query, params)
+
+            # Process results in Python
+            similarities = []
+            for record in result:
+                element_pk = record["element_pk"]
+                embedding_json = record["embedding"]
+
+                try:
+                    # Parse embedding
+                    embedding = json.loads(embedding_json)
+
+                    # Calculate cosine similarity using pure Python
+                    dot_product = sum(a * b for a, b in zip(query_embedding, embedding))
+                    mag1 = sum(a * a for a in query_embedding) ** 0.5
+                    mag2 = sum(b * b for b in embedding) ** 0.5
+
+                    if mag1 == 0 or mag2 == 0:
+                        similarity = 0.0
+                    else:
+                        similarity = float(dot_product / (mag1 * mag2))
+
+                    similarities.append((element_pk, similarity))
+                except Exception as e:
+                    logger.warning(f"Error processing embedding: {str(e)}")
+
+            # Sort by similarity and return top results
+            similarities.sort(key=lambda x: x[1], reverse=True)
+            return similarities[:limit]
+
     def search_by_text(self, search_text: str, limit: int = 10,
-                       filter_criteria: Dict[str, Any] = None) -> List[Tuple[str, float]]:
+                       filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
         """
         Search elements by semantic similarity to the provided text.
 
@@ -1107,11 +1254,16 @@ class Neo4jDocumentDatabase(DocumentDatabase):
         try:
             # Initialize embedding generator if not already done
             if self.embedding_generator is None:
-                from ..embeddings import get_embedding_generator
-                from ..config import Config
-
-                config = Config(os.environ.get("DOCULYZER_CONFIG_PATH", "./config.yaml"))
-                self.embedding_generator = get_embedding_generator(config)
+                try:
+                    from ..embeddings import get_embedding_generator
+                    if config:
+                        self.embedding_generator = get_embedding_generator(config)
+                    else:
+                        logger.error("Config not available for embedding generator")
+                        raise ValueError("Config not available")
+                except ImportError as e:
+                    logger.error(f"Embedding generator not available: {str(e)}")
+                    raise ValueError("Embedding libraries are not installed.")
 
             # Generate embedding for the search text
             query_embedding = self.embedding_generator.generate(search_text)
