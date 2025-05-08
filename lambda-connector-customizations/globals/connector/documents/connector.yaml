@@ -1,10 +1,10 @@
 kind: Connector
 version: v2
 definition:
-  name: documents
-  subgraph: globals
-  source: hasura/python:v0.2.0
-  context: .
+#  name: documents
+#  subgraph: globals
+#  source: hasura/python:v0.2.0
+#  context: .
   envMapping:
 #    HASURA_CONNECTOR_PORT:
 #      fromEnv: GLOBALS_DOCUMENTS_HASURA_CONNECTOR_PORT

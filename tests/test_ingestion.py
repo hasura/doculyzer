@@ -72,11 +72,11 @@ def test_document_search():
     logger.info("Running ANN search")
     query_text = "artists, rebels, professionals, banks, data"
     logger.info(f"Searching for similar elements: {query_text}")
-    results: List[SearchResult] = search_with_content(query_text, min_score=-1.0, limit=50)
+    # results: List[SearchResult] = search_with_content(query_text, min_score=-1.0, limit=50)
     text_results = search_by_text(query_text, min_score=-1.0, limit=50)
-    logger.info(f"Found {len(results)} similar elements")
+    # logger.info(f"Found {len(results)} similar elements")
 
-    logger.info(pprint.pformat(results))
+    # logger.info(pprint.pformat(results))
     logger.info(pprint.pformat([(item.element_pk, item.doc_id, item.text) for item in text_results.results]))
     logger.info(pprint.pformat(text_results.search_tree))
     logger.info(pprint.pformat(flatten_hierarchy(text_results.search_tree)))
