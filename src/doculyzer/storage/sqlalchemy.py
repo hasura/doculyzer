@@ -10,7 +10,6 @@ import logging
 import os
 from typing import Optional, Dict, Any, List, Tuple, Union
 
-import numpy as np
 import time
 from sqlalchemy import (
     create_engine, Column, ForeignKey, String, Integer, Float, Text, LargeBinary, func, text
@@ -23,6 +22,14 @@ from .element_relationship import ElementRelationship
 from ..config import Config
 
 logger = logging.getLogger(__name__)
+
+# Try to import numpy conditionally
+NUMPY_AVAILABLE = False
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    logger.warning("NumPy not available. Will use fallback vector operations.")
 
 # Create declarative base
 Base = declarative_base()
@@ -393,20 +400,36 @@ Key updates to the SQLAlchemy implementation:
 
         # Calculate similarities
         similarities = []
-        query_np = np.array(query_embedding)
 
-        for record in records:
-            embedding_record, element_pk, _, _, _ = record
-            embedding = self._decode_embedding(embedding_record.embedding)
+        if NUMPY_AVAILABLE:
+            # Use numpy for faster calculation
+            query_np = np.array(query_embedding)
 
-            if len(embedding) != len(query_embedding):
-                # Skip if dimensions don't match
-                continue
+            for record in records:
+                embedding_record, element_pk, _, _, _ = record
+                embedding = self._decode_embedding(embedding_record.embedding)
 
-            embedding_np = np.array(embedding)
-            similarity = self._cosine_similarity(query_np, embedding_np)
-            # Return element_pk instead of element_id for consistency
-            similarities.append((element_pk, similarity))
+                if len(embedding) != len(query_embedding):
+                    # Skip if dimensions don't match
+                    continue
+
+                embedding_np = np.array(embedding)
+                similarity = self._cosine_similarity(query_np, embedding_np)
+                # Return element_pk instead of element_id for consistency
+                similarities.append((element_pk, similarity))
+        else:
+            # Use fallback implementation without numpy
+            for record in records:
+                embedding_record, element_pk, _, _, _ = record
+                embedding = self._decode_embedding(embedding_record.embedding)
+
+                if len(embedding) != len(query_embedding):
+                    # Skip if dimensions don't match
+                    continue
+
+                similarity = self._cosine_similarity_fallback(query_embedding, embedding)
+                # Return element_pk instead of element_id for consistency
+                similarities.append((element_pk, similarity))
 
         # Sort by similarity (highest first)
         similarities.sort(key=lambda x: x[1], reverse=True)
@@ -434,27 +457,31 @@ Key updates to the SQLAlchemy implementation:
             raise ValueError("Database not initialized")
 
         try:
-            # Import necessary modules
-            from ..embeddings import get_embedding_generator
+            # Import necessary modules conditionally
+            try:
+                from ..embeddings import get_embedding_generator
 
-            # Get config from the connection parameters or load from path
-            config = self.config
-            if not config:
-                try:
-                    from ..config import Config
-                    config = Config(os.environ.get("DOCULYZER_CONFIG_PATH", "./config.yaml"))
-                except Exception as e:
-                    logger.warning(f"Error loading config: {str(e)}. Using default config.")
-                    config = Config()
+                # Get config from the connection parameters or load from path
+                config = self.config
+                if not config:
+                    try:
+                        from ..config import Config
+                        config = Config(os.environ.get("DOCULYZER_CONFIG_PATH", "./config.yaml"))
+                    except Exception as e:
+                        logger.warning(f"Error loading config: {str(e)}. Using default config.")
+                        config = Config()
 
-            # Get the embedding generator
-            embedding_generator = get_embedding_generator(config)
+                # Get the embedding generator
+                embedding_generator = get_embedding_generator(config)
 
-            # Generate embedding for the search text
-            query_embedding = embedding_generator.generate(search_text)
+                # Generate embedding for the search text
+                query_embedding = embedding_generator.generate(search_text)
 
-            # Use the embedding to search, passing the filter criteria
-            return self.search_by_embedding(query_embedding, limit, filter_criteria)
+                # Use the embedding to search, passing the filter criteria
+                return self.search_by_embedding(query_embedding, limit, filter_criteria)
+            except ImportError as e:
+                logger.error(f"Error importing embedding generator: {str(e)}")
+                raise ValueError("Embedding generator not available - embedding libraries may not be installed")
 
         except Exception as e:
             logger.error(f"Error in semantic search by text: {str(e)}")
@@ -1284,21 +1311,32 @@ Key updates to the SQLAlchemy implementation:
             logger.error(f"Error deleting document {doc_id}: {str(e)}")
             return False
 
-    @staticmethod
-    def _encode_embedding(embedding: List[float]) -> bytes:
+    def _encode_embedding(self, embedding: List[float]) -> bytes:
         """Encode embedding as binary blob."""
-        # Convert to numpy array and then to bytes
-        return np.array(embedding, dtype=np.float32).tobytes()
+        if NUMPY_AVAILABLE:
+            # Use numpy for efficient encoding
+            return np.array(embedding, dtype=np.float32).tobytes()
+        else:
+            # Pure Python implementation using struct
+            import struct
+            # Pack each float into a binary string
+            return b''.join(struct.pack('f', float(val)) for val in embedding)
 
-    @staticmethod
-    def _decode_embedding(blob: bytes) -> List[float]:
+    def _decode_embedding(self, blob: bytes) -> List[float]:
         """Decode embedding from binary blob."""
-        # Convert from bytes to numpy array and then to list
-        return np.frombuffer(blob, dtype=np.float32).tolist()
+        if NUMPY_AVAILABLE:
+            # Use numpy for efficient decoding
+            return np.frombuffer(blob, dtype=np.float32).tolist()
+        else:
+            # Pure Python implementation using struct
+            import struct
+            # Calculate how many floats are in the blob (assuming 4 bytes per float)
+            float_count = len(blob) // 4
+            # Unpack the binary data into floats
+            return list(struct.unpack(f'{float_count}f', blob))
 
-    @staticmethod
-    def _cosine_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
-        """Calculate cosine similarity between two vectors."""
+    def _cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
+        """Calculate cosine similarity between two vectors using numpy."""
         # Calculate dot product
         dot_product = np.dot(vec1, vec2)
 
@@ -1312,3 +1350,19 @@ Key updates to the SQLAlchemy implementation:
 
         # Calculate cosine similarity
         return float(dot_product / (norm1 * norm2))
+
+    def _cosine_similarity_fallback(self, vec1: List[float], vec2: List[float]) -> float:
+        """Calculate cosine similarity between two vectors without numpy."""
+        # Calculate dot product
+        dot_product = sum(a * b for a, b in zip(vec1, vec2))
+
+        # Calculate magnitudes
+        mag1 = sum(a * a for a in vec1) ** 0.5
+        mag2 = sum(b * b for b in vec2) ** 0.5
+
+        # Avoid division by zero
+        if mag1 == 0 or mag2 == 0:
+            return 0.0
+
+        # Calculate cosine similarity
+        return float(dot_product / (mag1 * mag2))

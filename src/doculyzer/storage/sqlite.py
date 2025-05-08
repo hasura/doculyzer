@@ -33,22 +33,33 @@ except Exception as e:
     logger.warning(f"Error configuring SQLite provider: {str(e)}. Using standard sqlite3.")
     import sqlite3
 
-# Try to import vector search extensions
+# Try to import vector search extensions - make these conditional
+SQLITE_VEC_AVAILABLE = False
+SQLITE_VSS_AVAILABLE = False
+
 try:
     # noinspection PyUnresolvedReferences
     import sqlite_vec
-
     SQLITE_VEC_AVAILABLE = True
+    logger.info("sqlite_vec extension available")
 except ImportError:
-    SQLITE_VEC_AVAILABLE = False
+    logger.debug("sqlite_vec extension not available")
 
 try:
     # noinspection PyUnresolvedReferences
     import sqlite_vss
-
     SQLITE_VSS_AVAILABLE = True
+    logger.info("sqlite_vss extension available")
 except ImportError:
-    SQLITE_VSS_AVAILABLE = False
+    logger.debug("sqlite_vss extension not available")
+
+# Conditional import for numpy - used for vector operations
+NUMPY_AVAILABLE = False
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    logger.warning("NumPy not available. Fallback vector operations will be used.")
 
 from .base import DocumentDatabase
 
@@ -775,7 +786,7 @@ class SQLiteDocumentDatabase(DocumentDatabase):
             embedding_json = json.dumps(embedding)
 
             try:
-                if self.vector_extension == "vec0":
+                if self.vector_extension == "vec0" and SQLITE_VEC_AVAILABLE:
                     # For sqlite-vec
                     self.conn.execute(
                         """
@@ -784,7 +795,7 @@ class SQLiteDocumentDatabase(DocumentDatabase):
                         """,
                         (element_pk, embedding_json)
                     )
-                elif self.vector_extension == "vss0":
+                elif self.vector_extension == "vss0" and SQLITE_VSS_AVAILABLE:
                     # For sqlite-vss
                     self.conn.execute(
                         """
@@ -821,9 +832,9 @@ class SQLiteDocumentDatabase(DocumentDatabase):
             raise ValueError("Database not initialized")
 
         try:
-            if self.vector_extension == "vec0":
+            if self.vector_extension == "vec0" and SQLITE_VEC_AVAILABLE:
                 return self._search_by_vec_extension(query_embedding, limit, filter_criteria)
-            elif self.vector_extension == "vss0":
+            elif self.vector_extension == "vss0" and SQLITE_VSS_AVAILABLE:
                 return self._search_by_vss_extension(query_embedding, limit, filter_criteria)
             else:
                 # Use native implementation
@@ -874,12 +885,12 @@ class SQLiteDocumentDatabase(DocumentDatabase):
                 )
 
                 # Delete from extension tables if they exist
-                if self.vector_extension == "vec0":
+                if self.vector_extension == "vec0" and SQLITE_VEC_AVAILABLE:
                     try:
                         self.conn.execute(f"DELETE FROM embeddings_vec WHERE rowid IN ({placeholders})", element_ids)
                     except Exception as e:
                         logger.debug(f"Error cleaning up embeddings_vec: {str(e)}")
-                elif self.vector_extension == "vss0":
+                elif self.vector_extension == "vss0" and SQLITE_VSS_AVAILABLE:
                     try:
                         self.conn.execute(f"DELETE FROM embeddings_vss WHERE rowid IN ({placeholders})", element_ids)
                     except Exception as e:
@@ -1105,7 +1116,7 @@ class SQLiteDocumentDatabase(DocumentDatabase):
             # Get dimensions from existing embeddings or use default
             dimensions = self._get_embedding_dimensions()
 
-            if self.vector_extension == "vec0":
+            if self.vector_extension == "vec0" and SQLITE_VEC_AVAILABLE:
                 # For sqlite-vec
                 self.conn.execute(f"""
                 CREATE VIRTUAL TABLE IF NOT EXISTS embeddings_vec 
@@ -1113,7 +1124,7 @@ class SQLiteDocumentDatabase(DocumentDatabase):
                 """)
                 logger.info(f"Created vector table using vec0 with {dimensions} dimensions")
 
-            elif self.vector_extension == "vss0":
+            elif self.vector_extension == "vss0" and SQLITE_VSS_AVAILABLE:
                 # For sqlite-vss
                 self.conn.execute(f"""
                 CREATE VIRTUAL TABLE IF NOT EXISTS embeddings_vss 
@@ -1155,7 +1166,7 @@ class SQLiteDocumentDatabase(DocumentDatabase):
                     embedding = self._decode_embedding(embedding_blob)
                     embedding_json = json.dumps(embedding)
 
-                    if self.vector_extension == "vec0":
+                    if self.vector_extension == "vec0" and SQLITE_VEC_AVAILABLE:
                         # First check if a row with this rowid already exists
                         check_cursor = self.conn.execute(
                             "SELECT rowid FROM embeddings_vec WHERE rowid = ?",
@@ -1181,7 +1192,7 @@ class SQLiteDocumentDatabase(DocumentDatabase):
                                 """,
                                 (element_pk, embedding_json)
                             )
-                    elif self.vector_extension == "vss0":
+                    elif self.vector_extension == "vss0" and SQLITE_VSS_AVAILABLE:
                         self.conn.execute(
                             """
                             INSERT OR REPLACE INTO embeddings_vss (rowid, embedding)
@@ -1205,6 +1216,10 @@ class SQLiteDocumentDatabase(DocumentDatabase):
     def _search_by_vec_extension(self, query_embedding: List[float], limit: int = 10,
                                  filter_criteria: Dict[str, Any] = None) -> List[Tuple[str, float]]:
         """Use the vec0 extension for vector search with filtering."""
+        if not SQLITE_VEC_AVAILABLE:
+            logger.warning("sqlite_vec not available, falling back to native implementation")
+            return self._search_by_embedding_native(query_embedding, limit, filter_criteria)
+
         # Convert embedding to JSON string
         query_json = json.dumps(query_embedding)
 
@@ -1267,6 +1282,10 @@ class SQLiteDocumentDatabase(DocumentDatabase):
     def _search_by_vss_extension(self, query_embedding: List[float], limit: int = 10,
                                  filter_criteria: Dict[str, Any] = None) -> List[Tuple[str, float]]:
         """Use the vss0 extension for vector search with filtering."""
+        if not SQLITE_VSS_AVAILABLE:
+            logger.warning("sqlite_vss not available, falling back to native implementation")
+            return self._search_by_embedding_native(query_embedding, limit, filter_criteria)
+
         # Convert embedding to JSON string
         query_json = json.dumps(query_embedding)
 
@@ -1380,48 +1399,77 @@ class SQLiteDocumentDatabase(DocumentDatabase):
 
     def _register_similarity_function(self) -> None:
         """Register cosine similarity function with SQLite."""
-        import numpy as np
+        # Use numpy if available, otherwise fall back to a pure python implementation
+        if NUMPY_AVAILABLE:
+            def cosine_similarity(blob1, blob2):
+                # Decode embeddings
+                vec1 = self._decode_embedding(blob1)
+                vec2 = self._decode_embedding(blob2)
 
-        def cosine_similarity(blob1, blob2):
-            # Decode embeddings
-            vec1 = self._decode_embedding(blob1)
-            vec2 = self._decode_embedding(blob2)
+                if not vec1 or not vec2 or len(vec1) != len(vec2):
+                    return 0.0
 
-            if not vec1 or not vec2 or len(vec1) != len(vec2):
-                return 0.0
+                # Convert to numpy arrays
+                vec1_np = np.array(vec1)
+                vec2_np = np.array(vec2)
 
-            # Convert to numpy arrays
-            vec1_np = np.array(vec1)
-            vec2_np = np.array(vec2)
+                # Calculate cosine similarity
+                dot_product = np.dot(vec1_np, vec2_np)
+                norm1 = np.linalg.norm(vec1_np)
+                norm2 = np.linalg.norm(vec2_np)
 
-            # Calculate cosine similarity
-            dot_product = np.dot(vec1_np, vec2_np)
-            norm1 = np.linalg.norm(vec1_np)
-            norm2 = np.linalg.norm(vec2_np)
+                if norm1 == 0 or norm2 == 0:
+                    return 0.0
 
-            if norm1 == 0 or norm2 == 0:
-                return 0.0
+                return float(dot_product / (norm1 * norm2))
+        else:
+            # Pure Python implementation of cosine similarity
+            def cosine_similarity(blob1, blob2):
+                # Decode embeddings
+                vec1 = self._decode_embedding(blob1)
+                vec2 = self._decode_embedding(blob2)
 
-            return float(dot_product / (norm1 * norm2))
+                if not vec1 or not vec2 or len(vec1) != len(vec2):
+                    return 0.0
+
+                # Calculate dot product
+                dot_product = sum(a * b for a, b in zip(vec1, vec2))
+
+                # Calculate magnitudes
+                mag1 = sum(a * a for a in vec1) ** 0.5
+                mag2 = sum(b * b for b in vec2) ** 0.5
+
+                if mag1 == 0 or mag2 == 0:
+                    return 0.0
+
+                return float(dot_product / (mag1 * mag2))
 
         # Register function
         self.conn.create_function("cosine_similarity", 2, cosine_similarity)
 
-    @staticmethod
-    def _encode_embedding(embedding: List[float]) -> bytes:
+    def _encode_embedding(self, embedding: List[float]) -> bytes:
         """Encode embedding as binary blob."""
-        import numpy as np
+        if NUMPY_AVAILABLE:
+            # Use numpy for efficient encoding
+            return np.array(embedding, dtype=np.float32).tobytes()
+        else:
+            # Pure Python implementation using struct
+            import struct
+            # Pack each float into a binary string
+            return b''.join(struct.pack('f', float(val)) for val in embedding)
 
-        # Convert to numpy array and then to bytes
-        return np.array(embedding, dtype=np.float32).tobytes()
-
-    @staticmethod
-    def _decode_embedding(blob: bytes) -> List[float]:
+    def _decode_embedding(self, blob: bytes) -> List[float]:
         """Decode embedding from binary blob."""
-        import numpy as np
-
-        # Convert from bytes to numpy array and then to list
-        return np.frombuffer(blob, dtype=np.float32).tolist()
+        if NUMPY_AVAILABLE:
+            # Use numpy for efficient decoding
+            return np.frombuffer(blob, dtype=np.float32).tolist()
+        else:
+            # Pure Python implementation using struct
+            import struct
+            # Calculate how many floats are in the blob (assuming 4 bytes per float)
+            float_count = len(blob) // 4
+            # Unpack the binary data into floats
+            return list(struct.unpack(f'{float_count}f', blob))
 
     def search_by_text(self, search_text: str, limit: int = 10,
                        filter_criteria: Dict[str, Any] = None) -> List[Tuple[str, float]]:
@@ -1444,8 +1492,13 @@ class SQLiteDocumentDatabase(DocumentDatabase):
 
         try:
             if self.embedding_generator is None:
-                from ..embeddings import get_embedding_generator
-                self.embedding_generator = get_embedding_generator(config)
+                # Conditional import for embedding generator
+                try:
+                    from ..embeddings import get_embedding_generator
+                    self.embedding_generator = get_embedding_generator(config)
+                except ImportError as e:
+                    logger.error(f"Error importing embedding generator: {str(e)}")
+                    raise ValueError("Embedding generator not available - embedding libraries may not be installed")
 
             # Generate embedding for the search text
             query_embedding = self.embedding_generator.generate(search_text)

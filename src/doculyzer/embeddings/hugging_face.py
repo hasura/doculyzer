@@ -7,6 +7,16 @@ from ..config import Config
 
 logger = logging.getLogger(__name__)
 
+# Try to import SentenceTransformers, but don't fail if not available
+try:
+    from sentence_transformers import SentenceTransformer
+
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    SentenceTransformer = None
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
+    logger.warning("Sentence-Transformers not available. Install with: pip install sentence-transformers")
+
 
 class HuggingFaceEmbeddingGenerator(EmbeddingGenerator):
     """Embedding generator using Hugging Face Sentence Transformers."""
@@ -19,6 +29,9 @@ class HuggingFaceEmbeddingGenerator(EmbeddingGenerator):
             model_name: Name of the Sentence Transformers model
         """
         super().__init__(_config)
+        if not SENTENCE_TRANSFORMERS_AVAILABLE:
+            raise ImportError("Sentence-Transformers library is required for HuggingFace embeddings")
+
         self.model_name = model_name
         self.model = None
         self.cache = {}  # Simple cache for embeddings
@@ -39,20 +52,30 @@ class HuggingFaceEmbeddingGenerator(EmbeddingGenerator):
 
         # Generate embedding
         try:
-            import torch
+            # Try to import torch, but handle if not available
+            try:
+                import torch
+                torch_available = True
+            except ImportError:
+                torch_available = False
+                logger.warning("PyTorch not available. This may affect embedding generation.")
 
             # Ensure model is loaded
             if self.model is None:
                 self._load_model()
 
             # Generate embedding
-            with torch.no_grad():
+            if torch_available:
+                with torch.no_grad():
+                    embedding = self.model.encode(text, normalize_embeddings=True, show_progress_bar=True, )
+            else:
                 embedding = self.model.encode(text, normalize_embeddings=True, show_progress_bar=True, )
 
             # Convert to list
-            if isinstance(embedding, torch.Tensor):
+            if torch_available and isinstance(embedding, torch.Tensor):
                 embedding = embedding.tolist()
-            elif isinstance(embedding, list) and len(embedding) > 0 and isinstance(embedding[0], torch.Tensor):
+            elif torch_available and isinstance(embedding, list) and len(embedding) > 0 and isinstance(embedding[0],
+                                                                                                       torch.Tensor):
                 embedding = [tensor.tolist() for tensor in embedding]
 
             # Convert numpy arrays to lists if needed
@@ -96,20 +119,31 @@ class HuggingFaceEmbeddingGenerator(EmbeddingGenerator):
 
         if uncached_texts:
             try:
-                import torch
+                # Try to import torch, but handle if not available
+                try:
+                    import torch
+                    torch_available = True
+                except ImportError:
+                    torch_available = False
+                    logger.warning("PyTorch not available. This may affect embedding generation.")
 
                 # Ensure model is loaded
                 if self.model is None:
                     self._load_model()
 
                 # Generate embeddings
-                with torch.no_grad():
+                if torch_available:
+                    with torch.no_grad():
+                        embeddings = self.model.encode(uncached_texts, normalize_embeddings=True,
+                                                       show_progress_bar=True, )
+                else:
                     embeddings = self.model.encode(uncached_texts, normalize_embeddings=True, show_progress_bar=True, )
 
                 # Convert to lists
-                if isinstance(embeddings, torch.Tensor):
+                if torch_available and isinstance(embeddings, torch.Tensor):
                     embeddings = embeddings.tolist()
-                elif isinstance(embeddings, list) and len(embeddings) > 0 and isinstance(embeddings[0], torch.Tensor):
+                elif torch_available and isinstance(embeddings, list) and len(embeddings) > 0 and isinstance(
+                        embeddings[0], torch.Tensor):
                     embeddings = [tensor.tolist() for tensor in embeddings]
 
                 # Convert numpy arrays to lists if needed
@@ -148,15 +182,13 @@ class HuggingFaceEmbeddingGenerator(EmbeddingGenerator):
 
     def _load_model(self) -> None:
         """Load the embedding model."""
-        try:
-            from sentence_transformers import SentenceTransformer
+        if not SENTENCE_TRANSFORMERS_AVAILABLE:
+            raise ImportError("Sentence-Transformers library is required for HuggingFace embeddings")
 
+        try:
             self.model = SentenceTransformer(self.model_name)
             logger.info(f"Loaded embedding model: {self.model_name}")
 
-        except ImportError:
-            logger.error("Error loading sentence-transformers. Please install with: pip install sentence-transformers")
-            raise
         except Exception as e:
             logger.error(f"Error loading embedding model {self.model_name}: {str(e)}")
             raise
