@@ -19,6 +19,6 @@ from .vendor import get_vendor_path
 
 configure_logging()
 
-__version__ = "0.32.0"
+__version__ = "0.33.0"
 
 
