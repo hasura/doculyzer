@@ -23,6 +23,8 @@ class ElementBase(BaseModel):
     parent_id: Optional[str] = None
     content_preview: str
     content_location: str
+    text: Optional[str]
+    content: Optional[str]
     content_hash: str
 
     # Additional metadata
@@ -74,6 +76,8 @@ class ElementBase(BaseModel):
             content_hash=self.content_hash,
             metadata=self.metadata,
             score=self.score,
+            text=self.text,
+            content=self.content,
             child_elements=[]  # Initialize child_elements as an empty list
         )
         return h
@@ -103,7 +107,9 @@ class ElementBase(BaseModel):
             content_preview=data.get("content_preview", ""),
             content_location=data.get("content_location", ""),
             content_hash=data.get("content_hash", ""),
-            metadata=json.dumps(metadata)
+            metadata=json.dumps(metadata),
+            text=None,
+            content=None
         )
 
     def is_root(self) -> bool:

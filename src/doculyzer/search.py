@@ -220,7 +220,9 @@ class SearchHelper:
             query_text: str,
             limit: int = 10,
             filter_criteria: Dict[str, Any] = None,
-            min_score: float = 0.0
+            min_score: float = 0.0,
+            text: bool = False,
+            content: bool = False,
     ) -> SearchResults:
         """
         Search for elements similar to the query text and return raw results.
@@ -236,6 +238,7 @@ class SearchHelper:
         """
         # Ensure database is initialized
         db = cls.get_database()
+        resolver = cls.get_content_resolver()
 
         logger.debug(f"Searching for text: {query_text} with min_score: {min_score}")
 
@@ -251,7 +254,17 @@ class SearchHelper:
         # filtered_elements.reverse()
         filtered_elements = filtered_elements[:limit]
 
+        def resolve_elements(items: List[ElementHierarchical]):
+            for item in items:
+                if item.child_elements:
+                    resolve_elements(item.child_elements)
+                if text:
+                    item.text = resolver.resolve_content(item.content_location, text=True)
+                if content:
+                    item.content = resolver.resolve_content(item.content_location, text=False)
+
         search_tree = db.get_results_outline(filtered_elements)
+        resolve_elements(search_tree)
 
         # Get document sources for these elements
         document_sources = cls._get_document_sources_for_elements([pk for pk, _ in filtered_elements])
@@ -450,7 +463,9 @@ def search_by_text(
         query_text: str,
         limit: int = 10,
         filter_criteria: Dict[str, Any] = None,
-        min_score: float = 0.0
+        min_score: float = 0.0,
+        text: bool = False,
+        content: bool = False,
 ) -> SearchResults:
     """
     Search for elements similar to the query text and return raw results.
@@ -469,7 +484,9 @@ def search_by_text(
         query_text=query_text,
         limit=limit,
         filter_criteria=filter_criteria,
-        min_score=min_score
+        min_score=min_score,
+        text=text,
+        content=content
     )
 
 
