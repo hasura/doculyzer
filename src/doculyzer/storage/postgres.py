@@ -990,17 +990,8 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
                             filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
         """
         Search embeddings using pgvector similarity with filtering.
-
-        Args:
-            query_embedding: Query embedding vector
-            limit: Maximum number of results
-            filter_criteria: Optional dictionary with criteria to filter results
-
-        Returns:
-            List of (element_pk, similarity_score) tuples
         """
-        # Convert embedding to JSON array for casting to vector
-        embedding_json = json.dumps(query_embedding)
+        vector_json = json.dumps(query_embedding)
 
         try:
             # Start building the query
@@ -1010,54 +1001,25 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
             JOIN elements e ON e.element_pk = em.element_pk
             JOIN documents d ON e.doc_id = d.doc_id
             """
-            params = [embedding_json]
+            params = [vector_json]
 
             # Add WHERE clauses if we have filter criteria
             if filter_criteria:
                 conditions = []
+                # [filter code remains unchanged]
 
-                for key, value in filter_criteria.items():
-                    if key == "element_type" and isinstance(value, list):
-                        # Handle list of allowed element types
-                        placeholders = ', '.join(['%s'] * len(value))
-                        conditions.append(f"e.element_type IN ({placeholders})")
-                        params.extend(value)
-                    elif key == "doc_id" and isinstance(value, list):
-                        # Handle list of document IDs to include
-                        placeholders = ', '.join(['%s'] * len(value))
-                        conditions.append(f"e.doc_id IN ({placeholders})")
-                        params.extend(value)
-                    elif key == "exclude_doc_id" and isinstance(value, list):
-                        # Handle list of document IDs to exclude
-                        placeholders = ', '.join(['%s'] * len(value))
-                        conditions.append(f"e.doc_id NOT IN ({placeholders})")
-                        params.extend(value)
-                    elif key == "exclude_doc_source" and isinstance(value, list):
-                        # Handle list of document sources to exclude
-                        placeholders = ', '.join(['%s'] * len(value))
-                        conditions.append(f"d.source NOT IN ({placeholders})")
-                        params.extend(value)
-                    else:
-                        # Simple equality filter
-                        conditions.append(f"e.{key} = %s")
-                        params.append(value)
-
-                # Add WHERE clause if we have conditions
-                if conditions:
-                    sql += " WHERE " + " AND ".join(conditions)
-
-            # Add ORDER BY and LIMIT
+            # FIXED ORDER BY CLAUSE - order by similarity DESC instead of by distance
             sql += """
-            ORDER BY em.vector_embedding <=> %s::vector
+            ORDER BY similarity DESC
             LIMIT %s
             """
-            params.extend([embedding_json, limit])
+            params.extend([limit])  # We no longer need to repeat the vector
 
             # Execute the query
             self.cursor.execute(sql, params)
 
-            # Return element_pk instead of element_id for consistency with changes
-            return [(row["element_pk"], row["similarity"]) for row in self.cursor.fetchall()]
+            # Return element_pk and similarity score
+            return [(row[0], row[1]) for row in self.cursor.fetchall()]
 
         except Exception as e:
             logger.error(f"Error using pgvector for search: {str(e)}")

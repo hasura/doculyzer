@@ -14,7 +14,8 @@ from hasura_ndc.function_connector import FunctionConnector
 from hasura_ndc.instrumentation import \
     with_active_span  # If you aren't planning on adding additional tracing spans, you don't need this!
 from opentelemetry.trace import \
-    get_tracer  # If you aren't planning on adding additional tracing spans, you don't need this either!
+    get_tracer, \
+    get_current_span  # If you aren't planning on adding additional tracing spans, you don't need this either!
 from pydantic import \
     Field  # You only need this import if you plan to have complex inputs/outputs, which function similar to how frameworks like FastAPI do
 import time
@@ -26,11 +27,12 @@ from doculyzer.storage import flatten_hierarchy, ElementFlat
 connector = FunctionConnector()
 
 # This last section shows you how to add OTEL tracing to any of your functions!
-tracer = get_tracer("ndc-sdk-python.server") # You only need a tracer if you plan to add additional Otel spans
+tracer = get_tracer("document_search.server") # You only need a tracer if you plan to add additional Otel spans
 
 @connector.register_query
 async def search_documents(
         search_for: str,
+        include_parents: Optional[bool] = Field(default=None, description="Whether to include parent elements in the search results. Defaults to False."),
         limit: Optional[int] = Field(description="An integer specifying the maximum number of search results to return. Defaults to 10.", default=None),
         min_score: Optional[float] = Field(default=None, description="Min similarity score to consider a match. 0 is neutral. 1 is perfect match. -1 is no match. Defaults to 0.")) -> List[ElementFlat]:
     """
@@ -39,38 +41,47 @@ async def search_documents(
     Items may be related structurally, like parent, child, sibling, explicitly like a link (if the document type
     supports that), and semantically, like a similar word or phrase.
 
+    :param include_parents: Whether to include parent elements in the search results. Defaults to False.
     :param min_score: Min similarity score to consider a match. 0 is neutral. 1 is perfect match. -1 is no match.
     :param search_for: A string representing the query text to search for in the documents.
     :param limit: An integer specifying the maximum number of search results to return. Defaults to 10.
     :return: A SearchResults object containing the search results matching the query.
     """
-    def work(_span, _search_for, _limit, _min_score) -> List[ElementFlat]:
+    async def work(_search_for, _limit, _min_score, _include_parents) -> List[ElementFlat]:
+
+        _span = get_current_span()
         if not isinstance(_limit, int):
             _limit = 10
 
         if not isinstance(_min_score, float):
-            _min_score_ = 0.0
+            _min_score = 0.0
 
-            start_time_1 = time.perf_counter()
-            result = search_by_text(_search_for, _limit, min_score = _min_score_)
-            end_time_1 = time.perf_counter()
-            start_time_2 = time.perf_counter()
-            flat_result = flatten_hierarchy(result.search_tree)
-            end_time_2 = time.perf_counter()
+        if not isinstance(_include_parents, bool):
+            _include_parents = False
 
-            _span.set_attribute("search_time", end_time_1 - start_time_1)
-            _span.set_attribute("flatten_time", end_time_2 - start_time_2)
+        start_time_1 = time.perf_counter()
+        result = search_by_text(_search_for, _limit, min_score = _min_score)
+        end_time_1 = time.perf_counter()
+        start_time_2 = time.perf_counter()
+        flat_result = flatten_hierarchy(result.search_tree)
+        if not _include_parents:
+            flat_result = [r for r in flat_result if r.score is None]
+        end_time_2 = time.perf_counter()
 
-            return flat_result
+        _span.set_attribute("search_time", end_time_1 - start_time_1)
+        _span.set_attribute("flatten_time", end_time_2 - start_time_2)
+
+        return flat_result
 
     return await with_active_span(
         tracer,
         "Search Documents",
-        lambda span: work(span, search_for, limit, min_score),
+        lambda span: work(search_for, limit, min_score, include_parents),
         {
             "search_for": search_for,
             "limit": str(limit),
-            "min_score": str(min_score)
+            "min_score": str(min_score),
+            "include_parents": str(include_parents),
         })
 
 
