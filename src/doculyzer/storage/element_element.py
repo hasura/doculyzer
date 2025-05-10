@@ -276,6 +276,8 @@ def flatten_hierarchy(elements: List[ElementHierarchical], parent_path: str = ""
             metadata=element.metadata,
             score=element.score,
             path=current_path,
+            text=element.text,
+            content=element.content
         )
         flat_list.append(flat_element)
 

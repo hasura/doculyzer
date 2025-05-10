@@ -3,4 +3,4 @@ opentelemetry_sdk~=1.32.1
 opentelemetry_api~=1.32.1
 fastembed~=0.4.2
 psycopg2-binary~=2.9.10
-doculyzer==0.32.0
+doculyzer==0.35.0

@@ -476,6 +476,8 @@ def search_by_text(
         limit: Maximum number of results to return
         filter_criteria: Optional filtering criteria for the search
         min_score: Minimum similarity score threshold (default 0.0)
+        text:
+        content:
 
     Returns:
         SearchResults object with element_pk and similarity scores
