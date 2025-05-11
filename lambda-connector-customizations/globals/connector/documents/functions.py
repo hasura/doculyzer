@@ -8,6 +8,9 @@ In this file you'll find code examples that will help you get up to speed with t
 If you are an old pro and already know what is going on you can get rid of these example functions and start writing your own code.
 """
 from typing import List, Optional
+import os
+import asyncio
+import aiohttp
 
 from hasura_ndc import start
 from hasura_ndc.function_connector import FunctionConnector
@@ -21,13 +24,16 @@ from pydantic import \
 import time
 
 from doculyzer import ingest_documents
-from doculyzer.search import search_by_text
 from doculyzer.storage import flatten_hierarchy, ElementFlat
 
 connector = FunctionConnector()
 
 # This last section shows you how to add OTEL tracing to any of your functions!
 tracer = get_tracer("document_search.server") # You only need a tracer if you plan to add additional Otel spans
+
+# Configuration for the web server
+SEARCH_SERVER_URL = os.environ.get('DOCUMENTS_URI', 'http://localhost:5000')
+SEARCH_API_KEY = os.environ.get('SEARCH_API_KEY')  # Optional API key
 
 @connector.register_query
 async def search_documents(
@@ -52,6 +58,8 @@ async def search_documents(
     async def work(_search_for, _limit, _min_score, _include_parents, _resolve_text, _resolve_content) -> List[ElementFlat]:
 
         _span = get_current_span()
+
+        # Set defaults
         if not isinstance(_limit, int):
             _limit = 10
 
@@ -67,23 +75,48 @@ async def search_documents(
         if not isinstance(_resolve_content, bool):
             _resolve_content = False
 
-        start_time_1 = time.perf_counter()
-        result = search_by_text(_search_for, _limit, min_score = _min_score, text=_resolve_text, content=_resolve_content)
-        end_time_1 = time.perf_counter()
-        start_time_2 = time.perf_counter()
-        flat_result = flatten_hierarchy(result.search_tree)
+        # Prepare request headers
+        headers = {
+            'Content-Type': 'application/json'
+        }
+        if SEARCH_API_KEY:
+            headers['X-API-Key'] = SEARCH_API_KEY
+
+        # Prepare request payload
+        payload = {
+            'query': _search_for,
+            'limit': _limit,
+            'include_parents': _include_parents,
+            'min_score': _min_score,
+            'text': _resolve_text,
+            'content': _resolve_content,
+            'flat': True
+        }
+
+
         try:
-            if not _include_parents:
-                flat_result = [r for r in flat_result if r.score is not None]
+            # Make HTTP request to the search server
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{SEARCH_SERVER_URL}/api/search",
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        raise Exception(f"Search server error {response.status}: {error_text}")
+
+                    response_data = await response.json()
+
+                    _span.set_attribute("result_count", len(response_data.get('search_tree')))
+
         except Exception as e:
             _span.set_attribute("error", str(e))
+            _span.set_attribute("search_error", "HTTP request failed")
+            raise Exception(f"Failed to search documents: {str(e)}")
 
-        end_time_2 = time.perf_counter()
-
-        _span.set_attribute("search_time", end_time_1 - start_time_1)
-        _span.set_attribute("flatten_time", end_time_2 - start_time_2)
-
-        return flat_result
+        return response_data.get('search_tree')
 
     return await with_active_span(
         tracer,
@@ -95,36 +128,6 @@ async def search_documents(
             "min_score": str(min_score),
             "include_parents": str(include_parents),
         })
-
-
-import threading
-
-
-@connector.register_mutation
-async def update_documents() -> bool:
-    """
-    Starts a document ingestion process on another thread.
-    Returns immediately with success if the ingestion process starts successfully.
-
-    :return: A boolean indicating whether the ingestion process was started successfully.
-    """
-
-    def work(_span, _):
-        # Start the ingestion task in a new thread
-        thread = threading.Thread(target=ingest_documents, daemon=True)
-        thread.start()
-
-        # Record that we've started the thread
-        _span.set_attribute("thread.started", True)
-
-        # Return true immediately to indicate successful start
-        return True
-
-    return await with_active_span(
-        tracer,
-        "Trigger Document Ingestion",
-        lambda span: work(span, None),
-        {})
 
 if __name__ == "__main__":
     start(connector)

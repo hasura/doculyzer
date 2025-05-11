@@ -185,13 +185,42 @@ class ElementBase(BaseModel):
         return None
 
 
-class ElementHierarchical(ElementBase):
+class   ElementHierarchical(ElementBase):
     child_elements: List["ElementHierarchical"] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary format for storage."""
+        return {
+            "element_pk": self.element_pk,
+            "element_id": self.element_id,
+            "doc_id": self.doc_id,
+            "element_type": self.element_type,
+            "parent_id": self.parent_id,
+            "content_preview": self.content_preview,
+            "content_location": self.content_location,
+            "content_hash": self.content_hash,
+            "metadata": self.metadata,
+            "child_elements": [t.to_dict() for t in self.child_elements or []]
+        }
 
 
 class ElementFlat(ElementBase):
     path: str
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary format for storage."""
+        return {
+            "element_pk": self.element_pk,
+            "element_id": self.element_id,
+            "doc_id": self.doc_id,
+            "element_type": self.element_type,
+            "parent_id": self.parent_id,
+            "content_preview": self.content_preview,
+            "content_location": self.content_location,
+            "content_hash": self.content_hash,
+            "metadata": self.metadata,
+            "path": self.path
+        }
 
 class ElementType(Enum):
     """Enumeration of common element types."""

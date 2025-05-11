@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 from .adapter import create_content_resolver, ContentResolver
 from .config import Config
-from .storage import ElementRelationship, DocumentDatabase, ElementHierarchical
+from .storage import ElementRelationship, DocumentDatabase, ElementHierarchical, ElementFlat, flatten_hierarchy
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,13 @@ class SearchResultItem(BaseModel):
 
     @property
     def metadata(self) -> Optional[dict]:
-        return json.loads(self._db.get_element(self.element_pk).get("metadata", "{}"))
+        m = self._db.get_element(self.element_pk).get("metadata")
+        if m is None:
+            return {}
+        if isinstance(m, str):
+            json.loads(m)
+        if isinstance(m, dict):
+            return m
 
     @property
     def content(self) -> Optional[str]:
@@ -78,19 +84,29 @@ class SearchResults(BaseModel):
     search_type: str = "embedding"  # Can be "embedding", "text", "content"
     min_score: float = 0.0  # Minimum score threshold used
     documents: List[str] = Field(default_factory=list)  # Unique list of document sources from the results
-    search_tree: Optional[List[ElementHierarchical]]
+    search_tree: Optional[List[ElementHierarchical | ElementFlat]] = None
+    # Track whether content was resolved during search
+    content_resolved: bool = False
+    text_resolved: bool = False
 
     @classmethod
-    def from_tuples(cls, tuples: List[Tuple[int, float]], query: Optional[str] = None,
+    def from_tuples(cls, tuples: List[Tuple[int, float]],
+                    flat: bool = False,
+                    include_parents: bool = True,
+                    query: Optional[str] = None,
                     filter_criteria: Optional[Dict[str, Any]] = None,
                     search_type: str = "embedding",
                     min_score: float = 0.0,
                     search_tree: Optional[List[ElementHierarchical]] = None,
-                    documents: Optional[List[str]] = None) -> "SearchResults":
+                    documents: Optional[List[str]] = None,
+                    content_resolved: bool = False,
+                    text_resolved: bool = False) -> "SearchResults":
         """
         Create a SearchResults object from a list of (element_pk, similarity) tuples.
 
         Args:
+            flat
+            include_parents
             tuples: List of (element_pk, similarity) tuples
             query: Optional query string that produced these results
             filter_criteria: Optional dictionary of filter criteria
@@ -98,11 +114,19 @@ class SearchResults(BaseModel):
             min_score: Minimum score threshold used
             documents: List of unique document sources
             search_tree: Optional tree structure representing the search results
+            content_resolved: Whether content was resolved during search
+            text_resolved: Whether text was resolved during search
 
         Returns:
             SearchResults object
         """
         results = [SearchResultItem(element_pk=pk, similarity=similarity) for pk, similarity in tuples]
+        if flat and include_parents:
+            s = flatten_hierarchy(search_tree)
+        elif flat and not include_parents:
+            s = [r for r in flatten_hierarchy(search_tree) if r.score is not None]
+        else:
+            s = search_tree or []
         return cls(
             results=results,
             total_results=len(results),
@@ -111,7 +135,9 @@ class SearchResults(BaseModel):
             search_type=search_type,
             min_score=min_score,
             documents=documents or [],
-            search_tree=search_tree
+            search_tree=s,
+            content_resolved=content_resolved,
+            text_resolved=text_resolved
         )
 
 
@@ -223,6 +249,8 @@ class SearchHelper:
             min_score: float = 0.0,
             text: bool = False,
             content: bool = False,
+            flat: bool = False,
+            include_parents: bool = True,
     ) -> SearchResults:
         """
         Search for elements similar to the query text and return raw results.
@@ -232,6 +260,10 @@ class SearchHelper:
             limit: Maximum number of results to return
             filter_criteria: Optional filtering criteria for the search
             min_score: Minimum similarity score threshold (default 0.0)
+            text: Whether to resolve text content for results
+            content: Whether to resolve content for results
+            flat: Whether to return flat results
+            include_parents: Whether to include parent elements
 
         Returns:
             SearchResults object with element_pk and similarity scores
@@ -277,7 +309,11 @@ class SearchHelper:
             search_type="text",
             min_score=min_score,
             documents=document_sources,
-            search_tree=search_tree
+            search_tree=search_tree,
+            flat=flat,
+            include_parents=include_parents,
+            content_resolved=content,  # Track whether content was resolved
+            text_resolved=text         # Track whether text was resolved
         )
 
     @classmethod
@@ -466,6 +502,8 @@ def search_by_text(
         min_score: float = 0.0,
         text: bool = False,
         content: bool = False,
+        flat: bool = False,
+        include_parents: bool = True,
 ) -> SearchResults:
     """
     Search for elements similar to the query text and return raw results.
@@ -476,8 +514,10 @@ def search_by_text(
         limit: Maximum number of results to return
         filter_criteria: Optional filtering criteria for the search
         min_score: Minimum similarity score threshold (default 0.0)
-        text:
-        content:
+        text: Whether to resolve text content for results
+        content: Whether to resolve content for results
+        flat: Whether to return flat results
+        include_parents: Whether to include parent elements
 
     Returns:
         SearchResults object with element_pk and similarity scores
@@ -488,7 +528,9 @@ def search_by_text(
         filter_criteria=filter_criteria,
         min_score=min_score,
         text=text,
-        content=content
+        content=content,
+        flat=flat,
+        include_parents=include_parents
     )
 
 
@@ -537,14 +579,19 @@ for i, result in enumerate(results):
         print(f"Content: {result.resolved_content[:100]}...")
     print("---")
 
-# Raw search results with higher score threshold
-search_results = search_by_text("search query", limit=5, min_score=0.8)
+# Raw search results with text and content resolved
+search_results = search_by_text("search query", limit=5, min_score=0.8, text=True, content=True)
 print(f"Found {search_results.total_results} results for '{search_results.query}' with score >= {search_results.min_score}")
 print(f"Document sources: {search_results.documents}")
+print(f"Content resolved: {search_results.content_resolved}, Text resolved: {search_results.text_resolved}")
 for item in search_results.results:
     print(f"Element PK: {item.element_pk}, Similarity: {item.similarity:.4f}")
 
-# Search with filters and lower score threshold
+# Using standard Pydantic v2 serialization - all resolved content is included
+results_dict = search_results.model_dump()
+results_json = search_results.model_dump_json(indent=2)
+
+# Search with filters and content resolution
 results = search_with_content(
     "search query",
     limit=20,

@@ -10,7 +10,7 @@ from . import main
 from . import search
 from .config import Config
 from .crawler import crawl
-from .logging import configure_logging
+from .configure_logging import configure_logging
 from .main import ingest_documents
 from .search import SearchHelper
 from .search import SearchResult

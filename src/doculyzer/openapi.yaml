@@ -1,0 +1,742 @@
+openapi: 3.0.3
+info:
+  title: Document Search API
+  description: |
+    A REST API for semantic document search that provides both basic and advanced search capabilities.
+    The API supports embedding-based similarity search with optional content resolution and relationship information.
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: support@example.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check endpoint
+      description: Check if the API server is healthy and running
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /api/info:
+    get:
+      tags:
+        - Info
+      summary: Get API information
+      description: Returns API version, available endpoints, and configuration
+      operationId: getApiInfo
+      responses:
+        '200':
+          description: API information retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiInfoResponse'
+
+  /api/search:
+    post:
+      tags:
+        - Search
+      summary: Basic search
+      description: Search for elements and return basic results with similarity scores
+      operationId: search
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+      responses:
+        '200':
+          description: Search completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          description: Bad request - invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized - invalid or missing API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/search/advanced:
+    post:
+      tags:
+        - Search
+      summary: Advanced search
+      description: Advanced search with full results including relationships and resolved content
+      operationId: advancedSearch
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdvancedSearchRequest'
+      responses:
+        '200':
+          description: Advanced search completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdvancedSearchResponse'
+        '400':
+          description: Bad request - invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized - invalid or missing API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/search/sources:
+    post:
+      tags:
+        - Search
+      summary: Get document sources
+      description: Get unique document sources from search results
+      operationId: getDocumentSources
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SourcesRequest'
+      responses:
+        '200':
+          description: Document sources retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourcesResponse'
+        '400':
+          description: Bad request - invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized - invalid or missing API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for authentication
+
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: healthy
+        timestamp:
+          type: string
+          format: date-time
+        version:
+          type: string
+          example: "1.0.0"
+      required:
+        - status
+        - timestamp
+        - version
+
+    ApiInfoResponse:
+      type: object
+      properties:
+        name:
+          type: string
+          example: Document Search API
+        version:
+          type: string
+          example: "1.0.0"
+        endpoints:
+          type: object
+          additionalProperties:
+            type: string
+        configuration:
+          type: object
+          properties:
+            max_results:
+              type: integer
+            default_results:
+              type: integer
+            min_score_threshold:
+              type: number
+              format: float
+            timeout:
+              type: integer
+
+    SearchRequest:
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          description: The search query text
+          example: "machine learning algorithms"
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 10
+          description: Maximum number of results to return
+        min_score:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          default: 0.0
+          description: Minimum similarity score threshold
+        filter_criteria:
+          type: object
+          additionalProperties: true
+          description: Optional filtering criteria
+        text:
+          type: boolean
+          default: false
+          description: Whether to include resolved text content
+        content:
+          type: boolean
+          default: false
+          description: Whether to include resolved original content
+        flat:
+          type: boolean
+          default: false
+          description: Whether to return flat results instead of hierarchical
+        include_parents:
+          type: boolean
+          default: true
+          description: Whether to include parent elements in flat results
+
+    AdvancedSearchRequest:
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          description: The search query text
+          example: "deep learning frameworks"
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 10
+          description: Maximum number of results to return
+        min_score:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          default: 0.0
+          description: Minimum similarity score threshold
+        filter_criteria:
+          type: object
+          additionalProperties: true
+          description: Optional filtering criteria
+        resolve_content:
+          type: boolean
+          default: true
+          description: Whether to resolve the original content
+        include_relationships:
+          type: boolean
+          default: true
+          description: Whether to include outgoing relationships
+
+    SourcesRequest:
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          description: The search query text
+          example: "artificial intelligence research"
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 10
+          description: Maximum number of results to consider
+        min_score:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          default: 0.0
+          description: Minimum similarity score threshold
+        filter_criteria:
+          type: object
+          additionalProperties: true
+          description: Optional filtering criteria
+
+    ElementHierarchical:
+      type: object
+      properties:
+        element_pk:
+          type: integer
+          description: Element primary key
+        element_id:
+          type: string
+          description: Element natural key
+        element_type:
+          type: string
+          description: Element type
+        doc_id:
+          type: string
+          description: Document natural key
+        score:
+          type: number
+          format: float
+          nullable: true
+          description: Similarity score (null for parent elements)
+        content_preview:
+          type: string
+          description: Short preview of content
+        content_location:
+          type: string
+          nullable: true
+          description: URI to the element's content
+        parent_id:
+          type: string
+          nullable: true
+          description: Parent element ID
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Element metadata
+        text:
+          type: string
+          nullable: true
+          description: Resolved text content
+        content:
+          type: string
+          nullable: true
+          description: Resolved original content
+        child_elements:
+          type: array
+          items:
+            $ref: '#/components/schemas/ElementHierarchical'
+          description: Child elements in hierarchy
+
+    ElementFlat:
+      type: object
+      properties:
+        element_pk:
+          type: integer
+          description: Element primary key
+        element_id:
+          type: string
+          description: Element natural key
+        element_type:
+          type: string
+          description: Element type
+        doc_id:
+          type: string
+          description: Document natural key
+        score:
+          type: number
+          format: float
+          nullable: true
+          description: Similarity score (null for parent elements)
+        content_preview:
+          type: string
+          description: Short preview of content
+        content_location:
+          type: string
+          nullable: true
+          description: URI to the element's content
+        parent_id:
+          type: string
+          nullable: true
+          description: Parent element ID
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Element metadata
+        text:
+          type: string
+          nullable: true
+          description: Resolved text content
+        content:
+          type: string
+          nullable: true
+          description: Resolved original content
+
+    SearchResult:
+      type: object
+      properties:
+        element_pk:
+          type: integer
+          description: Element primary key
+        similarity:
+          type: number
+          format: float
+          description: Similarity score
+        doc_id:
+          type: string
+          nullable: true
+          description: Document natural key
+        element_id:
+          type: string
+          nullable: true
+          description: Element natural key
+        element_type:
+          type: string
+          nullable: true
+          description: Element type
+        parent_id:
+          type: string
+          nullable: true
+          description: Parent element ID
+        content_preview:
+          type: string
+          nullable: true
+          description: Short preview of the element content
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Element metadata
+        content:
+          type: string
+          nullable: true
+          description: Resolved original content (if requested)
+        text:
+          type: string
+          nullable: true
+          description: Resolved text content (if requested)
+
+    SearchResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchResult'
+          description: List of search results
+        total_results:
+          type: integer
+          description: Total number of results found
+        query:
+          type: string
+          nullable: true
+          description: The search query used
+        filter_criteria:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: Filter criteria used
+        search_type:
+          type: string
+          default: "embedding"
+          description: Type of search performed
+        min_score:
+          type: number
+          format: float
+          default: 0.0
+          description: Minimum score threshold used
+        documents:
+          type: array
+          items:
+            type: string
+          description: Unique document sources
+        search_tree:
+          oneOf:
+            - type: array
+              items:
+                $ref: '#/components/schemas/ElementHierarchical'
+            - type: array
+              items:
+                $ref: '#/components/schemas/ElementFlat'
+          nullable: true
+          description: Tree structure or flat list of results
+        content_resolved:
+          type: boolean
+          default: false
+          description: Whether content was resolved during search
+        text_resolved:
+          type: boolean
+          default: false
+          description: Whether text was resolved during search
+
+    ElementRelationship:
+      type: object
+      properties:
+        relationship_type:
+          type: string
+          description: Type of relationship
+          example: "contains"
+        target_element_pk:
+          type: integer
+          description: Target element primary key
+        target_element_type:
+          type: string
+          description: Target element type
+        target_reference:
+          type: string
+          description: Target element reference
+
+    AdvancedSearchResult:
+      type: object
+      properties:
+        similarity:
+          type: number
+          format: float
+          description: Similarity score
+        element_pk:
+          type: integer
+          description: Element primary key
+        element_id:
+          type: string
+          description: Element natural key
+        element_type:
+          type: string
+          description: Element type
+        content_preview:
+          type: string
+          description: Short preview of the element content
+        content_location:
+          type: string
+          description: URI to the element's content
+        doc_id:
+          type: string
+          description: Document natural key
+        doc_type:
+          type: string
+          description: Document type
+        source:
+          type: string
+          description: URI to the original document source
+        resolved_content:
+          type: string
+          nullable: true
+          description: Resolved original content
+        resolved_text:
+          type: string
+          nullable: true
+          description: Resolved text content
+        resolution_error:
+          type: string
+          nullable: true
+          description: Error message if content resolution failed
+        relationship_count:
+          type: integer
+          description: Number of outgoing relationships
+        relationships:
+          type: object
+          properties:
+            by_type:
+              type: object
+              additionalProperties:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ElementRelationship'
+            contained_elements:
+              type: array
+              items:
+                $ref: '#/components/schemas/ElementRelationship'
+            linked_elements:
+              type: array
+              items:
+                $ref: '#/components/schemas/ElementRelationship'
+            semantic_relationships:
+              type: array
+              items:
+                $ref: '#/components/schemas/ElementRelationship'
+
+    AdvancedSearchResponse:
+      type: object
+      properties:
+        query:
+          type: string
+          description: The search query used
+        total_results:
+          type: integer
+          description: Total number of results found
+        min_score:
+          type: number
+          format: float
+          description: Minimum score threshold used
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdvancedSearchResult'
+
+    SourcesResponse:
+      type: object
+      properties:
+        query:
+          type: string
+          description: The search query used
+        total_results:
+          type: integer
+          description: Total number of results considered
+        document_sources:
+          type: array
+          items:
+            type: string
+          description: Unique document sources
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error type or code
+        message:
+          type: string
+          description: Human-readable error message
+      required:
+        - error
+        - message
+
+tags:
+  - name: Health
+    description: Health check endpoints
+  - name: Info
+    description: API information endpoints
+  - name: Search
+    description: Document search endpoints
+
+# Examples of API usage
+x-code-samples:
+  - lang: Python
+    source: |
+      import requests
+
+      # Basic search with flat results
+      response = requests.post(
+          'http://localhost:5000/api/search',
+          json={
+              'query': 'machine learning',
+              'limit': 5,
+              'min_score': 0.7,
+              'flat': True,
+              'include_parents': False,
+              'text': True
+          },
+          headers={'X-API-Key': 'your-api-key'}
+      )
+      results = response.json()
+
+      # Advanced search
+      response = requests.post(
+          'http://localhost:5000/api/search/advanced',
+          json={
+              'query': 'neural networks',
+              'limit': 10,
+              'resolve_content': True,
+              'include_relationships': True
+          },
+          headers={'X-API-Key': 'your-api-key'}
+      )
+      advanced_results = response.json()
+
+  - lang: cURL
+    source: |
+      # Basic search with hierarchical results
+      curl -X POST "http://localhost:5000/api/search" \
+        -H "X-API-Key: your-api-key" \
+        -H "Content-Type: application/json" \
+        -d '{
+          "query": "machine learning",
+          "limit": 5,
+          "min_score": 0.7,
+          "flat": false,
+          "content": true
+        }'
+
+      # Advanced search
+      curl -X POST "http://localhost:5000/api/search/advanced" \
+        -H "X-API-Key: your-api-key" \
+        -H "Content-Type: application/json" \
+        -d '{
+          "query": "neural networks",
+          "limit": 10,
+          "resolve_content": true,
+          "include_relationships": true
+        }'
+
+  - lang: JavaScript
+    source: |
+      // Using fetch API
+      async function search(query, options = {}) {
+        const response = await fetch('http://localhost:5000/api/search', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-API-Key': 'your-api-key'
+          },
+          body: JSON.stringify({
+            query: query,
+            limit: 10,
+            min_score: 0.5,
+            flat: true,
+            include_parents: false,
+            text: true,
+            ...options
+          })
+        });
+
+        return await response.json();
+      }
+
+      // Using async/await
+      const results = await search('artificial intelligence', {
+        flat: false,
+        content: true
+      });
+      console.log(results);

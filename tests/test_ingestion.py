@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 
 from doculyzer.embeddings import EmbeddingGenerator, get_embedding_generator
 from doculyzer.search import search_by_text
-from doculyzer.storage import flatten_hierarchy
 
 # Load environment variables from .env file
 load_dotenv()
