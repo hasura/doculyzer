@@ -7,7 +7,7 @@ When you add a Python Lambda connector to your Hasura project, this file is gene
 In this file you'll find code examples that will help you get up to speed with the usage of the Hasura lambda connector.
 If you are an old pro and already know what is going on you can get rid of these example functions and start writing your own code.
 """
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import os
 import asyncio
 import aiohttp
@@ -20,11 +20,23 @@ from opentelemetry.trace import \
     get_tracer, \
     get_current_span  # If you aren't planning on adding additional tracing spans, you don't need this either!
 from pydantic import \
-    Field  # You only need this import if you plan to have complex inputs/outputs, which function similar to how frameworks like FastAPI do
-import time
+    Field, BaseModel  # You only need this import if you plan to have complex inputs/outputs, which function similar to how frameworks like FastAPI do
 
-from doculyzer import ingest_documents
-from doculyzer.storage import flatten_hierarchy, ElementFlat
+# Define a minimal ElementFlat type for our return values
+class ElementFlat(BaseModel):
+    element_pk: int
+    score: Optional[float] = None
+    element_id: str = ""
+    element_type: str = ""
+    content_preview: str = ""
+    doc_id: str = ""
+    content_location: Optional[str] = None
+    text: Optional[str] = None
+    content: Optional[str] = None
+    parent_element: Optional[str] = None
+    path: Optional[str] = None
+    content_hash: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 connector = FunctionConnector()
 
@@ -56,7 +68,6 @@ async def search_documents(
     :return: A SearchResults object containing the search results matching the query.
     """
     async def work(_search_for, _limit, _min_score, _include_parents, _resolve_text, _resolve_content) -> List[ElementFlat]:
-
         _span = get_current_span()
 
         # Set defaults
@@ -93,7 +104,6 @@ async def search_documents(
             'flat': True
         }
 
-
         try:
             # Make HTTP request to the search server
             async with aiohttp.ClientSession() as session:
@@ -109,14 +119,21 @@ async def search_documents(
 
                     response_data = await response.json()
 
-                    _span.set_attribute("result_count", len(response_data.get('search_tree')))
-
         except Exception as e:
             _span.set_attribute("error", str(e))
             _span.set_attribute("search_error", "HTTP request failed")
             raise Exception(f"Failed to search documents: {str(e)}")
 
-        return response_data.get('search_tree')
+        try:
+            search_tree = response_data.get('search_tree', [])
+            search_tree = [ElementFlat(**item) for item in search_tree]
+            _span.set_attribute("result_count", len(search_tree))
+            return search_tree
+
+        except Exception as e:
+            _span.set_attribute("error", str(e))
+            _span.set_attribute("processing_error", "Failed to process search results")
+            raise Exception(f"Failed to serialize search documents: {str(e)}")
 
     return await with_active_span(
         tracer,

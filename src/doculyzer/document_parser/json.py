@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 class JSONParser(DocumentParser):
     """Parser for JSON documents with caching for improved performance."""
 
-    def supports_location(self, content_location: str) -> bool:
+    def supports_location(self, content_location: Dict[str, any]) -> bool:
         """
         Check if this parser supports resolving the given location.
 
@@ -39,7 +39,7 @@ class JSONParser(DocumentParser):
             True if supported, False otherwise
         """
         try:
-            location_data = json.loads(content_location)
+            location_data = content_location
             source = location_data.get("source", "")
             element_type = location_data.get("type", "")
 

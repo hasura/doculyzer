@@ -47,7 +47,7 @@ class EnhancedContentResolver(ContentResolver):
         self.max_cache_size = self.config.get("max_cache_size", 1000)
         self.cache_ttl = self.config.get("cache_ttl", 3600)  # 1 hour in seconds
 
-    def resolve_content(self, content_location: str, text: bool = True) -> str:
+    def resolve_content(self, content_location: Dict[str, Any], text: bool = True) -> str:
         """
         Resolve content using appropriate adapter and parser.
 
@@ -70,7 +70,7 @@ class EnhancedContentResolver(ContentResolver):
 
         try:
             # Parse location
-            location_data = json.loads(content_location)
+            location_data = content_location
 
             # Apply path remappings
             location_data = self._apply_path_mappings(location_data)
@@ -141,7 +141,7 @@ class EnhancedContentResolver(ContentResolver):
             logger.error(f"Error resolving content: {str(e)}")
             return f"Error resolving content: {str(e)}"
 
-    def supports_location(self, content_location: str) -> bool:
+    def supports_location(self, content_location: Dict[str, any]) -> bool:
         """
         Check if any adapter and parser support the location.
 
@@ -153,7 +153,7 @@ class EnhancedContentResolver(ContentResolver):
         """
         try:
             # Parse location
-            location_data = json.loads(content_location)
+            location_data = content_location
 
             # Apply path remappings
             location_data = self._apply_path_mappings(location_data)
@@ -192,7 +192,7 @@ class EnhancedContentResolver(ContentResolver):
             logger.debug(f"Error checking support for location: {str(e)}")
             return False
 
-    def get_document_binary(self, content_location: str) -> bytes:
+    def get_document_binary(self, content_location: Dict[str, Any]) -> bytes:
         """
         Get the containing document as a binary blob.
 
@@ -207,7 +207,7 @@ class EnhancedContentResolver(ContentResolver):
         """
         try:
             # Parse location
-            location_data = json.loads(content_location)
+            location_data = content_location
 
             # Apply path remappings
             location_data = self._apply_path_mappings(location_data)
@@ -226,7 +226,7 @@ class EnhancedContentResolver(ContentResolver):
         except Exception as e:
             raise ValueError(f"Error getting document binary: {str(e)}")
 
-    def get_metadata(self, content_location: str) -> Dict[str, Any]:
+    def get_metadata(self, content_location: Dict[str, Any]) -> Dict[str, Any]:
         """
         Get metadata about the content without retrieving the full content.
 
@@ -241,7 +241,7 @@ class EnhancedContentResolver(ContentResolver):
         """
         try:
             # Parse location
-            location_data = json.loads(content_location)
+            location_data = content_location
 
             # Apply path remappings
             location_data = self._apply_path_mappings(location_data)
@@ -363,7 +363,7 @@ class EnhancedContentResolver(ContentResolver):
                 del self.cache[k]
 
     @staticmethod
-    def _get_cache_key(content_location: str, text: bool) -> str:
+    def _get_cache_key(content_location: Dict[str, any], text: bool) -> str:
         """
         Generate cache key for content location.
 
@@ -373,4 +373,4 @@ class EnhancedContentResolver(ContentResolver):
         Returns:
             Cache key
         """
-        return content_location + ("-text" if text else "-native")
+        return json.dumps(content_location) + ("-text" if text else "-native")

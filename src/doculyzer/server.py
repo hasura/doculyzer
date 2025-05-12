@@ -9,7 +9,6 @@ from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 from werkzeug.exceptions import BadRequest, InternalServerError
 
-from doculyzer.storage import flatten_hierarchy
 from .adapter import create_content_resolver
 from .config import Config
 from .search import search_with_content, search_by_text, get_document_sources, SearchResult
@@ -311,8 +310,11 @@ def search_endpoint():
             flat=flat
         )
 
-        # Convert to JSON response
-        return jsonify(results.model_dump())
+        # Use model_dump_json() to properly serialize all nested objects
+        # Then convert back to dict for jsonify()
+        json_str = results.model_dump_json()
+        json_dict = json.loads(json_str)
+        return jsonify(json_dict)
 
     except Exception as e:
         logger.error(f"Search error: {str(e)}")
@@ -496,10 +498,13 @@ try:
     from flask_limiter import Limiter
     from flask_limiter.util import get_remote_address
 
+    # Initialize Limiter with first argument as the key_func (not a parameter name)
     limiter = Limiter(
-        app,
-        key_func=get_remote_address,
-        default_limits=[CONFIG['RATE_LIMIT']]
+        get_remote_address,  # First argument is key_func (no parameter name)
+        app=app,  # Pass app as a keyword argument
+        default_limits=[CONFIG['RATE_LIMIT']],
+        storage_uri="memory://",
+        strategy="fixed-window"
     )
 
     # Apply rate limiting to search endpoints

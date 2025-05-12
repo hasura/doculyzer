@@ -37,7 +37,7 @@ class DocumentParser(ABC):
         """
         pass
 
-    def resolve_content(self, content_location: str, source_content: Optional[Union[str, bytes]] = None) -> str:
+    def resolve_content(self, content_location: Dict[str, any], source_content: Optional[Union[str, bytes]] = None) -> str:
         """
         Resolve content based on location data.
 
@@ -53,7 +53,7 @@ class DocumentParser(ABC):
         """
         try:
             # Parse location data
-            location_data = json.loads(content_location)
+            location_data = content_location
 
             # Get source and element type
             source = location_data.get("source", "")
@@ -132,7 +132,7 @@ class DocumentParser(ABC):
         pass
 
     @staticmethod
-    def get_document_binary(content_location: str) -> bytes:
+    def get_document_binary(content_location: Dict[str, Any]) -> bytes:
         """
         Get the containing document as a binary blob.
 
@@ -146,7 +146,7 @@ class DocumentParser(ABC):
             ValueError: If document cannot be retrieved
         """
         try:
-            location_data = json.loads(content_location)
+            location_data = content_location
             source = location_data.get("source", "")
 
             # Check if source is a file path

@@ -3,7 +3,7 @@ from dataclasses import field
 from enum import Enum
 from typing import Optional, Dict, Any, List, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field, Field
 
 
 class ElementBase(BaseModel):
@@ -22,18 +22,34 @@ class ElementBase(BaseModel):
     element_type: str
     parent_id: Optional[str] = None
     content_preview: str
-    content_location: str
-    text: Optional[str]
-    content: Optional[str]
+    private_content_location: str = Field(alias='content_location', exclude=True)
+    text: Optional[str] = None
+    content: Optional[str] = None
     content_hash: str
 
     # Additional metadata
-    metadata: str
+    metadata: Dict[str, Any] = field(default_factory=dict)
     score: Optional[float] = None
 
     def __str__(self) -> str:
         """String representation of the element."""
         return f"{self.element_type}({self.element_pk}): {self.content_preview[:50]}{'...' if len(self.content_preview) > 50 else ''}"
+
+    @computed_field
+    @property
+    def source(self) -> Optional[str]:
+        try:
+            return json.loads(self.private_content_location).get('source')
+        except (json.JSONDecodeError, AttributeError):
+            return None
+
+    @computed_field
+    @property
+    def content_location(self) -> Optional[Dict[str, Any]]:
+        try:
+            return json.loads(self.private_content_location)
+        except (json.JSONDecodeError, AttributeError):
+            return None
 
     def get_element_type_enum(self) -> "ElementType":
         """
@@ -47,20 +63,6 @@ class ElementBase(BaseModel):
         except (KeyError, AttributeError):
             return ElementType.UNKNOWN
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary format for storage."""
-        return {
-            "element_pk": self.element_pk,
-            "element_id": self.element_id,
-            "doc_id": self.doc_id,
-            "element_type": self.element_type,
-            "parent_id": self.parent_id,
-            "content_preview": self.content_preview,
-            "content_location": self.content_location,
-            "content_hash": self.content_hash,
-            "metadata": self.metadata
-        }
-
     def to_hierarchical(self) -> "ElementHierarchical":
         """
         Converts the current ElementBase object into an ElementHierarchical object.
@@ -72,7 +74,7 @@ class ElementBase(BaseModel):
             element_type=self.element_type,
             parent_id=self.parent_id,
             content_preview=self.content_preview,
-            content_location=self.content_location,
+            content_location=self.private_content_location,
             content_hash=self.content_hash,
             metadata=self.metadata,
             score=self.score,
@@ -81,36 +83,6 @@ class ElementBase(BaseModel):
             child_elements=[]  # Initialize child_elements as an empty list
         )
         return h
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'ElementBase':
-        """
-        Create an ElementElement instance from a dictionary.
-
-        Args:
-            data: Dictionary containing element data
-
-        Returns:
-            ElementElement instance
-        """
-        # Convert the metadata_ field if it exists
-        metadata = data.get("metadata", {})
-        if "metadata_" in data and not metadata:
-            metadata = data.get("metadata_", {})
-
-        return cls(
-            element_pk=data.get("element_pk", 0),
-            element_id=data.get("element_id", ""),
-            doc_id=data.get("doc_id", ""),
-            element_type=data.get("element_type", ""),
-            parent_id=data.get("parent_id"),
-            content_preview=data.get("content_preview", ""),
-            content_location=data.get("content_location", ""),
-            content_hash=data.get("content_hash", ""),
-            metadata=json.dumps(metadata),
-            text=None,
-            content=None
-        )
 
     def is_root(self) -> bool:
         """Check if this is a root element."""
@@ -144,7 +116,7 @@ class ElementBase(BaseModel):
             Header level (1-6) or None if not a header
         """
         if self.element_type.lower() == "header":
-            return json.loads(self.metadata).get("level")
+            return self.metadata.get("level")
         return None
 
     def get_content_type(self) -> str:
@@ -181,46 +153,15 @@ class ElementBase(BaseModel):
             Language string or None if not a code block or language not specified
         """
         if self.element_type.lower() == "code_block":
-            return json.loads(self.metadata).get("language")
+            return self.metadata.get("language")
         return None
 
 
-class   ElementHierarchical(ElementBase):
+class ElementHierarchical(ElementBase):
     child_elements: List["ElementHierarchical"] = field(default_factory=list)
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary format for storage."""
-        return {
-            "element_pk": self.element_pk,
-            "element_id": self.element_id,
-            "doc_id": self.doc_id,
-            "element_type": self.element_type,
-            "parent_id": self.parent_id,
-            "content_preview": self.content_preview,
-            "content_location": self.content_location,
-            "content_hash": self.content_hash,
-            "metadata": self.metadata,
-            "child_elements": [t.to_dict() for t in self.child_elements or []]
-        }
-
 
 class ElementFlat(ElementBase):
     path: str
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary format for storage."""
-        return {
-            "element_pk": self.element_pk,
-            "element_id": self.element_id,
-            "doc_id": self.doc_id,
-            "element_type": self.element_type,
-            "parent_id": self.parent_id,
-            "content_preview": self.content_preview,
-            "content_location": self.content_location,
-            "content_hash": self.content_hash,
-            "metadata": self.metadata,
-            "path": self.path
-        }
 
 class ElementType(Enum):
     """Enumeration of common element types."""
@@ -300,7 +241,7 @@ def flatten_hierarchy(elements: List[ElementHierarchical], parent_path: str = ""
             element_type=element.element_type,
             parent_id=element.parent_id,
             content_preview=element.content_preview,
-            content_location=element.content_location,
+            content_location=element.private_content_location,
             content_hash=element.content_hash,
             metadata=element.metadata,
             score=element.score,

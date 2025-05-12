@@ -334,7 +334,7 @@ class DocumentDatabase(ABC):
             return []
 
         # Convert to ElementElement instance
-        element = ElementBase.from_dict(element_dict)
+        element = ElementBase(**element_dict)
 
         # Start building the ancestry path with the element itself
         ancestry = [element]
@@ -368,7 +368,7 @@ class DocumentDatabase(ABC):
                 break
 
             # Convert to ElementElement
-            parent = ElementBase.from_dict(parent_dict)
+            parent = ElementBase(**parent_dict)
 
             # Add to visited set
             visited.add(parent_pk)

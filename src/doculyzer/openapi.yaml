@@ -323,98 +323,79 @@ components:
           additionalProperties: true
           description: Optional filtering criteria
 
-    ElementHierarchical:
+    # Updated ElementBase schema to reflect new structure
+    ElementBase:
       type: object
       properties:
         element_pk:
           type: integer
-          description: Element primary key
+          description: Auto-increment primary key for the element
         element_id:
           type: string
-          description: Element natural key
-        element_type:
-          type: string
-          description: Element type
+          description: Element natural identifier
         doc_id:
           type: string
-          description: Document natural key
+          description: Document identifier
+        element_type:
+          type: string
+          description: Type of element
+        parent_id:
+          type: string
+          nullable: true
+          description: ID of parent element if any
+        content_preview:
+          type: string
+          description: Short preview of the element's content
+        content_hash:
+          type: string
+          description: Hash of the element's content
+        text:
+          type: string
+          nullable: true
+          description: Text content of the element
+        content:
+          type: string
+          nullable: true
+          description: Full content of the element
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Additional metadata for the element
         score:
           type: number
           format: float
           nullable: true
-          description: Similarity score (null for parent elements)
-        content_preview:
+          description: Similarity score from search
+        # Added computed fields
+        source:
           type: string
-          description: Short preview of content
+          nullable: true
+          description: Source information parsed from content_location
         content_location:
-          type: string
-          nullable: true
-          description: URI to the element's content
-        parent_id:
-          type: string
-          nullable: true
-          description: Parent element ID
-        metadata:
           type: object
           additionalProperties: true
-          description: Element metadata
-        text:
-          type: string
           nullable: true
-          description: Resolved text content
-        content:
-          type: string
-          nullable: true
-          description: Resolved original content
-        child_elements:
-          type: array
-          items:
-            $ref: '#/components/schemas/ElementHierarchical'
-          description: Child elements in hierarchy
+          description: Parsed location information for retrieving content
+
+    ElementHierarchical:
+      allOf:
+        - $ref: '#/components/schemas/ElementBase'
+        - type: object
+          properties:
+            child_elements:
+              type: array
+              items:
+                $ref: '#/components/schemas/ElementHierarchical'
+              description: Child elements in the hierarchy
 
     ElementFlat:
-      type: object
-      properties:
-        element_pk:
-          type: integer
-          description: Element primary key
-        element_id:
-          type: string
-          description: Element natural key
-        element_type:
-          type: string
-          description: Element type
-        doc_id:
-          type: string
-          description: Document natural key
-        score:
-          type: number
-          format: float
-          nullable: true
-          description: Similarity score (null for parent elements)
-        content_preview:
-          type: string
-          description: Short preview of content
-        content_location:
-          type: string
-          nullable: true
-          description: URI to the element's content
-        parent_id:
-          type: string
-          nullable: true
-          description: Parent element ID
-        metadata:
-          type: object
-          additionalProperties: true
-          description: Element metadata
-        text:
-          type: string
-          nullable: true
-          description: Resolved text content
-        content:
-          type: string
-          nullable: true
-          description: Resolved original content
+      allOf:
+        - $ref: '#/components/schemas/ElementBase'
+        - type: object
+          properties:
+            path:
+              type: string
+              description: Path of element IDs from document ID to current element
 
     SearchResult:
       type: object
@@ -446,10 +427,23 @@ components:
           type: string
           nullable: true
           description: Short preview of the element content
+        content_hash:
+          type: string
+          description: Hash of the element's content
         metadata:
           type: object
           additionalProperties: true
           description: Element metadata
+        # Added computed fields
+        source:
+          type: string
+          nullable: true
+          description: Source information parsed from content_location
+        content_location:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: Parsed location information for retrieving content
         content:
           type: string
           nullable: true
@@ -549,8 +543,14 @@ components:
           type: string
           description: Short preview of the element content
         content_location:
+          oneOf:
+            - type: string
+            - type: object
+              additionalProperties: true
+          description: Location information for retrieving content
+        content_hash:
           type: string
-          description: URI to the element's content
+          description: Hash of the element's content
         doc_id:
           type: string
           description: Document natural key
@@ -559,7 +559,7 @@ components:
           description: Document type
         source:
           type: string
-          description: URI to the original document source
+          description: Source information, possibly parsed from content_location
         resolved_content:
           type: string
           nullable: true

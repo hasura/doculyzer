@@ -1,6 +1,7 @@
 import logging
 import os
 import pprint
+import json
 from typing import List
 
 import pytest
@@ -73,10 +74,12 @@ def test_document_search():
     logger.info(f"Searching for similar elements: {query_text}")
     # results: List[SearchResult] = search_with_content(query_text, min_score=-1.0, limit=50)
     text_results = search_by_text(query_text, min_score=-1, limit=50, text=True)
+    # test serialization
+    text_results_json = json.loads(text_results.model_dump_json())
     # logger.info(f"Found {len(results)} similar elements")
 
     # logger.info(pprint.pformat(results))
-    logger.info(pprint.pformat([(item.element_pk, item.doc_id, item.text) for item in text_results.results]))
+    logger.info(pprint.pformat([item for item in text_results_json.get('search_tree')]))
     # logger.info(pprint.pformat(text_results.search_tree))
     # logger.info(pprint.pformat(flatten_hierarchy(text_results.search_tree)))
 

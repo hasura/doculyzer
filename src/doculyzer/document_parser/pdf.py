@@ -252,7 +252,7 @@ class PdfParser(DocumentParser):
                 except Exception as e:
                     logger.warning(f"Failed to delete temporary file {temp_file}: {str(e)}")
 
-    def supports_location(self, content_location: str) -> bool:
+    def supports_location(self, content_location: Dict[str, Any]) -> bool:
         """
         Check if this parser supports resolving the given location.
 
@@ -263,7 +263,7 @@ class PdfParser(DocumentParser):
             True if supported, False otherwise
         """
         try:
-            location_data = json.loads(content_location)
+            location_data = content_location
             source = location_data.get("source", "")
 
             # Check if source exists and is a file
