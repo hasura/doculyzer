@@ -121,6 +121,10 @@ db-libsql = [
     "libsql-client~=0.3.1",
 ]
 
+db-solr = [
+    "pysolr~=3.10.0"
+]
+
 # Database vector extensions
 db-vector = [
     "pgvector>=0.2.0",
@@ -222,6 +226,7 @@ all = [
     "pgvector>=0.2.0",
     "sqlite-vec>=0.1.0",
     "sqlite-vss>=0.1.0",
+    "pysolr>=3.10.0",
 
     # Content Sources
     "atlassian-python-api~=3.41.9",
