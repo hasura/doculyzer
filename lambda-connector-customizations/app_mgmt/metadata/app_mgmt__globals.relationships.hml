@@ -1,0 +1,45 @@
+---
+kind: Relationship
+version: v1
+definition:
+  name: related_documents
+  description: |
+    Relationship: app_mgt_applications.related_documents
+    Type: Function-based relationship
+    Target: globals_search_top_document_matches
+    Mapping:
+      - Source field: description
+      - Target parameter: search_for
+    Parameters:
+      - min_score: 0.3 (default)
+      - limit: 5 (default)
+      - resolve_text: true (default)
+      - include_parents: true (default)
+    Description: Finds documents semantically related to the application's description using content similarity search
+    Example usage: Access related documentation for an application based on its functional description
+
+  sourceType: app_mgmt_applications
+  target:
+    command:
+      name: search_top_document_matches
+      subgraph: globals
+  mapping:
+    - source:
+        fieldPath:
+          - fieldName: description
+      target:
+        argument:
+          argumentName: search_for
+#    - source:
+#        value:
+#          literal: 0.5
+#      target:
+#        argument:
+#          argumentName: min_score
+#    - source:
+#        value:
+#          literal: 10
+#      target:
+#        argument:
+#          argumentName: limit
+

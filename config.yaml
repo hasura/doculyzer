@@ -1,0 +1,93 @@
+storage:
+  path: "./data"
+  backend: "postgresql"
+  postgresql:
+    uri: ${DOCUMENTS_URI}
+
+embedding:
+  enabled: true
+  provider: fastembed
+  model: "sentence-transformers/all-MiniLM-L6-v2"
+  dimensions: 384
+  chunk_size: 512
+  overlap: 128
+  contextual: true
+  window_size: 3
+  overlap_size: 1
+  predecessor_count: 1
+  successor_count: 1
+  ancestor_depth: 2
+
+content_sources:
+#  - name: "Company Confluence"
+#    type: "confluence"
+#    base_url: "https://your-instance.atlassian.net"
+#    username: "your-email@example.com"
+#    api_token: "your-api-token"  # Generate from Atlassian account settings
+#    # Alternatively, use password instead of api_token (not recommended)
+#    # password: "your-password"
+#
+#    # Optional: Specific spaces to process, leave empty to fetch all
+#    spaces:
+#      - "TEAM"
+#      - "DOC"
+#      - "KB"
+#
+#    # Content type filters
+#    include_pages: true
+#    include_blogs: true
+#    include_comments: false
+#    include_attachments: false
+#    exclude_personal_spaces: true
+#
+#    # Optional: Content filters with regex patterns
+#    include_patterns:
+#      - "Project.*"
+#      - "Architecture"
+#    exclude_patterns:
+#      - "Draft.*"
+#      - "OLD"
+#
+#    # Link following settings
+#    max_link_depth: 2
+#
+#    # API settings
+#    expand_macros: true
+#    limit: 500
+#  - name: "file-docs"
+#    type: "file"
+#    base_path: "./assets"
+#    file_pattern: "**/*.md"
+#    watch_for_changes: true
+#    max_link_depth: 2
+  - name: "wikipedia"
+    type: "web"
+    base_url: "https://en.wikipedia.org"
+    url_list:
+      - "https://en.wikipedia.org/wiki/Document_management_system"
+    include_patterns:
+      - "^https://en.wikipedia.org/wiki/"
+    exclude_patterns:
+      - "/Special:"
+      - "/Talk:"
+      - "/Category:"
+      - "/File:"
+    headers:
+      User-Agent: "DoculyzerBot/1.0 (educational project; contact@example.com)"
+    max_link_depth: 1
+    refresh_interval: 604800  # 7 days in seconds
+
+relationship_detection:
+  enabled: true
+  structural: true
+  semantic: false
+  cross_document_semantic:
+    similarity_threshold: 0.70
+
+logging:
+  level: "INFO"
+  file: "./logs/doculyzer.log"
+
+# Path remapping configuration (new)
+path_mappings:
+  "/old/path": "/new/path"

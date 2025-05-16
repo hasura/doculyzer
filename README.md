@@ -13,7 +13,7 @@ Doculyzer is a powerful document management system that creates a universal, str
 │ Confluence API  │     │Parser Adapters  │     │SQLite Backend │
 │ Markdown Files  │◄───►│Structure Extract│◄───►│MongoDB Backend│
 │ HTML from URLs  │     │Embedding Gen    │     │Vector Database│
-│ DOCX Documents  │     │Relationship Map │     │Graph Database │
+│ DOCX Documents  │     │Relationship Map │     │SOLR Backend   │
 └─────────────────┘     └─────────────────┘     └───────────────┘
 ```
 
@@ -94,6 +94,7 @@ Doculyzer supports multiple storage backends through a modular, pluggable archit
 | PostgreSQL | Robust relational database for production | `psycopg2` | `pip install "doculyzer[db-postgresql]"` |
 | PostgreSQL + pgvector | PostgreSQL with vector search | `psycopg2`, `pgvector` | `pip install "doculyzer[db-postgresql,db-vector]"` |
 | MongoDB | Document-oriented database | `pymongo` | `pip install "doculyzer[db-mongodb]"` |
+| SOLR | Enterprise search platform with text and vector search | `pysolr` | `pip install "doculyzer[db-solr]"` |
 | MySQL/MariaDB | Popular open-source SQL database | `sqlalchemy`, `pymysql` | `pip install "doculyzer[db-mysql]"` |
 | Oracle | Enterprise SQL database | `sqlalchemy`, `cx_Oracle` | `pip install "doculyzer[db-oracle]"` |
 | Microsoft SQL Server | Enterprise SQL database | `sqlalchemy`, `pymssql` | `pip install "doculyzer[db-mssql]"` |
@@ -165,6 +166,17 @@ storage:
     username: "admin"  # optional
     password: "password"  # optional
 
+# SOLR (requires pysolr)
+storage:
+  backend: solr
+  solr:
+    host: "localhost"
+    port: 8983
+    core_prefix: "doculyzer"
+    username: "admin"  # optional
+    password: "password"  # optional
+    vector_dimension: 384  # for embedding search
+
 # MySQL/MariaDB (requires sqlalchemy and pymysql)
 storage:
   backend: sqlalchemy
@@ -194,7 +206,7 @@ storage:
 ### Using a Specific Database Backend
 
 ```python
-from doculyzer.db import Neo4jDocumentDatabase, PostgreSQLDocumentDatabase
+from doculyzer.db import Neo4jDocumentDatabase, PostgreSQLDocumentDatabase, SolrDocumentDatabase
 
 # Using Neo4j backend (requires neo4j)
 try:
@@ -214,6 +226,25 @@ except ImportError as e:
     print(f"Could not initialize Neo4jDocumentDatabase: {e}")
     print("Install required dependencies with:")
     print("pip install 'doculyzer[db-neo4j]'")
+
+# Using SOLR backend (requires pysolr)
+try:
+    solr_db = SolrDocumentDatabase({
+        "host": "localhost",
+        "port": 8983,
+        "core_prefix": "doculyzer",
+        "vector_dimension": 384
+    })
+    solr_db.initialize()
+    
+    # Perform hybrid text + vector search
+    results = solr_db.search_by_text("important concept")
+    print(f"Found {len(results)} matching elements")
+    
+except ImportError as e:
+    print(f"Could not initialize SolrDocumentDatabase: {e}")
+    print("Install required dependencies with:")
+    print("pip install 'doculyzer[db-solr]'")
 
 # Using PostgreSQL backend (requires psycopg2)
 try:
@@ -250,6 +281,7 @@ For semantic search, Doculyzer supports several vector-capable database backends
 | SQLite + sqlite-vec | SIMD-accelerated vector search | `sqlean.py`, `sqlite-vec` | `pip install "doculyzer[db-core,db-vector]"` |
 | PostgreSQL + pgvector | Postgres vector extension | `psycopg2`, `pgvector` | `pip install "doculyzer[db-postgresql,db-vector]"` |
 | MongoDB Atlas | Vector search capability | `pymongo` | `pip install "doculyzer[db-mongodb]"` |
+| SOLR | KNN vector search | `pysolr` | `pip install "doculyzer[db-solr]"` |
 | Neo4j Vector Search | Graph + vector search | `neo4j` | `pip install "doculyzer[db-neo4j]"` |
 
 ```python
@@ -258,14 +290,12 @@ from doculyzer import Config
 
 config = Config({
     "storage": {
-        "backend": "postgresql",
-        "postgresql": {
+        "backend": "solr",  # SOLR with built-in vector search capabilities
+        "solr": {
             "host": "localhost",
-            "port": 5432,
-            "database": "doculyzer",
-            "user": "postgres",
-            "password": "postgres",
-            "vector_extension": "pgvector"  # Enable pgvector if available
+            "port": 8983,
+            "core_prefix": "doculyzer",
+            "vector_dimension": 384  # Match your embedding model dimensions
         }
     }
 })
@@ -280,7 +310,7 @@ try:
 except ImportError as e:
     print(f"Vector-capable backend not available: {e}")
     print("Install required dependencies with:")
-    print("pip install 'doculyzer[db-postgresql,db-vector]'")
+    print("pip install 'doculyzer[db-solr]'")
 ```
 
 ## Architecture
@@ -382,6 +412,7 @@ pip install "doculyzer[db-postgresql]"  # PostgreSQL support
 pip install "doculyzer[db-mongodb]"     # MongoDB support
 pip install "doculyzer[db-neo4j]"       # Neo4j support
 pip install "doculyzer[db-mysql]"       # MySQL support
+pip install "doculyzer[db-solr]"        # SOLR support
 pip install "doculyzer[db-libsql]"      # libSQL support
 pip install "doculyzer[db-core]"        # SQLite extensions + SQLAlchemy
 
@@ -447,6 +478,9 @@ python-pptx~=1.0.2
 # sqlean.py~=3.47.0; platform_system == 'Darwin'
 # sqlean.py~=3.47.0; platform_system == 'Linux' and platform_machine == 'x86_64'
 
+# SOLR backend
+# pysolr~=3.9.0
+
 # Database content sources
 # sqlalchemy~=2.0.40
 # psycopg2-binary~=2.9.9; platform_system != 'Windows'
@@ -476,7 +510,7 @@ Create a configuration file `config.yaml`:
 
 ```yaml
 storage:
-  backend: sqlite  # Options: file, sqlite, mongodb, postgresql, sqlalchemy
+  backend: sqlite  # Options: file, sqlite, mongodb, postgresql, sqlalchemy, solr
   path: "./data"
   
   # MongoDB-specific configuration (if using MongoDB)
@@ -486,6 +520,15 @@ storage:
     db_name: doculyzer
     username: myuser  # optional
     password: mypassword  # optional
+
+  # SOLR-specific configuration (if using SOLR)
+  solr:
+    host: localhost
+    port: 8983
+    core_prefix: doculyzer
+    username: admin  # optional
+    password: password  # optional
+    vector_dimension: 384  # Match your embedding dimension
 
 embedding:
   enabled: true
@@ -758,6 +801,11 @@ pip install doculyzer
 pip install "doculyzer[db-core,fastembed]"
 ```
 
+### Enterprise Search with SOLR
+```
+pip install "doculyzer[db-solr,fastembed]"
+```
+
 ### Production PostgreSQL with Database Content Sources
 ```
 pip install "doculyzer[db-postgresql,source-database,fastembed]"
@@ -772,6 +820,7 @@ pip install "doculyzer[db-all,embedding-all,source-all,cloud-aws]"
 
 Tested and working with:
 - SQLite storage (with and without vector search plugins)
+- SOLR storage (with vector search capabilities)
 - Web Content Source
 - File Content Source
 - Database Content Source

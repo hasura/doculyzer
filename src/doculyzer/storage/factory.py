@@ -6,11 +6,12 @@ while maintaining pointers to original content.
 import logging
 from typing import Dict, Any
 
-from .postgres import PostgreSQLDocumentDatabase
 from .base import DocumentDatabase
 from .file import FileDocumentDatabase
 from .mongodb import MongoDBDocumentDatabase
 from .neo4j_graph import Neo4jDocumentDatabase
+from .postgres import PostgreSQLDocumentDatabase
+from .solr import SolrDocumentDatabase
 from .sqlite import SQLiteDocumentDatabase
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,13 @@ def get_document_database(config: Dict[str, Any]) -> DocumentDatabase:
         return FileDocumentDatabase(storage_path)
     elif backend_type == "sqlite":
         return SQLiteDocumentDatabase(storage_path)
+    elif backend_type == "solr":
+        return SolrDocumentDatabase(config.get("solr", {
+            'host': 'localhost',
+            'port': 8983,
+            'core_prefix': 'doculyzer',
+            'vector_dimension': 384  # Match your embedding model dimension
+        }))
     elif backend_type.startswith("postgres"):
         return PostgreSQLDocumentDatabase(config.get("postgres", config.get("postgresql", {})))
     elif backend_type == "mongodb":

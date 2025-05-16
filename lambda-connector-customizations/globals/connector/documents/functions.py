@@ -91,11 +91,15 @@ SEARCH_SERVER_URL = os.environ.get('DOCUMENTS_URI', 'http://localhost:5000')
 SEARCH_API_KEY = os.environ.get('SEARCH_API_KEY')  # Optional API key
 
 @connector.register_query
-async def search_documents(
+async def search_document_detail(
         search_for: str,
         include_parents: Optional[bool] = Field(
             default=None,
             description="Include containing elements (e.g., sections containing matching paragraphs) to provide fuller context. Parent elements help understand where matches fit in the document structure. Defaults to False."
+        ),
+        just_documents: Optional[bool] = Field(
+            default=None,
+            description="Include only the top level documents for the search."
         ),
         resolve_content: Optional[bool] = Field(
             default=None,
@@ -147,6 +151,8 @@ async def search_documents(
         to provide fuller context. Useful when matching content is part of a larger relevant section. Defaults to False.
     :param limit: Maximum number of results to return. Higher limits find more matches but may include less relevant content.
         Defaults to 10.
+    :param just_documents: If True, returns only the highest scoring element per document, with path and content_location
+        updated to match the top-level document. Useful for document-level searches.
 
     Returns:
     A SearchResults object containing matching elements with:
@@ -162,7 +168,7 @@ async def search_documents(
     - Related: Paragraph about international transfer costs (score: 0.65)
     - Broader: Table of all service fees (score: 0.45)
     """
-    async def work(_search_for, _limit, _min_score, _include_parents, _resolve_text, _resolve_content) -> List[ElementFlat]:
+    async def work(_search_for, _limit, _min_score, _include_parents, _resolve_text, _resolve_content, _just_documents) -> List[ElementFlat]:
         _span = get_current_span()
 
         # Set defaults
@@ -181,12 +187,18 @@ async def search_documents(
         if not isinstance(_resolve_content, bool):
             _resolve_content = False
 
+        if not isinstance(_just_documents, bool):
+            _just_documents = False
+
         # Prepare request headers
         headers = {
             'Content-Type': 'application/json'
         }
         if SEARCH_API_KEY:
             headers['X-API-Key'] = SEARCH_API_KEY
+
+        if _just_documents:
+            _include_parents = False
 
         # Prepare request payload
         payload = {
@@ -222,6 +234,22 @@ async def search_documents(
         try:
             search_tree = response_data.get('search_tree', [])
             search_tree = [ElementFlat(**item) for item in search_tree]
+
+            # Process results for just_documents if needed
+            if _just_documents:
+                # Group by document and find highest scoring element
+                doc_map = {}
+                for element in search_tree:
+                    doc_id = element.doc_id
+
+                    if doc_id not in doc_map or (element.score if element.score is not None else -1) > doc_map[doc_id].score:
+                        doc_map[doc_id] = element
+
+                # Extract the top elements as a list
+                top_elements = list(doc_map.values())
+
+                search_tree = top_elements
+
             _span.set_attribute("result_count", len(search_tree))
             return search_tree
 
@@ -233,13 +261,63 @@ async def search_documents(
     return await with_active_span(
         tracer,
         "Search Documents",
-        lambda span: work(search_for, limit, min_score, include_parents, resolve_content, resolve_text),
+        lambda span: work(search_for, limit, min_score, include_parents, resolve_text, resolve_content, just_documents),
         {
             "search_for": search_for,
             "limit": str(limit),
             "min_score": str(min_score),
             "include_parents": str(include_parents),
+            "just_documents": str(just_documents),
         })
+
+@connector.register_query
+async def search_top_document_matches(
+        search_for: str,
+        resolve_content: Optional[bool] = Field(
+            default=None,
+            description="Include complete structured content of matching elements. Useful when document structure (like XML or JSON) contains important context beyond plain text. Defaults to False."
+        ),
+        resolve_text: Optional[bool] = Field(
+            default=True,  # Default to True for this function
+            description="Include complete text content of matching elements. Always defaults to True for this query to provide full context of the best matches."
+        ),
+        limit: Optional[int] = Field(
+            default=None,
+            description="Maximum results to return. Higher limits find more matches but may include less relevant content. Consider balancing with min_score to maintain relevance quality. Defaults to 10."
+        ),
+        min_score: Optional[float] = Field(
+            default=None,
+            description="Semantic similarity threshold (-1 to 1). Higher values ensure closer conceptual matches: 0.7+ for exact concepts, 0.5+ for closely related, 0.3+ for broadly related, 0.1+ for exploratory searches. Defaults to 0."
+        )
+) -> List[ElementFlat]:
+    """
+    This function performs a document-level semantic search, returning the best matching element from each document.
+
+    It always sets just_documents=True and calls search_document_detail, which:
+    1. Searches at the document level
+    2. For each document, selects only the element with the highest score
+    3. Standardizes path and content_location to match the top-level document
+
+    This approach is useful when you want document-level results but with the most relevant content
+    from each document highlighted, while maintaining a document-oriented result structure.
+
+    Parameters are the same as search_document_detail except:
+    - just_documents is always set to True
+    - resolve_text defaults to True to provide the complete text of the best matches
+
+    Returns:
+    A list of ElementFlat objects representing the top matching element from each document.
+    """
+    # Simply call the original query with just_documents=True
+    return await search_document_detail(
+        search_for=search_for,
+        include_parents=False,
+        just_documents=True,
+        resolve_content=resolve_content,
+        resolve_text=resolve_text if resolve_text is not None else True,  # Default to True if None
+        limit=limit,
+        min_score=min_score
+    )
 
 if __name__ == "__main__":
     start(connector)

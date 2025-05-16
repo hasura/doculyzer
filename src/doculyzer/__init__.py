@@ -16,6 +16,7 @@ from .search import SearchHelper
 from .search import SearchResult
 from .search import search_with_content
 from .vendor import get_vendor_path
+from .server import app
 
 configure_logging()
 
