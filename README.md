@@ -4,18 +4,7 @@
 
 Doculyzer is a powerful document management system that creates a universal, structured representation of documents from various sources while maintaining pointers to the original content rather than duplicating it.
 
-```
-┌─────────────────┐     ┌─────────────────┐     ┌────────────────┐
-│ Content Sources │     │Document Ingester│     │  Storage Layer │
-└────────┬────────┘     └────────┬────────┘     └────────┬───────┘
-         │                       │                       │
-┌────────┼────────┐     ┌────────┼────────┐     ┌────────┼──────┐
-│ Confluence API  │     │Parser Adapters  │     │SQLite Backend │
-│ Markdown Files  │◄───►│Structure Extract│◄───►│MongoDB Backend│
-│ HTML from URLs  │     │Embedding Gen    │     │Vector Database│
-│ DOCX Documents  │     │Relationship Map │     │Graph Database │
-└─────────────────┘     └─────────────────┘     └───────────────┘
-```
+![Diagram](assets/document-flow-diagram.png)
 
 ## Key Features
 
