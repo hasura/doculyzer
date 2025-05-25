@@ -18,6 +18,8 @@ class SearchResultItem(BaseModel):
     """Pydantic model for a single search result item."""
     element_pk: int
     similarity: float
+    confidence: Optional[float] = None  # For topic search results
+    topics: Optional[List[str]] = None  # For topic search results
     _db: Optional[DocumentDatabase] = PrivateAttr()
     _resolver: Optional[ContentResolver] = PrivateAttr()
 
@@ -62,7 +64,8 @@ class SearchResultItem(BaseModel):
         A dynamic property that calls resolver.resolve_content() to return its value.
         """
         if self._resolver and self.element_pk:
-            return self._resolver.resolve_content(self._db.get_element(self.element_pk).get("content_location"), text=False)
+            return self._resolver.resolve_content(self._db.get_element(self.element_pk).get("content_location"),
+                                                  text=False)
         return None
 
     @property
@@ -71,7 +74,8 @@ class SearchResultItem(BaseModel):
         A dynamic property that calls resolver.resolve_content() to return its value.
         """
         if self._resolver and self.element_pk:
-            return self._resolver.resolve_content(self._db.get_element(self.element_pk).get("content_location"), text=True)
+            return self._resolver.resolve_content(self._db.get_element(self.element_pk).get("content_location"),
+                                                  text=True)
         return None
 
 
@@ -81,13 +85,20 @@ class SearchResults(BaseModel):
     total_results: int = 0
     query: Optional[str] = None
     filter_criteria: Optional[Dict[str, Any]] = None
-    search_type: str = "embedding"  # Can be "embedding", "text", "content"
+    # Topic filtering criteria
+    include_topics: Optional[List[str]] = None
+    exclude_topics: Optional[List[str]] = None
+    min_confidence: Optional[float] = None
+    search_type: str = "embedding"  # Can be "embedding", "text", "content", "topic"
     min_score: float = 0.0  # Minimum score threshold used
     documents: List[str] = Field(default_factory=list)  # Unique list of document sources from the results
     search_tree: Optional[List[ElementHierarchical | ElementFlat]] = None
     # Track whether content was resolved during search
     content_resolved: bool = False
     text_resolved: bool = False
+    # Topic-related metadata
+    supports_topics: bool = False
+    topic_statistics: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_tuples(cls, tuples: List[Tuple[int, float]],
@@ -95,12 +106,17 @@ class SearchResults(BaseModel):
                     include_parents: bool = True,
                     query: Optional[str] = None,
                     filter_criteria: Optional[Dict[str, Any]] = None,
+                    include_topics: Optional[List[str]] = None,
+                    exclude_topics: Optional[List[str]] = None,
+                    min_confidence: Optional[float] = None,
                     search_type: str = "embedding",
                     min_score: float = 0.0,
                     search_tree: Optional[List[ElementHierarchical]] = None,
                     documents: Optional[List[str]] = None,
                     content_resolved: bool = False,
-                    text_resolved: bool = False) -> "SearchResults":
+                    text_resolved: bool = False,
+                    supports_topics: bool = False,
+                    topic_statistics: Optional[Dict[str, Any]] = None) -> "SearchResults":
         """
         Create a SearchResults object from a list of (element_pk, similarity) tuples.
 
@@ -110,12 +126,17 @@ class SearchResults(BaseModel):
             tuples: List of (element_pk, similarity) tuples
             query: Optional query string that produced these results
             filter_criteria: Optional dictionary of filter criteria
+            include_topics: Topic patterns that were included
+            exclude_topics: Topic patterns that were excluded
+            min_confidence: Minimum confidence threshold for topic results
             search_type: Type of search performed
             min_score: Minimum score threshold used
             documents: List of unique document sources
             search_tree: Optional tree structure representing the search results
             content_resolved: Whether content was resolved during search
             text_resolved: Whether text was resolved during search
+            supports_topics: Whether the backend supports topics
+            topic_statistics: Topic distribution statistics
 
         Returns:
             SearchResults object
@@ -132,12 +153,65 @@ class SearchResults(BaseModel):
             total_results=len(results),
             query=query,
             filter_criteria=filter_criteria,
+            include_topics=include_topics,
+            exclude_topics=exclude_topics,
+            min_confidence=min_confidence,
             search_type=search_type,
             min_score=min_score,
             documents=documents or [],
             search_tree=s,
             content_resolved=content_resolved,
-            text_resolved=text_resolved
+            text_resolved=text_resolved,
+            supports_topics=supports_topics,
+            topic_statistics=topic_statistics
+        )
+
+    @classmethod
+    def from_topic_results(cls, topic_results: List[Dict[str, Any]],
+                           query: Optional[str] = None,
+                           include_topics: Optional[List[str]] = None,
+                           exclude_topics: Optional[List[str]] = None,
+                           min_confidence: Optional[float] = None,
+                           documents: Optional[List[str]] = None,
+                           supports_topics: bool = False,
+                           topic_statistics: Optional[Dict[str, Any]] = None) -> "SearchResults":
+        """
+        Create a SearchResults object from topic search results.
+
+        Args:
+            topic_results: List of dictionaries from database search_by_text_and_topics
+            query: Optional query string that produced these results
+            include_topics: Topic patterns that were included
+            exclude_topics: Topic patterns that were excluded
+            min_confidence: Minimum confidence threshold used
+            documents: List of unique document sources
+            supports_topics: Whether the backend supports topics
+            topic_statistics: Topic distribution statistics
+
+        Returns:
+            SearchResults object
+        """
+        results = []
+        for result in topic_results:
+            item = SearchResultItem(
+                element_pk=result['element_pk'],
+                similarity=result.get('similarity', 0.0),
+                confidence=result.get('confidence'),
+                topics=result.get('topics', [])
+            )
+            results.append(item)
+
+        return cls(
+            results=results,
+            total_results=len(results),
+            query=query,
+            include_topics=include_topics,
+            exclude_topics=exclude_topics,
+            min_confidence=min_confidence,
+            search_type="topic",
+            documents=documents or [],
+            supports_topics=supports_topics,
+            topic_statistics=topic_statistics
         )
 
 
@@ -145,6 +219,9 @@ class SearchResult(BaseModel):
     """Pydantic model for storing search result data in a flat structure with relationships."""
     # Similarity score
     similarity: float
+    # Topic fields (optional)
+    confidence: Optional[float] = None
+    topics: Optional[List[str]] = None
 
     # Element fields
     element_pk: int = Field(default=-1,
@@ -246,6 +323,9 @@ class SearchHelper:
             query_text: str,
             limit: int = 10,
             filter_criteria: Dict[str, Any] = None,
+            include_topics: Optional[List[str]] = None,
+            exclude_topics: Optional[List[str]] = None,
+            min_confidence: Optional[float] = None,
             min_score: float = 0.0,
             text: bool = False,
             content: bool = False,
@@ -259,6 +339,9 @@ class SearchHelper:
             query_text: The text to search for
             limit: Maximum number of results to return
             filter_criteria: Optional filtering criteria for the search
+            include_topics: Topic LIKE patterns to include (e.g., ['security%', '%.policy%'])
+            exclude_topics: Topic LIKE patterns to exclude (e.g., ['deprecated%'])
+            min_confidence: Minimum confidence threshold for topic results
             min_score: Minimum similarity score threshold (default 0.0)
             text: Whether to resolve text content for results
             content: Whether to resolve content for results
@@ -274,47 +357,124 @@ class SearchHelper:
 
         logger.debug(f"Searching for text: {query_text} with min_score: {min_score}")
 
-        # Perform the search
-        similar_elements = db.search_by_text(query_text, limit=limit * 2, filter_criteria=filter_criteria)
-        logger.info(f"Found {len(similar_elements)} similar elements before score filtering")
+        # Check if topic filtering is requested and supported
+        supports_topics = db.supports_topics()
+        using_topics = include_topics or exclude_topics or min_confidence is not None
 
-        # Filter by minimum score
-        filtered_elements = [elem for elem in similar_elements if elem[1] >= min_score]
-        logger.info(f"Found {len(filtered_elements)} elements after score filtering (threshold: {min_score})")
+        if using_topics and supports_topics:
+            # Use topic-aware search
+            logger.debug(
+                f"Using topic search - include: {include_topics}, exclude: {exclude_topics}, min_confidence: {min_confidence}")
 
-        # Apply limit after filtering
-        # filtered_elements.reverse()
-        filtered_elements = filtered_elements[:limit]
+            topic_results = db.search_by_text_and_topics(
+                search_text=query_text,
+                include_topics=include_topics,
+                exclude_topics=exclude_topics,
+                min_confidence=min_confidence or 0.7,
+                limit=limit
+            )
 
-        def resolve_elements(items: List[ElementHierarchical]):
-            for item in items:
-                if item.child_elements:
-                    resolve_elements(item.child_elements)
-                if text:
-                    item.text = resolver.resolve_content(item.content_location, text=True)
-                if content:
-                    item.content = resolver.resolve_content(item.content_location, text=False)
+            # Convert topic results to tuples format for search tree generation
+            filtered_elements = [(result['element_pk'], result.get('similarity', 1.0)) for result in topic_results]
 
-        search_tree = db.get_results_outline(filtered_elements)
-        resolve_elements(search_tree)
+            # Build search tree and resolve content if requested
+            def resolve_elements(items: List[ElementHierarchical]):
+                for item in items:
+                    if item.child_elements:
+                        resolve_elements(item.child_elements)
+                    if text:
+                        item.text = resolver.resolve_content(item.content_location, text=True)
+                    if content:
+                        item.content = resolver.resolve_content(item.content_location, text=False)
 
-        # Get document sources for these elements
-        document_sources = cls._get_document_sources_for_elements([pk for pk, _ in filtered_elements])
+            search_tree = db.get_results_outline(filtered_elements)
+            resolve_elements(search_tree)
 
-        # Convert to SearchResults
-        return SearchResults.from_tuples(
-            tuples=filtered_elements,
-            query=query_text,
-            filter_criteria=filter_criteria,
-            search_type="text",
-            min_score=min_score,
-            documents=document_sources,
-            search_tree=search_tree,
-            flat=flat,
-            include_parents=include_parents,
-            content_resolved=content,  # Track whether content was resolved
-            text_resolved=text         # Track whether text was resolved
-        )
+            # Get document sources and topic statistics
+            element_pks = [result['element_pk'] for result in topic_results]
+            document_sources = cls._get_document_sources_for_elements(element_pks)
+            topic_statistics = db.get_topic_statistics()
+
+            # Create SearchResultItems with topic information
+            results = []
+            for result in topic_results:
+                item = SearchResultItem(
+                    element_pk=result['element_pk'],
+                    similarity=result.get('similarity', 1.0),
+                    confidence=result.get('confidence'),
+                    topics=result.get('topics', [])
+                )
+                results.append(item)
+
+            return SearchResults(
+                results=results,
+                total_results=len(results),
+                query=query_text,
+                filter_criteria=filter_criteria,
+                include_topics=include_topics,
+                exclude_topics=exclude_topics,
+                min_confidence=min_confidence,
+                search_type="topic",
+                min_score=min_score,
+                documents=document_sources,
+                search_tree=flatten_hierarchy(search_tree) if flat and include_parents else [r for r in
+                                                                                             flatten_hierarchy(
+                                                                                                 search_tree) if
+                                                                                             r.score is not None] if flat and not include_parents else search_tree or [],
+                content_resolved=content,
+                text_resolved=text,
+                supports_topics=supports_topics,
+                topic_statistics=topic_statistics
+            )
+        else:
+            # Use regular text search
+            if using_topics and not supports_topics:
+                logger.warning("Topic filtering requested but not supported by database backend")
+
+            # Perform the regular search
+            similar_elements = db.search_by_text(query_text, limit=limit * 2, filter_criteria=filter_criteria)
+            logger.info(f"Found {len(similar_elements)} similar elements before score filtering")
+
+            # Filter by minimum score
+            filtered_elements = [elem for elem in similar_elements if elem[1] >= min_score]
+            logger.info(f"Found {len(filtered_elements)} elements after score filtering (threshold: {min_score})")
+
+            # Apply limit after filtering
+            filtered_elements = filtered_elements[:limit]
+
+            def resolve_elements(items: List[ElementHierarchical]):
+                for item in items:
+                    if item.child_elements:
+                        resolve_elements(item.child_elements)
+                    if text:
+                        item.text = resolver.resolve_content(item.content_location, text=True)
+                    if content:
+                        item.content = resolver.resolve_content(item.content_location, text=False)
+
+            search_tree = db.get_results_outline(filtered_elements)
+            resolve_elements(search_tree)
+
+            # Get document sources for these elements
+            document_sources = cls._get_document_sources_for_elements([pk for pk, _ in filtered_elements])
+
+            # Convert to SearchResults
+            return SearchResults.from_tuples(
+                tuples=filtered_elements,
+                query=query_text,
+                filter_criteria=filter_criteria,
+                include_topics=include_topics,
+                exclude_topics=exclude_topics,
+                min_confidence=min_confidence,
+                search_type="text",
+                min_score=min_score,
+                documents=document_sources,
+                search_tree=search_tree,
+                flat=flat,
+                include_parents=include_parents,
+                content_resolved=content,
+                text_resolved=text,
+                supports_topics=supports_topics
+            )
 
     @classmethod
     def _get_document_sources_for_elements(cls, element_pks: List[int]) -> List[str]:
@@ -358,6 +518,9 @@ class SearchHelper:
             query_text: str,
             limit: int = 10,
             filter_criteria: Dict[str, Any] = None,
+            include_topics: Optional[List[str]] = None,
+            exclude_topics: Optional[List[str]] = None,
+            min_confidence: Optional[float] = None,
             resolve_content: bool = True,
             include_relationships: bool = True,
             min_score: float = 0.0
@@ -369,6 +532,9 @@ class SearchHelper:
             query_text: The text to search for
             limit: Maximum number of results to return
             filter_criteria: Optional filtering criteria for the search
+            include_topics: Topic LIKE patterns to include (e.g., ['security%', '%.policy%'])
+            exclude_topics: Topic LIKE patterns to exclude (e.g., ['deprecated%'])
+            min_confidence: Minimum confidence threshold for topic results
             resolve_content: Whether to resolve the original content
             include_relationships: Whether to include outgoing relationships
             min_score: Minimum similarity score threshold (default 0.0)
@@ -387,15 +553,21 @@ class SearchHelper:
             query_text,
             limit=limit,
             filter_criteria=filter_criteria,
+            include_topics=include_topics,
+            exclude_topics=exclude_topics,
+            min_confidence=min_confidence,
             min_score=min_score
         )
-        similar_elements = [(item.element_pk, item.similarity) for item in search_results.results]
-        logger.info(f"Found {len(similar_elements)} similar elements after score filtering")
+
+        logger.info(f"Found {len(search_results.results)} similar elements after filtering")
 
         results = []
 
         # Process each search result
-        for element_pk, similarity in similar_elements:
+        for item in search_results.results:
+            element_pk = item.element_pk
+            similarity = item.similarity
+
             # Get the element
             element = db.get_element(element_pk)
             if not element:
@@ -422,6 +594,9 @@ class SearchHelper:
             result = SearchResult(
                 # Similarity score
                 similarity=similarity,
+                # Topic fields (if available)
+                confidence=item.confidence,
+                topics=item.topics,
 
                 # Element fields
                 element_pk=element_pk,
@@ -465,6 +640,9 @@ def search_with_content(
         query_text: str,
         limit: int = 10,
         filter_criteria: Dict[str, Any] = None,
+        include_topics: Optional[List[str]] = None,
+        exclude_topics: Optional[List[str]] = None,
+        min_confidence: Optional[float] = None,
         resolve_content: bool = True,
         include_relationships: bool = True,
         min_score: float = 0.0
@@ -477,6 +655,9 @@ def search_with_content(
         query_text: The text to search for
         limit: Maximum number of results to return
         filter_criteria: Optional filtering criteria for the search
+        include_topics: Topic LIKE patterns to include (e.g., ['security%', '%.policy%'])
+        exclude_topics: Topic LIKE patterns to exclude (e.g., ['deprecated%'])
+        min_confidence: Minimum confidence threshold for topic results
         resolve_content: Whether to resolve the original content
         include_relationships: Whether to include outgoing relationships
         min_score: Minimum similarity score threshold (default 0.0)
@@ -488,6 +669,9 @@ def search_with_content(
         query_text=query_text,
         limit=limit,
         filter_criteria=filter_criteria,
+        include_topics=include_topics,
+        exclude_topics=exclude_topics,
+        min_confidence=min_confidence,
         resolve_content=resolve_content,
         include_relationships=include_relationships,
         min_score=min_score
@@ -499,6 +683,9 @@ def search_by_text(
         query_text: str,
         limit: int = 10,
         filter_criteria: Dict[str, Any] = None,
+        include_topics: Optional[List[str]] = None,
+        exclude_topics: Optional[List[str]] = None,
+        min_confidence: Optional[float] = None,
         min_score: float = 0.0,
         text: bool = False,
         content: bool = False,
@@ -513,6 +700,9 @@ def search_by_text(
         query_text: The text to search for
         limit: Maximum number of results to return
         filter_criteria: Optional filtering criteria for the search
+        include_topics: Topic LIKE patterns to include (e.g., ['security%', '%.policy%'])
+        exclude_topics: Topic LIKE patterns to exclude (e.g., ['deprecated%'])
+        min_confidence: Minimum confidence threshold for topic results
         min_score: Minimum similarity score threshold (default 0.0)
         text: Whether to resolve text content for results
         content: Whether to resolve content for results
@@ -526,6 +716,9 @@ def search_by_text(
         query_text=query_text,
         limit=limit,
         filter_criteria=filter_criteria,
+        include_topics=include_topics,
+        exclude_topics=exclude_topics,
+        min_confidence=min_confidence,
         min_score=min_score,
         text=text,
         content=content,
@@ -548,56 +741,102 @@ def get_document_sources(search_results: SearchResults) -> List[str]:
     return search_results.documents
 
 
+# Helper functions for topic management
+def get_element_topics(element_pk: int) -> List[str]:
+    """
+    Get topics assigned to a specific element.
+
+    Args:
+        element_pk: Element primary key
+
+    Returns:
+        List of topic strings assigned to this element
+    """
+    db = SearchHelper.get_database()
+    return db.get_embedding_topics(element_pk)
+
+
+def get_topic_statistics() -> Dict[str, Dict[str, Any]]:
+    """
+    Get statistics about topic distribution across embeddings.
+
+    Returns:
+        Dictionary mapping topic strings to statistics
+    """
+    db = SearchHelper.get_database()
+    return db.get_topic_statistics()
+
+
+def supports_topics() -> bool:
+    """
+    Check if the current database backend supports topics.
+
+    Returns:
+        True if topics are supported, False otherwise
+    """
+    db = SearchHelper.get_database()
+    return db.supports_topics()
+
+
 # Example usage:
 """
-# Using the singleton-based convenience function with score threshold
-results = search_with_content("search query", min_score=0.0)
+# Using topic filters with existing search methods
 
-# Print results with relationship information
-for i, result in enumerate(results):
-    print(f"Result {i+1}: {result.element_type} (Score: {result.similarity:.4f})")
+# Regular text search with topic filtering
+results = search_by_text(
+    "security policy",
+    include_topics=['security%', '%.policy%'],
+    exclude_topics=['deprecated%'],
+    min_confidence=0.8,
+    limit=10
+)
+
+print(f"Found {results.total_results} results")
+print(f"Supports topics: {results.supports_topics}")
+print(f"Topic statistics: {results.topic_statistics}")
+
+for item in results.results:
+    print(f"Element PK: {item.element_pk}, Similarity: {item.similarity:.4f}")
+    if item.topics:
+        print(f"Topics: {item.topics}")
+    if item.confidence:
+        print(f"Confidence: {item.confidence}")
+
+# Enhanced search with content and topic filtering
+results = search_with_content(
+    "security policy",
+    include_topics=['security%'],
+    exclude_topics=['draft%', 'deprecated%'],
+    min_confidence=0.7,
+    resolve_content=True,
+    min_score=0.5,
+    limit=15
+)
+
+for result in results:
+    print(f"Result: {result.element_type} (Score: {result.similarity:.4f})")
+    if result.topics:
+        print(f"Topics: {result.topics}")
+    if result.confidence:
+        print(f"Confidence: {result.confidence}")
     print(f"Preview: {result.content_preview}")
 
-    # Print relationships summary
-    rel_count = result.get_relationship_count()
-    print(f"Outgoing relationships: {rel_count}")
-
-    if rel_count > 0:
-        # Group by type
-        by_type = result.get_relationships_by_type()
-        for rel_type, rels in by_type.items():
-            print(f"  - {rel_type}: {len(rels)}")
-
-        # Print contained elements
-        contained = result.get_contained_elements()
-        if contained:
-            print(f"Contains {len(contained)} elements:")
-            for rel in contained[:3]:  # Show just the first few
-                print(f"  - {rel.target_element_type or 'Unknown'}: {rel.target_reference}")
-
-    if result.resolved_content:
-        print(f"Content: {result.resolved_content[:100]}...")
-    print("---")
-
-# Raw search results with text and content resolved
-search_results = search_by_text("search query", limit=5, min_score=0.8, text=True, content=True)
-print(f"Found {search_results.total_results} results for '{search_results.query}' with score >= {search_results.min_score}")
-print(f"Document sources: {search_results.documents}")
-print(f"Content resolved: {search_results.content_resolved}, Text resolved: {search_results.text_resolved}")
-for item in search_results.results:
-    print(f"Element PK: {item.element_pk}, Similarity: {item.similarity:.4f}")
-
-# Using standard Pydantic v2 serialization - all resolved content is included
-results_dict = search_results.model_dump()
-results_json = search_results.model_dump_json(indent=2)
-
-# Search with filters and content resolution
-results = search_with_content(
-    "search query",
-    limit=20,
-    filter_criteria={"element_type": ["header", "paragraph"]},
-    resolve_content=True,
-    include_relationships=False,
-    min_score=0.5  # Lower threshold to get more results
+# Topic-only search (no text query)
+results = search_by_text(
+    "",  # Empty query for topic-only search
+    include_topics=['security%'],
+    min_confidence=0.8,
+    limit=20
 )
+
+# Check topic support and get statistics
+if supports_topics():
+    stats = get_topic_statistics()
+    print(f"Topic statistics: {stats}")
+
+    # Get topics for a specific element
+    topics = get_element_topics(123)
+    print(f"Element 123 topics: {topics}")
+else:
+    print("Topics not supported - falling back to regular search")
 """

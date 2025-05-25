@@ -3,7 +3,8 @@ info:
   title: Document Search API
   description: |
     A REST API for semantic document search that provides both basic and advanced search capabilities.
-    The API supports embedding-based similarity search with optional content resolution and relationship information.
+    The API supports embedding-based similarity search with optional content resolution, relationship information,
+    and topic-based filtering for enhanced search precision.
   version: 1.0.0
   contact:
     name: API Support
@@ -48,7 +49,7 @@ paths:
       tags:
         - Search
       summary: Basic search
-      description: Search for elements and return basic results with similarity scores
+      description: Search for elements and return basic results with similarity scores. Supports topic-based filtering for enhanced precision.
       operationId: search
       security:
         - ApiKeyAuth: []
@@ -89,7 +90,7 @@ paths:
       tags:
         - Search
       summary: Advanced search
-      description: Advanced search with full results including relationships and resolved content
+      description: Advanced search with full results including relationships and resolved content. Supports topic-based filtering for enhanced precision.
       operationId: advancedSearch
       security:
         - ApiKeyAuth: []
@@ -130,7 +131,7 @@ paths:
       tags:
         - Search
       summary: Get document sources
-      description: Get unique document sources from search results
+      description: Get unique document sources from search results. Supports topic-based filtering.
       operationId: getDocumentSources
       security:
         - ApiKeyAuth: []
@@ -244,6 +245,25 @@ components:
           type: object
           additionalProperties: true
           description: Optional filtering criteria
+        include_topics:
+          type: array
+          items:
+            type: string
+          description: Topic LIKE patterns to include (e.g., ['security%', '%.policy%'])
+          example: ["security%", "%.policy%"]
+        exclude_topics:
+          type: array
+          items:
+            type: string
+          description: Topic LIKE patterns to exclude (e.g., ['deprecated%'])
+          example: ["deprecated%", "draft%"]
+        min_confidence:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          description: Minimum confidence threshold for topic results
+          example: 0.7
         text:
           type: boolean
           default: false
@@ -287,6 +307,25 @@ components:
           type: object
           additionalProperties: true
           description: Optional filtering criteria
+        include_topics:
+          type: array
+          items:
+            type: string
+          description: Topic LIKE patterns to include (e.g., ['security%', '%.policy%'])
+          example: ["security%", "%.policy%"]
+        exclude_topics:
+          type: array
+          items:
+            type: string
+          description: Topic LIKE patterns to exclude (e.g., ['deprecated%'])
+          example: ["deprecated%", "draft%"]
+        min_confidence:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          description: Minimum confidence threshold for topic results
+          example: 0.7
         resolve_content:
           type: boolean
           default: true
@@ -322,6 +361,25 @@ components:
           type: object
           additionalProperties: true
           description: Optional filtering criteria
+        include_topics:
+          type: array
+          items:
+            type: string
+          description: Topic LIKE patterns to include (e.g., ['security%', '%.policy%'])
+          example: ["security%", "%.policy%"]
+        exclude_topics:
+          type: array
+          items:
+            type: string
+          description: Topic LIKE patterns to exclude (e.g., ['deprecated%'])
+          example: ["deprecated%", "draft%"]
+        min_confidence:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          description: Minimum confidence threshold for topic results
+          example: 0.7
 
     # Updated ElementBase schema to reflect new structure
     ElementBase:
@@ -366,7 +424,19 @@ components:
           format: float
           nullable: true
           description: Similarity score from search
-        # Added computed fields
+        # Topic-related fields
+        confidence:
+          type: number
+          format: float
+          nullable: true
+          description: Topic confidence score
+        topics:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: Topics assigned to this element
+        # Computed fields
         source:
           type: string
           nullable: true
@@ -407,6 +477,18 @@ components:
           type: number
           format: float
           description: Similarity score
+        # Topic-related fields
+        confidence:
+          type: number
+          format: float
+          nullable: true
+          description: Topic confidence score
+        topics:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: Topics assigned to this element
         doc_id:
           type: string
           nullable: true
@@ -434,7 +516,7 @@ components:
           type: object
           additionalProperties: true
           description: Element metadata
-        # Added computed fields
+        # Computed fields
         source:
           type: string
           nullable: true
@@ -473,10 +555,29 @@ components:
           additionalProperties: true
           nullable: true
           description: Filter criteria used
+        # Topic filtering criteria
+        include_topics:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: Topic patterns that were included
+        exclude_topics:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: Topic patterns that were excluded
+        min_confidence:
+          type: number
+          format: float
+          nullable: true
+          description: Minimum confidence threshold used
         search_type:
           type: string
           default: "embedding"
-          description: Type of search performed
+          description: Type of search performed (embedding, text, content, topic)
+          enum: ["embedding", "text", "content", "topic"]
         min_score:
           type: number
           format: float
@@ -505,6 +606,16 @@ components:
           type: boolean
           default: false
           description: Whether text was resolved during search
+        # Topic-related metadata
+        supports_topics:
+          type: boolean
+          default: false
+          description: Whether the backend supports topics
+        topic_statistics:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: Topic distribution statistics
 
     ElementRelationship:
       type: object
@@ -530,6 +641,18 @@ components:
           type: number
           format: float
           description: Similarity score
+        # Topic-related fields
+        confidence:
+          type: number
+          format: float
+          nullable: true
+          description: Topic confidence score
+        topics:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: Topics assigned to this element
         element_pk:
           type: integer
           description: Element primary key
@@ -610,6 +733,24 @@ components:
           type: number
           format: float
           description: Minimum score threshold used
+        # Topic filtering criteria
+        include_topics:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: Topic patterns that were included
+        exclude_topics:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: Topic patterns that were excluded
+        min_confidence:
+          type: number
+          format: float
+          nullable: true
+          description: Minimum confidence threshold used
         results:
           type: array
           items:
@@ -649,7 +790,7 @@ tags:
   - name: Info
     description: API information endpoints
   - name: Search
-    description: Document search endpoints
+    description: Document search endpoints with topic filtering support
 
 # Examples of API usage
 x-code-samples:
@@ -657,13 +798,16 @@ x-code-samples:
     source: |
       import requests
 
-      # Basic search with flat results
+      # Basic search with topic filtering
       response = requests.post(
           'http://localhost:5000/api/search',
           json={
               'query': 'machine learning',
               'limit': 5,
               'min_score': 0.7,
+              'include_topics': ['security%', '%.policy%'],
+              'exclude_topics': ['deprecated%'],
+              'min_confidence': 0.8,
               'flat': True,
               'include_parents': False,
               'text': True
@@ -672,12 +816,15 @@ x-code-samples:
       )
       results = response.json()
 
-      # Advanced search
+      # Advanced search with topic filtering
       response = requests.post(
           'http://localhost:5000/api/search/advanced',
           json={
               'query': 'neural networks',
               'limit': 10,
+              'include_topics': ['machine_learning%'],
+              'exclude_topics': ['draft%', 'deprecated%'],
+              'min_confidence': 0.7,
               'resolve_content': True,
               'include_relationships': True
           },
@@ -687,7 +834,7 @@ x-code-samples:
 
   - lang: cURL
     source: |
-      # Basic search with hierarchical results
+      # Basic search with hierarchical results and topic filtering
       curl -X POST "http://localhost:5000/api/search" \
         -H "X-API-Key: your-api-key" \
         -H "Content-Type: application/json" \
@@ -695,24 +842,30 @@ x-code-samples:
           "query": "machine learning",
           "limit": 5,
           "min_score": 0.7,
+          "include_topics": ["security%", "%.policy%"],
+          "exclude_topics": ["deprecated%"],
+          "min_confidence": 0.8,
           "flat": false,
           "content": true
         }'
 
-      # Advanced search
+      # Advanced search with topic filtering
       curl -X POST "http://localhost:5000/api/search/advanced" \
         -H "X-API-Key: your-api-key" \
         -H "Content-Type: application/json" \
         -d '{
           "query": "neural networks",
           "limit": 10,
+          "include_topics": ["machine_learning%"],
+          "exclude_topics": ["draft%", "deprecated%"],
+          "min_confidence": 0.7,
           "resolve_content": true,
           "include_relationships": true
         }'
 
   - lang: JavaScript
     source: |
-      // Using fetch API
+      // Using fetch API with topic filtering
       async function search(query, options = {}) {
         const response = await fetch('http://localhost:5000/api/search', {
           method: 'POST',
@@ -724,6 +877,9 @@ x-code-samples:
             query: query,
             limit: 10,
             min_score: 0.5,
+            include_topics: ['security%'],
+            exclude_topics: ['deprecated%', 'draft%'],
+            min_confidence: 0.7,
             flat: true,
             include_parents: false,
             text: true,
@@ -736,6 +892,8 @@ x-code-samples:
 
       // Using async/await
       const results = await search('artificial intelligence', {
+        include_topics: ['ai%', 'machine_learning%'],
+        min_confidence: 0.8,
         flat: false,
         content: true
       });

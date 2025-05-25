@@ -255,6 +255,27 @@ def api_info():
     return jsonify(info_data)
 
 
+# Helper function to extract topic parameters
+def extract_topic_parameters(data):
+    """Extract topic-related parameters from request data."""
+    include_topics = data.get('include_topics')
+    exclude_topics = data.get('exclude_topics')
+    min_confidence = data.get('min_confidence')
+
+    # Validate topic parameters
+    if include_topics is not None and not isinstance(include_topics, list):
+        raise BadRequest("'include_topics' must be a list of strings")
+
+    if exclude_topics is not None and not isinstance(exclude_topics, list):
+        raise BadRequest("'exclude_topics' must be a list of strings")
+
+    if min_confidence is not None:
+        if not isinstance(min_confidence, (int, float)) or min_confidence < 0.0 or min_confidence > 1.0:
+            raise BadRequest("'min_confidence' must be a number between 0.0 and 1.0")
+
+    return include_topics, exclude_topics, min_confidence
+
+
 # Standard search endpoint
 @app.route('/api/search', methods=['POST'])
 def search_endpoint():
@@ -267,6 +288,9 @@ def search_endpoint():
         "limit": 10,
         "min_score": 0.0,
         "filter_criteria": {},
+        "include_topics": ["security%", "%.policy%"],
+        "exclude_topics": ["deprecated%"],
+        "min_confidence": 0.7,
         "text": false,
         "content": false,
         "flat": false,
@@ -297,12 +321,21 @@ def search_endpoint():
         text = data.get('text', False)
         content = data.get('content', False)
 
+        # Extract topic parameters
+        include_topics, exclude_topics, min_confidence = extract_topic_parameters(data)
+
         # Perform search
-        logger.info(f"Search request: query='{query_text}', limit={limit}, min_score={min_score}, flat={flat}, include_parents={include_parents}")
+        logger.info(f"Search request: query='{query_text}', limit={limit}, min_score={min_score}, "
+                   f"flat={flat}, include_parents={include_parents}, include_topics={include_topics}, "
+                   f"exclude_topics={exclude_topics}, min_confidence={min_confidence}")
+
         results = search_by_text(
             query_text=query_text,
             limit=limit,
             filter_criteria=filter_criteria,
+            include_topics=include_topics,
+            exclude_topics=exclude_topics,
+            min_confidence=min_confidence,
             min_score=min_score,
             text=text,
             content=content,
@@ -333,6 +366,9 @@ def advanced_search_endpoint():
         "limit": 10,
         "min_score": 0.0,
         "filter_criteria": {},
+        "include_topics": ["security%", "%.policy%"],
+        "exclude_topics": ["deprecated%"],
+        "min_confidence": 0.7,
         "resolve_content": true,
         "include_relationships": true
     }
@@ -359,12 +395,21 @@ def advanced_search_endpoint():
         resolve_content = data.get('resolve_content', True)
         include_relationships = data.get('include_relationships', True)
 
+        # Extract topic parameters
+        include_topics, exclude_topics, min_confidence = extract_topic_parameters(data)
+
         # Perform advanced search
-        logger.info(f"Advanced search: query='{query_text}', limit={limit}, min_score={min_score}")
+        logger.info(f"Advanced search: query='{query_text}', limit={limit}, min_score={min_score}, "
+                   f"include_topics={include_topics}, exclude_topics={exclude_topics}, "
+                   f"min_confidence={min_confidence}")
+
         results: List[SearchResult] = search_with_content(
             query_text=query_text,
             limit=limit,
             filter_criteria=filter_criteria,
+            include_topics=include_topics,
+            exclude_topics=exclude_topics,
+            min_confidence=min_confidence,
             resolve_content=resolve_content,
             include_relationships=include_relationships,
             min_score=min_score
@@ -375,12 +420,17 @@ def advanced_search_endpoint():
             'query': query_text,
             'total_results': len(results),
             'min_score': min_score,
+            'include_topics': include_topics,
+            'exclude_topics': exclude_topics,
+            'min_confidence': min_confidence,
             'results': []
         }
 
         for result in results:
             result_dict = {
                 'similarity': result.similarity,
+                'confidence': result.confidence,
+                'topics': result.topics,
                 'element_pk': result.element_pk,
                 'element_id': result.element_id,
                 'element_type': result.element_type,
@@ -448,7 +498,10 @@ def document_sources_endpoint():
         "query": "search text",
         "limit": 10,
         "min_score": 0.0,
-        "filter_criteria": {}
+        "filter_criteria": {},
+        "include_topics": ["security%", "%.policy%"],
+        "exclude_topics": ["deprecated%"],
+        "min_confidence": 0.7
     }
     """
     # Check API key if required
@@ -471,11 +524,21 @@ def document_sources_endpoint():
         min_score = max(data.get('min_score', CONFIG['MIN_SCORE_THRESHOLD']), 0.0)
         filter_criteria = data.get('filter_criteria', {})
 
+        # Extract topic parameters
+        include_topics, exclude_topics, min_confidence = extract_topic_parameters(data)
+
         # Perform search to get results
+        logger.info(f"Document sources search: query='{query_text}', limit={limit}, min_score={min_score}, "
+                   f"include_topics={include_topics}, exclude_topics={exclude_topics}, "
+                   f"min_confidence={min_confidence}")
+
         search_results = search_by_text(
             query_text=query_text,
             limit=limit,
             filter_criteria=filter_criteria,
+            include_topics=include_topics,
+            exclude_topics=exclude_topics,
+            min_confidence=min_confidence,
             min_score=min_score
         )
 
@@ -485,6 +548,9 @@ def document_sources_endpoint():
         return jsonify({
             'query': query_text,
             'total_results': search_results.total_results,
+            'include_topics': include_topics,
+            'exclude_topics': exclude_topics,
+            'min_confidence': min_confidence,
             'document_sources': document_sources
         })
 

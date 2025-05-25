@@ -185,8 +185,30 @@ def create_semantic_time_range_expression(time_range_str: str) -> str:
         start_semantic = create_semantic_time_expression(start_time)
         end_semantic = create_semantic_time_expression(end_time)
 
-        # Combine them
-        return f"from {start_semantic} until {end_semantic}"
+        # Add common business time range expressions
+        business_terms = []
+
+        # Check for common business hours
+        if (start_time.hour == 9 and start_time.minute == 0 and
+                end_time.hour == 17 and end_time.minute == 0):
+            business_terms.extend(["nine to five", "9-5", "standard business hours", "regular office hours"])
+        elif (start_time.hour == 8 and start_time.minute == 0 and
+              end_time.hour == 17 and end_time.minute == 0):
+            business_terms.extend(["eight to five", "8-5", "extended business hours"])
+        elif (start_time.hour == 9 and start_time.minute == 0 and
+              end_time.hour == 18 and end_time.minute == 0):
+            business_terms.extend(["nine to six", "9-6", "extended office hours"])
+
+        # Check for lunch hours
+        if (start_time.hour == 12 and end_time.hour == 13):
+            business_terms.extend(["lunch hour", "lunch break", "midday break"])
+
+        # Combine with semantic expressions
+        result = f"from {start_semantic} until {end_semantic}"
+        if business_terms:
+            result += f", {', '.join(business_terms)}"
+
+        return result
 
     except Exception as e:
         logger.warning(f"Error creating semantic time range expression: {str(e)}")
@@ -196,20 +218,19 @@ def create_semantic_time_range_expression(time_range_str: str) -> str:
 @ttl_cache(maxsize=128, ttl=3600)
 def create_semantic_time_expression(time_obj):
     """
-    Convert a time object into a rich semantic natural language expression.
+    Convert a time object into a lightweight semantic expression with essential business terms.
 
     Args:
         time_obj: A datetime or time object containing time information
 
     Returns:
-        A natural language representation of the time with rich semantic context
+        A minimal expansion with key business time terms
     """
     try:
         # Extract hour and minute from either a datetime or time object
         if hasattr(time_obj, 'hour'):
             hour = time_obj.hour
         else:
-            # Fallback for unknown object type
             return str(time_obj)
 
         if hasattr(time_obj, 'minute'):
@@ -217,80 +238,51 @@ def create_semantic_time_expression(time_obj):
         else:
             minute = 0
 
-        if hasattr(time_obj, 'second'):
-            second = time_obj.second
-        else:
-            second = 0
+        # Essential business terms only
+        essential_terms = []
 
-        if hasattr(time_obj, 'microsecond'):
-            microsecond = time_obj.microsecond
-        else:
-            microsecond = 0
+        # Military time (commonly used in business)
+        essential_terms.append(f"{hour:02d}{minute:02d}")
 
-        # Determine AM/PM
-        am_pm = "AM" if hour < 12 else "PM"
+        # Common business time expressions
+        if hour == 12 and minute == 0:
+            essential_terms.extend(["noon", "midday"])
+        elif hour == 0 and minute == 0:
+            essential_terms.extend(["midnight"])
+        elif minute == 30:
+            hour_12 = hour % 12
+            if hour_12 == 0:
+                hour_12 = 12
+            essential_terms.append(f"half past {hour_12}")
 
-        # Convert to 12-hour format
-        hour_12 = hour % 12
-        if hour_12 == 0:
-            hour_12 = 12
+        # Time of day (useful for business context)
+        if 9 <= hour < 17:
+            essential_terms.append("business hours")
+        elif 12 <= hour < 14:
+            essential_terms.append("lunch time")
 
-        # Time of day label
-        if 4 <= hour < 12:
-            time_of_day = "morning"
-        elif 12 <= hour < 17:
-            time_of_day = "afternoon"
-        elif 17 <= hour < 21:
-            time_of_day = "evening"
-        else:
-            time_of_day = "night"
-
-        # Determine quarter of hour
-        quarter_labels = {0: "o'clock", 15: "quarter past", 30: "half past", 45: "quarter to"}
-
-        # Default time description
-        time_desc = f"{hour_12}:{minute:02d} {am_pm}"
-
-        # Explicit minute description
-        minute_desc = f", at minute {minute}" if minute != 0 else ""
-
-        # Check for special times
-        if minute in quarter_labels and second == 0:
-            if minute == 45:
-                next_hour = (hour_12 % 12) + 1
-                if next_hour == 0:
-                    next_hour = 12
-                time_desc = f"{quarter_labels[minute]} {next_hour} {am_pm}"
-            else:
-                time_desc = f"{quarter_labels[minute]} {hour_12} {am_pm}"
-
-        # Create full semantic expression
-        result = f"at {time_desc} in the {time_of_day}{minute_desc}"
-
-        # Add seconds if non-zero
-        if second > 0 or microsecond > 0:
-            if microsecond > 0:
-                result += f", at second {second}.{microsecond // 1000:03d}"
-            else:
-                result += f", at second {second}"
+        # Start with original time, add essential terms
+        result = str(time_obj)
+        if essential_terms:
+            result += f", {', '.join(essential_terms)}"
 
         return result
 
     except Exception as e:
         logger.warning(f"Error converting time to semantic expression: {str(e)}")
-        return str(time_obj)  # Return string representation on error
+        return str(time_obj)
 
 
 @ttl_cache(maxsize=128, ttl=3600)
 def create_semantic_date_expression(date_str: str) -> str:
     """
-    Convert a date string into a rich semantic natural language expression.
+    Convert a date string into a balanced semantic expression with practical business terms.
 
     Args:
         date_str: A string representing a date in various possible formats
 
     Returns:
-        A natural language representation of the date with rich semantic context
+        A balanced expansion with practical business terms for real-world search scenarios
     """
     try:
         # Import dateutil parser
@@ -309,47 +301,115 @@ def create_semantic_date_expression(date_str: str) -> str:
         if has_time:
             return create_semantic_date_time_expression(date_str)
 
-        # Get month name, day, and year
+        # Get basic date components
         month_name = parsed_date.strftime("%B")
         day = parsed_date.day
         year = parsed_date.year
-
-        # Calculate week of month (approximate)
-        week_of_month = (day - 1) // 7 + 1
-
-        # Convert week number to ordinal word
-        week_ordinals = ["first", "second", "third", "fourth", "fifth"]
-        if 1 <= week_of_month <= 5:
-            week_ordinal = week_ordinals[week_of_month - 1]
-        else:
-            week_ordinal = f"{week_of_month}th"  # Fallback if calculation is off
-
-        # Calculate day of week
+        month_num = parsed_date.month
         day_of_week = parsed_date.strftime("%A")
 
-        # Calculate quarter and convert to ordinal word
+        # Calculate quarter
         quarter_num = (parsed_date.month - 1) // 3 + 1
         quarter_ordinals = {1: "first", 2: "second", 3: "third", 4: "fourth"}
         quarter_ordinal = quarter_ordinals.get(quarter_num, f"{quarter_num}th")
 
-        # Calculate decade as ordinal within century
-        decade_in_century = (year % 100) // 10 + 1
+        # Calculate week of month (practical for business)
+        week_of_month = (day - 1) // 7 + 1
+        week_ordinals = {1: "first", 2: "second", 3: "third", 4: "fourth", 5: "fifth"}
+        week_ordinal = week_ordinals.get(week_of_month, f"{week_of_month}th")
 
-        # Convert decade to ordinal word
-        decade_ordinals = {1: "first", 2: "second", 3: "third", 4: "fourth",
-                           5: "fifth", 6: "sixth", 7: "seventh", 8: "eighth",
-                           9: "ninth", 10: "tenth"}
-        decade_ordinal = decade_ordinals.get(decade_in_century, f"{decade_in_century}th")
+        # Practical business terms
+        practical_terms = []
 
-        # Calculate century
-        century = (year // 100) + 1
+        # Quarter terms (most important for business search)
+        quarter_terms = {
+            1: ["Q1", "first quarter"],
+            2: ["Q2", "second quarter"],
+            3: ["Q3", "third quarter"],
+            4: ["Q4", "fourth quarter"]
+        }
+        practical_terms.extend(quarter_terms.get(quarter_num, []))
 
-        # Format century as ordinal
-        century_ordinals = {1: "1st", 2: "2nd", 3: "3rd"}
-        century_ordinal = century_ordinals.get(century, f"{century}th")
+        # Month abbreviation and variations
+        month_abbreviations = {
+            1: ["Jan"], 2: ["Feb"], 3: ["Mar"], 4: ["Apr"], 5: ["May"], 6: ["Jun"],
+            7: ["Jul"], 8: ["Aug"], 9: ["Sep"], 10: ["Oct"], 11: ["Nov"], 12: ["Dec"]
+        }
+        practical_terms.extend(month_abbreviations.get(month_num, []))
 
-        # Format as more descriptive natural language
-        return f"the month of {month_name} ({quarter_ordinal} quarter), in the {week_ordinal} week, on {day_of_week} day {day}, in the year {year}, during the {decade_ordinal} decade of the {century_ordinal} century"
+        # Seasonal terms (clear associations only)
+        seasonal_terms = {
+            1: ["winter"], 2: ["spring"], 3: ["summer"], 4: ["fall"]
+        }
+        if quarter_num in seasonal_terms:
+            practical_terms.extend(seasonal_terms[quarter_num])
+
+        # Week-based business terms (commonly searched)
+        practical_terms.append(f"{week_ordinal} week")
+        if week_of_month <= 2:
+            practical_terms.append("early month")
+        elif week_of_month >= 4:
+            practical_terms.append("late month")
+        else:
+            practical_terms.append("mid month")
+
+        # Month position terms (practical for business)
+        if day <= 7:
+            practical_terms.append("beginning of month")
+        elif day >= 22:
+            practical_terms.append("end of month")
+            if quarter_num == 4 and month_num == 12:
+                practical_terms.append("year end")
+        elif 10 <= day <= 20:
+            practical_terms.append("mid month")
+
+        # Day of week (important for business day searches)
+        practical_terms.append(day_of_week)
+        if day_of_week in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]:
+            practical_terms.append("business day")
+            practical_terms.append("weekday")
+        else:
+            practical_terms.append("weekend")
+
+        # Business day of month (approximate - assumes ~22 business days per month)
+        import calendar
+        # Count business days from start of month to this date
+        business_day_count = 0
+        for d in range(1, day + 1):
+            test_date = parsed_date.replace(day=d)
+            if test_date.weekday() < 5:  # Monday=0, Sunday=6
+                business_day_count += 1
+
+        if business_day_count <= 22:  # Reasonable business day range
+            if business_day_count <= 5:
+                practical_terms.append("early business days")
+            elif business_day_count >= 17:
+                practical_terms.append("late business days")
+
+            # Add specific business day ordinals for commonly referenced ones
+            business_day_ordinals = {
+                1: "first business day", 2: "second business day", 3: "third business day",
+                5: "fifth business day", 10: "tenth business day", 15: "fifteenth business day",
+                20: "twentieth business day"
+            }
+            if business_day_count in business_day_ordinals:
+                practical_terms.append(business_day_ordinals[business_day_count])
+
+        # Year and ISO format
+        practical_terms.extend([str(year), f"{year}-{month_num:02d}"])
+
+        # Fiscal year terms (practical ones only)
+        if quarter_num == 4:
+            practical_terms.extend(["fiscal year end", "year end"])
+        elif quarter_num == 1:
+            practical_terms.append("fiscal year start")
+
+        # Start with original, add practical terms
+        result = date_str
+        if practical_terms:
+            result += f", {', '.join(practical_terms)}"
+
+        return result
 
     except Exception as e:
         logger.warning(f"Error converting date to semantic expression: {str(e)}")

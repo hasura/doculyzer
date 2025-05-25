@@ -73,7 +73,7 @@ def test_document_search():
     query_text = "cash management"
     logger.info(f"Searching for similar elements: {query_text}")
     # results: List[SearchResult] = search_with_content(query_text, min_score=-1.0, limit=50)
-    text_results = search_by_text(query_text, min_score=-1, limit=50, text=True)
+    text_results = search_by_text(query_text, include_topics=['%wikipedia%'], min_score=-1, limit=50, text=True)
     # test serialization
     text_results_json = json.loads(text_results.model_dump_json())
     # logger.info(f"Found {len(results)} similar elements")

@@ -88,17 +88,16 @@ Doculyzer supports multiple storage backends through a modular, pluggable archit
 
 | Storage Backend | Description | Topic Support | Required Dependencies | Installation |
 |-----------------|-------------|---------------|----------------------|--------------|
-| File-based | Simple storage using the file system | ❌ | None (core) | Default install |
+| File-based | Simple storage using the file system | ✅ | None (core) | Default install |
 | SQLite | Lightweight, embedded database | ✅ | None (core) | Default install |
 | SQLite Enhanced | SQLite with vector extension support | ✅ | `sqlean.py` | `pip install "doculyzer[db-core]"` |
-| Neo4J | Graph database with native relationship support | ❌ | `neo4j` | `pip install "doculyzer[db-neo4j]"` |
+| Neo4J | Graph database with native relationship support | ✅ | `neo4j` | `pip install "doculyzer[db-neo4j]"` |
 | PostgreSQL | Robust relational database for production | ✅ | `psycopg2` | `pip install "doculyzer[db-postgresql]"` |
 | PostgreSQL + pgvector | PostgreSQL with vector search | ✅ | `psycopg2`, `pgvector` | `pip install "doculyzer[db-postgresql,db-vector]"` |
-| MongoDB | Document-oriented database | ❌ | `pymongo` | `pip install "doculyzer[db-mongodb]"` |
-| MySQL/MariaDB | Popular open-source SQL database | ❌ | `sqlalchemy`, `pymysql` | `pip install "doculyzer[db-mysql]"` |
-| Oracle | Enterprise SQL database | ❌ | `sqlalchemy`, `cx_Oracle` | `pip install "doculyzer[db-oracle]"` |
-| Microsoft SQL Server | Enterprise SQL database | ❌ | `sqlalchemy`, `pymssql` | `pip install "doculyzer[db-mssql]"` |
-| libSQL | SQLite-compatible distributed database | ❌ | `libsql-client` | `pip install "doculyzer[db-libsql]"` |
+| MongoDB | Document-oriented database | ✅ | `pymongo` | `pip install "doculyzer[db-mongodb]"` |
+| MySQL/MariaDB | Popular open-source SQL database | ✅ | `sqlalchemy`, `pymysql` | `pip install "doculyzer[db-mysql]"` |
+| Oracle | Enterprise SQL database | ✅ | `sqlalchemy`, `cx_Oracle` | `pip install "doculyzer[db-oracle]"` |
+| Microsoft SQL Server | Enterprise SQL database | ✅ | `sqlalchemy`, `pymssql` | `pip install "doculyzer[db-mssql]"` |
 
 ### Storage Backend Graceful Fallbacks
 
@@ -185,13 +184,6 @@ storage:
   backend: sqlalchemy
   sqlalchemy:
     uri: "oracle://user:password@localhost:1521/doculyzer"
-    
-# libSQL (requires libsql-client)
-storage:
-  backend: libsql
-  libsql:
-    url: "libsql://doculyzer.turso.io"
-    auth_token: "your-auth-token"
 ```
 
 ### Using a Specific Database Backend
@@ -252,8 +244,8 @@ For semantic search, Doculyzer supports several vector-capable database backends
 |-----------------|------------------|---------------|----------------------|--------------|
 | SQLite + sqlite-vec | SIMD-accelerated vector search | ✅ | `sqlean.py`, `sqlite-vec` | `pip install "doculyzer[db-core,db-vector]"` |
 | PostgreSQL + pgvector | Postgres vector extension | ✅ | `psycopg2`, `pgvector` | `pip install "doculyzer[db-postgresql,db-vector]"` |
-| MongoDB Atlas | Vector search capability | ❌ | `pymongo` | `pip install "doculyzer[db-mongodb]"` |
-| Neo4j Vector Search | Graph + vector search | ❌ | `neo4j` | `pip install "doculyzer[db-neo4j]"` |
+| MongoDB Atlas | Vector search capability | ✅ | `pymongo` | `pip install "doculyzer[db-mongodb]"` |
+| Neo4j Vector Search | Graph + vector search | ✅ | `neo4j` | `pip install "doculyzer[db-neo4j]"` |
 
 ```python
 # Configure vector-capable storage
@@ -387,7 +379,6 @@ pip install "doculyzer[db-postgresql]"  # PostgreSQL support
 pip install "doculyzer[db-mongodb]"     # MongoDB support
 pip install "doculyzer[db-neo4j]"       # Neo4j support
 pip install "doculyzer[db-mysql]"       # MySQL support
-pip install "doculyzer[db-libsql]"      # libSQL support
 pip install "doculyzer[db-core]"        # SQLite extensions + SQLAlchemy
 
 # Install with specific content sources
@@ -708,6 +699,59 @@ if db.supports_topics():
         print(f"{topic}: {info['embedding_count']} embeddings, {info['document_count']} docs")
 ```
 
+#### Topic Filtering Logic
+
+When using topic filtering, Doculyzer applies different logical operators for includes and excludes:
+
+##### Include Topics (OR Logic)
+Elements matching **any** of the include patterns will be included:
+
+```python
+# Example: Find elements with topics about security OR policies OR compliance
+include_topics=["security%", "policy%", "compliance%"]
+
+# This finds elements with topics like:
+# - "security.authentication"  (matches "security%")
+# - "policy.access"            (matches "policy%") 
+# - "compliance.sox"           (matches "compliance%")
+# - "security.policy.auth"     (matches both "security%" AND "policy%")
+```
+
+**Result:** An element is included if it has **ANY** topic matching **ANY** of the patterns.
+
+##### Exclude Topics (AND Logic)
+Elements matching **any** of the exclude patterns will be excluded:
+
+```python
+# Example: Exclude elements with deprecated OR draft topics
+exclude_topics=["deprecated%", "draft%"]
+
+# This excludes elements with topics like:
+# - "deprecated.old"   (matches "deprecated%")
+# - "draft.review"     (matches "draft%")
+# - "deprecated.draft" (matches both patterns - still excluded)
+```
+
+**Result:** An element is excluded if it has **ANY** topic matching **ANY** of the excluded patterns.
+
+##### Combined Example
+
+```python
+results = search_by_text_and_topics(
+    search_text="authentication policy",
+    include_topics=["security%", "policy%", "compliance%"],  # OR: security OR policy OR compliance
+    exclude_topics=["deprecated%", "draft%"],               # AND: NOT deprecated AND NOT draft
+    min_confidence=0.8
+)
+```
+
+This finds elements that:
+1. Match the text "authentication policy" **AND**
+2. Have topics like `security.auth` **OR** `policy.access` **OR** `compliance.sox` **AND**
+3. Do **NOT** have topics like `deprecated.old` **AND** do **NOT** have topics like `draft.review`
+
+The OR logic for includes casts a wide net for relevant content, while the AND logic for excludes ensures comprehensive filtering of unwanted content.
+
 #### Storing Topic-Aware Embeddings
 
 ```python
@@ -805,6 +849,66 @@ for element_id, embedding in embeddings.items():
     else:
         db.store_embedding(element_id, embedding)
 ```
+
+#### Temporal Semantic Search Example
+
+Doculyzer's temporal semantics feature provides lightweight consistency normalization to improve semantic search accuracy:
+
+```python
+from doculyzer import search_by_text
+
+# Natural language date queries benefit from temporal consistency normalization
+# When documents contain dates like "July 15, 2024", they get normalized to:
+# "Q3 2024 July 2024 July 15, 2024"
+# Time components like "14:30" become "14:30 14:30 2:30 PM business hours"
+
+results = search_by_text(
+    "Q3 strategic planning",
+    include_topics=["planning%", "strategy%"],
+    min_score=0.7,
+    limit=10
+)
+
+print(f"Found {results.total_results} strategic planning documents")
+
+for item in results.results:
+    element = db.get_element(item.element_pk)
+    print(f"Document: {element.get('title', 'Untitled')}")
+    print(f"Similarity: {item.similarity:.3f}")
+    print(f"Preview: {item.content_preview}")
+    print("---")
+
+# These searches now find semantically equivalent temporal references:
+temporal_queries = [
+    "Q3 planning",                    # Matches "July strategic planning", "third quarter review"
+    "third quarter results",          # Matches "Q3 earnings", "July performance" 
+    "July initiatives",              # Matches "Q3 projects", "third quarter goals"
+    "summer strategy sessions",      # Matches "Q3 planning", "July meetings"
+    "business hours meetings",       # Matches "14:30 conference", "2:30 PM calls"
+]
+
+for query in temporal_queries:
+    results = search_by_text(query, limit=5)
+    print(f"'{query}' found {results.total_results} results")
+```
+
+The lightweight temporal consistency works by:
+
+1. **Temporal Detection**: Identifying date, time, datetime, and time range patterns in document content
+2. **Canonical Normalization**: Converting temporal references to consistent canonical forms:
+   - **Dates**: "July 15, 2024" → "Q3 2024 July 2024 July 15, 2024"
+   - **Alternative dates**: "third quarter 2024" → "Q3 2024 July 2024 third quarter 2024"  
+   - **Seasonal refs**: "summer planning" → "Q3 2024 July 2024 summer planning"
+   - **Times**: "14:30" → "14:30 14:30 2:30 PM business hours"
+3. **Consistent Matching**: Documents with equivalent temporal concepts now share canonical terms, improving semantic similarity
+
+**Key Benefits:**
+- **"Q3 planning"** searches find documents mentioning "July", "third quarter", or "summer" planning
+- **"third quarter results"** searches find documents with "Q3", "July", or seasonal references
+- **"business hours meetings"** searches find documents with various time formats (14:30, 2:30 PM, etc.)
+- **Minimal overhead**: Only 2-3 canonical terms added per temporal reference
+- **Natural language flow**: Maintains readable text that embedding models handle well
+- **Consistent vector space**: Similar temporal concepts produce similar embeddings
 
 ### Handling Missing Dependencies
 
