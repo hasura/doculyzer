@@ -2,14 +2,36 @@ import glob
 import json
 import logging
 import os
-from typing import Optional, Dict, Any, List, Tuple, Union
+from typing import Optional, Dict, Any, List, Tuple, Union, TYPE_CHECKING
 
 import time
+
+# Import types for type checking only
+if TYPE_CHECKING:
+    import numpy as np
+    from numpy.typing import NDArray
+
+    # Define type aliases for type checking
+    VectorType = NDArray[np.float32]
+else:
+    # Runtime type aliases - use generic Python types
+    VectorType = List[float]
 
 from .base import DocumentDatabase
 from .element_relationship import ElementRelationship
 
 logger = logging.getLogger(__name__)
+
+# Define global flags for availability - these will be set at runtime
+NUMPY_AVAILABLE = False
+
+# Try to import NumPy conditionally
+try:
+    import numpy as np
+
+    NUMPY_AVAILABLE = True
+except ImportError:
+    logger.warning("NumPy not available. Will use slower pure Python vector operations.")
 
 # Try to import the config the same way SQLite does
 try:
@@ -112,7 +134,7 @@ class FileDocumentDatabase(DocumentDatabase):
         self.element_pks = {}  # Map element_id to element_pk
         self.next_element_pk = 1  # Starting auto-increment value
         self.relationships = {}
-        self.embeddings = {}
+        self.embeddings = {}  # Now stores enhanced embedding data with topics
         self.processing_history = {}  # Dictionary to track processing history
         self.embedding_generator = None
 
@@ -483,11 +505,8 @@ class FileDocumentDatabase(DocumentDatabase):
 
         return results
 
-    def store_embedding(self, element_pk: int, embedding: List[float]) -> None:
-        """
-        Store embedding for an element.
-        Already using element_pk as required.
-        """
+    def store_embedding(self, element_pk: int, embedding: VectorType) -> None:
+        """Store embedding for an element."""
         # Verify element pk exists in some element
         found = False
         for element in self.elements.values():
@@ -498,25 +517,41 @@ class FileDocumentDatabase(DocumentDatabase):
         if not found:
             raise ValueError(f"Element pk not found: {element_pk}")
 
-        self.embeddings[element_pk] = embedding
+        # Store as enhanced embedding structure
+        embedding_data = {
+            "embedding": embedding,
+            "dimensions": len(embedding),
+            "topics": [],  # Default to empty topics
+            "confidence": 1.0,  # Default confidence
+            "created_at": time.time()
+        }
+
+        self.embeddings[element_pk] = embedding_data
         self._save_embedding(element_pk)
 
-    def get_embedding(self, element_pk: int) -> Optional[List[float]]:
-        """
-        Get embedding for an element.
-        Already using element_pk as required.
-        """
-        return self.embeddings.get(element_pk)
+    def get_embedding(self, element_pk: int) -> Optional[VectorType]:
+        """Get embedding for an element."""
+        embedding_data = self.embeddings.get(element_pk)
+        if embedding_data is None:
+            return None
 
-    def search_by_embedding(self, query_embedding: List[float], limit: int = 10,
+        # Handle both old format (direct list) and new format (dict with metadata)
+        if isinstance(embedding_data, list):
+            return embedding_data
+        elif isinstance(embedding_data, dict):
+            return embedding_data.get("embedding")
+
+        return None
+
+    def search_by_embedding(self, query_embedding: VectorType, limit: int = 10,
                             filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
         """
         Search elements by embedding similarity with optional filtering.
-        Updated to return (element_pk, similarity) tuples for consistency.
+        Updated to handle enhanced embedding format and better similarity calculation.
         """
-        import numpy as np
+        if NUMPY_AVAILABLE:
+            query_embedding_np = np.array(query_embedding)
 
-        query_embedding_np = np.array(query_embedding)
         results = []
 
         # Get all element_pks with embeddings
@@ -576,18 +611,21 @@ class FileDocumentDatabase(DocumentDatabase):
 
         # Calculate similarity for each filtered embedding
         for element_pk in filtered_element_pks:
-            embedding = self.embeddings[element_pk]
-            embedding_np = np.array(embedding)
+            embedding_data = self.embeddings[element_pk]
 
-            # Calculate cosine similarity
-            dot_product = np.dot(query_embedding_np, embedding_np)
-            norm1 = np.linalg.norm(query_embedding_np)
-            norm2 = np.linalg.norm(embedding_np)
-
-            if norm1 == 0 or norm2 == 0:
-                similarity = 0.0
+            # Handle both old format (direct list) and new format (dict with metadata)
+            if isinstance(embedding_data, list):
+                embedding = embedding_data
+            elif isinstance(embedding_data, dict):
+                embedding = embedding_data.get("embedding", [])
             else:
-                similarity = float(dot_product / (norm1 * norm2))
+                continue
+
+            # Calculate cosine similarity using the appropriate method
+            if NUMPY_AVAILABLE:
+                similarity = self._cosine_similarity_numpy(query_embedding, embedding)
+            else:
+                similarity = self._cosine_similarity_python(query_embedding, embedding)
 
             # Return element_pk instead of element_id for consistency
             results.append((element_pk, similarity))
@@ -670,6 +708,353 @@ class FileDocumentDatabase(DocumentDatabase):
             logger.error(f"Error in semantic search by text: {str(e)}")
             # Return empty list on error
             return []
+
+    # ========================================
+    # NEW: TOPIC SUPPORT METHODS
+    # ========================================
+
+    def supports_topics(self) -> bool:
+        """
+        Indicate whether this backend supports topic-aware embeddings.
+
+        Returns:
+            True since File implementation now supports topics
+        """
+        return True
+
+    def store_embedding_with_topics(self, element_pk: int, embedding: VectorType,
+                                    topics: List[str], confidence: float = 1.0) -> None:
+        """
+        Store embedding for an element with topic assignments.
+
+        Args:
+            element_pk: Element primary key
+            embedding: Vector embedding
+            topics: List of topic strings (e.g., ['security.policy', 'compliance'])
+            confidence: Overall confidence in this embedding/topic assignment
+        """
+        # Verify element pk exists in some element
+        found = False
+        for element in self.elements.values():
+            if element.get("element_pk") == element_pk:
+                found = True
+                break
+
+        if not found:
+            raise ValueError(f"Element pk not found: {element_pk}")
+
+        try:
+            # Store enhanced embedding structure with topics
+            embedding_data = {
+                "embedding": embedding,
+                "dimensions": len(embedding),
+                "topics": topics,
+                "confidence": confidence,
+                "created_at": time.time()
+            }
+
+            self.embeddings[element_pk] = embedding_data
+            self._save_embedding(element_pk)
+
+        except Exception as e:
+            logger.error(f"Error storing embedding with topics for {element_pk}: {str(e)}")
+            raise
+
+    def search_by_text_and_topics(self, search_text: str = None,
+                                  include_topics: Optional[List[str]] = None,
+                                  exclude_topics: Optional[List[str]] = None,
+                                  min_confidence: float = 0.7,
+                                  limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Search elements by text with topic filtering using pattern matching.
+
+        Args:
+            search_text: Text to search for semantically (optional)
+            include_topics: Topic patterns to include (e.g., ['security*', '*.policy*'])
+            exclude_topics: Topic patterns to exclude (e.g., ['deprecated*'])
+            min_confidence: Minimum confidence threshold for embeddings
+            limit: Maximum number of results
+
+        Returns:
+            List of dictionaries with keys:
+            - element_pk: Element primary key
+            - similarity: Similarity score (if search_text provided)
+            - confidence: Overall embedding confidence
+            - topics: List of assigned topic strings
+        """
+        try:
+            # Generate embedding for search text if provided
+            query_embedding = None
+            if search_text:
+                if self.embedding_generator is None:
+                    from ..embeddings import get_embedding_generator
+                    self.embedding_generator = get_embedding_generator(config)
+
+                query_embedding = self.embedding_generator.generate(search_text)
+
+            return self._search_by_text_and_topics_fallback(
+                query_embedding, include_topics, exclude_topics, min_confidence, limit
+            )
+
+        except Exception as e:
+            logger.error(f"Error in topic-aware search: {str(e)}")
+            return []
+
+    def _search_by_text_and_topics_fallback(self, query_embedding: Optional[VectorType] = None,
+                                            include_topics: Optional[List[str]] = None,
+                                            exclude_topics: Optional[List[str]] = None,
+                                            min_confidence: float = 0.7,
+                                            limit: int = 10) -> List[Dict[str, Any]]:
+        """Fallback search using Python similarity calculation with topic filtering."""
+        results = []
+
+        for element_pk, embedding_data in self.embeddings.items():
+            # Handle both old format (direct list) and new format (dict with metadata)
+            if isinstance(embedding_data, list):
+                # Old format - create default metadata
+                embedding = embedding_data
+                confidence = 1.0
+                topics = []
+            elif isinstance(embedding_data, dict):
+                embedding = embedding_data.get("embedding", [])
+                confidence = embedding_data.get("confidence", 1.0)
+                topics = embedding_data.get("topics", [])
+            else:
+                continue
+
+            # Check confidence threshold
+            if confidence < min_confidence:
+                continue
+
+            # Apply topic filtering
+            if not self._matches_topic_filters(topics, include_topics, exclude_topics):
+                continue
+
+            result = {
+                'element_pk': element_pk,
+                'confidence': float(confidence),
+                'topics': topics
+            }
+
+            # Calculate similarity if we have a query embedding
+            if query_embedding:
+                try:
+                    if NUMPY_AVAILABLE:
+                        similarity = self._cosine_similarity_numpy(query_embedding, embedding)
+                    else:
+                        similarity = self._cosine_similarity_python(query_embedding, embedding)
+                    result['similarity'] = float(similarity)
+                except Exception as e:
+                    logger.warning(f"Error calculating similarity for element {element_pk}: {str(e)}")
+                    result['similarity'] = 0.0
+            else:
+                result['similarity'] = 1.0  # No text search, all results have equal similarity
+
+            results.append(result)
+
+        # Sort by similarity if we calculated it
+        if query_embedding:
+            results.sort(key=lambda x: x['similarity'], reverse=True)
+
+        return results[:limit]
+
+    def _matches_topic_filters(self, topics: List[str],
+                               include_topics: Optional[List[str]] = None,
+                               exclude_topics: Optional[List[str]] = None) -> bool:
+        """Check if topics match the include/exclude filters using pattern matching."""
+        import fnmatch
+
+        # Check include filters - at least one must match
+        if include_topics:
+            include_match = False
+            for topic in topics:
+                for pattern in include_topics:
+                    if fnmatch.fnmatch(topic, pattern):
+                        include_match = True
+                        break
+                if include_match:
+                    break
+
+            if not include_match:
+                return False
+
+        # Check exclude filters - none should match
+        if exclude_topics:
+            for topic in topics:
+                for pattern in exclude_topics:
+                    if fnmatch.fnmatch(topic, pattern):
+                        return False
+
+        return True
+
+    def get_topic_statistics(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get statistics about topic distribution across embeddings.
+
+        Returns:
+            Dictionary mapping topic strings to statistics:
+            {
+                'security.policy': {
+                    'embedding_count': int,
+                    'document_count': int,
+                    'avg_embedding_confidence': float
+                }
+            }
+        """
+        try:
+            topic_stats = {}
+
+            for element_pk, embedding_data in self.embeddings.items():
+                # Handle both old format (direct list) and new format (dict with metadata)
+                if isinstance(embedding_data, dict):
+                    topics = embedding_data.get("topics", [])
+                    confidence = embedding_data.get("confidence", 1.0)
+
+                    # Get document for this element
+                    element = self.get_element(element_pk)
+                    doc_id = element.get("doc_id") if element else None
+
+                    for topic in topics:
+                        if topic not in topic_stats:
+                            topic_stats[topic] = {
+                                'embedding_count': 0,
+                                'document_ids': set(),
+                                'confidences': []
+                            }
+
+                        topic_stats[topic]['embedding_count'] += 1
+                        topic_stats[topic]['confidences'].append(confidence)
+                        if doc_id:
+                            topic_stats[topic]['document_ids'].add(doc_id)
+
+            # Calculate final statistics
+            final_stats = {}
+            for topic, stats in topic_stats.items():
+                final_stats[topic] = {
+                    'embedding_count': stats['embedding_count'],
+                    'document_count': len(stats['document_ids']),
+                    'avg_embedding_confidence': sum(stats['confidences']) / len(stats['confidences'])
+                }
+
+            return final_stats
+
+        except Exception as e:
+            logger.error(f"Error getting topic statistics: {str(e)}")
+            return {}
+
+    def get_embedding_topics(self, element_pk: int) -> List[str]:
+        """
+        Get topics assigned to a specific embedding.
+
+        Args:
+            element_pk: Element primary key
+
+        Returns:
+            List of topic strings assigned to this embedding
+        """
+        try:
+            embedding_data = self.embeddings.get(element_pk)
+            if embedding_data is None:
+                return []
+
+            # Handle both old format (direct list) and new format (dict with metadata)
+            if isinstance(embedding_data, dict):
+                return embedding_data.get("topics", [])
+            else:
+                return []  # Old format has no topics
+
+        except Exception as e:
+            logger.error(f"Error getting topics for element {element_pk}: {str(e)}")
+            return []
+
+    def _cosine_similarity(self, vec1: VectorType, vec2: VectorType) -> float:
+        """
+        Calculate cosine similarity between two vectors.
+        Automatically uses NumPy if available, otherwise falls back to pure Python.
+
+        Args:
+            vec1: First vector
+            vec2: Second vector
+
+        Returns:
+            Cosine similarity (between -1 and 1)
+        """
+        if NUMPY_AVAILABLE:
+            return self._cosine_similarity_numpy(vec1, vec2)
+        else:
+            return self._cosine_similarity_python(vec1, vec2)
+
+    @staticmethod
+    def _cosine_similarity_numpy(vec1: VectorType, vec2: VectorType) -> float:
+        """
+        Calculate cosine similarity between two vectors using NumPy.
+
+        Args:
+            vec1: First vector
+            vec2: Second vector
+
+        Returns:
+            Cosine similarity (between -1 and 1)
+        """
+        if not NUMPY_AVAILABLE:
+            raise ImportError("NumPy is required for this method but not available")
+
+        # Make sure vectors are the same length
+        if len(vec1) != len(vec2):
+            min_len = min(len(vec1), len(vec2))
+            vec1 = vec1[:min_len]
+            vec2 = vec2[:min_len]
+
+        # Convert to numpy arrays
+        vec1_np = np.array(vec1)
+        vec2_np = np.array(vec2)
+
+        # Calculate dot product
+        dot_product = np.dot(vec1_np, vec2_np)
+
+        # Calculate magnitudes
+        norm1 = np.linalg.norm(vec1_np)
+        norm2 = np.linalg.norm(vec2_np)
+
+        # Avoid division by zero
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+
+        # Calculate cosine similarity
+        return float(dot_product / (norm1 * norm2))
+
+    @staticmethod
+    def _cosine_similarity_python(vec1: VectorType, vec2: VectorType) -> float:
+        """
+        Calculate cosine similarity between two vectors using pure Python.
+        This is a fallback when NumPy is not available.
+
+        Args:
+            vec1: First vector
+            vec2: Second vector
+
+        Returns:
+            Cosine similarity (between -1 and 1)
+        """
+        # Make sure vectors are the same length
+        if len(vec1) != len(vec2):
+            min_len = min(len(vec1), len(vec2))
+            vec1 = vec1[:min_len]
+            vec2 = vec2[:min_len]
+
+        # Calculate dot product
+        dot_product = sum(a * b for a, b in zip(vec1, vec2))
+
+        # Calculate magnitudes
+        magnitude1 = sum(a * a for a in vec1) ** 0.5
+        magnitude2 = sum(b * b for b in vec2) ** 0.5
+
+        # Check for zero magnitudes
+        if magnitude1 == 0 or magnitude2 == 0:
+            return 0.0
+
+        # Calculate cosine similarity
+        return float(dot_product / (magnitude1 * magnitude2))
 
     def _load_processing_history(self) -> None:
         """Load processing history from files."""
@@ -764,22 +1149,46 @@ class FileDocumentDatabase(DocumentDatabase):
                 logger.error(f"Error loading relationship from {file_path}: {str(e)}")
 
     def _load_embeddings(self) -> None:
-        """Load embeddings from files."""
-        import numpy as np
+        """Load embeddings from files, supporting both old and new formats."""
+        # Load old format (.npy files)
+        if NUMPY_AVAILABLE:
+            embedding_files = glob.glob(os.path.join(self.storage_path, 'embeddings', '*.npy'))
 
-        embedding_files = glob.glob(os.path.join(self.storage_path, 'embeddings', '*.npy'))
+            for file_path in embedding_files:
+                try:
+                    # Extract element_pk from filename
+                    filename = os.path.basename(file_path)
+                    element_pk = int(os.path.splitext(filename)[0])
 
-        for file_path in embedding_files:
+                    # Load embedding and convert to new format
+                    embedding = np.load(file_path).tolist()
+                    embedding_data = {
+                        "embedding": embedding,
+                        "dimensions": len(embedding),
+                        "topics": [],
+                        "confidence": 1.0,
+                        "created_at": time.time()
+                    }
+                    self.embeddings[element_pk] = embedding_data
+                except Exception as e:
+                    logger.error(f"Error loading old format embedding from {file_path}: {str(e)}")
+
+        # Load new format (.json files) - these take precedence
+        embedding_json_files = glob.glob(os.path.join(self.storage_path, 'embeddings', '*.json'))
+
+        for file_path in embedding_json_files:
             try:
                 # Extract element_pk from filename
                 filename = os.path.basename(file_path)
                 element_pk = int(os.path.splitext(filename)[0])
 
-                # Load embedding
-                embedding = np.load(file_path).tolist()
-                self.embeddings[element_pk] = embedding
+                # Load enhanced embedding data
+                with open(file_path, 'r') as f:
+                    embedding_data = json.load(f)
+
+                self.embeddings[element_pk] = embedding_data
             except Exception as e:
-                logger.error(f"Error loading embedding from {file_path}: {str(e)}")
+                logger.error(f"Error loading new format embedding from {file_path}: {str(e)}")
 
     def _save_document(self, doc_id: str) -> None:
         """Save document to file."""
@@ -821,18 +1230,26 @@ class FileDocumentDatabase(DocumentDatabase):
             logger.error(f"Error saving relationship to {file_path}: {str(e)}")
 
     def _save_embedding(self, element_pk: int) -> None:
-        """Save embedding to file."""
+        """Save embedding to file in new JSON format."""
         if element_pk not in self.embeddings:
             return
 
-        import numpy as np
-
-        file_path = os.path.join(self.storage_path, 'embeddings', f"{element_pk}.npy")
+        # Save in new JSON format
+        file_path = os.path.join(self.storage_path, 'embeddings', f"{element_pk}.json")
 
         try:
-            np.save(file_path, np.array(self.embeddings[element_pk], dtype=np.float32))
+            with open(file_path, 'w') as f:
+                json.dump(self.embeddings[element_pk], f, indent=2)
         except Exception as e:
             logger.error(f"Error saving embedding to {file_path}: {str(e)}")
+
+        # Also clean up old .npy file if it exists
+        old_file_path = os.path.join(self.storage_path, 'embeddings', f"{element_pk}.npy")
+        try:
+            if os.path.exists(old_file_path):
+                os.remove(old_file_path)
+        except Exception as e:
+            logger.warning(f"Could not remove old embedding file {old_file_path}: {str(e)}")
 
     def _delete_document_file(self, doc_id: str) -> None:
         """Delete document file."""
@@ -865,14 +1282,22 @@ class FileDocumentDatabase(DocumentDatabase):
             logger.error(f"Error deleting relationship file {file_path}: {str(e)}")
 
     def _delete_embedding_file(self, element_pk: int) -> None:
-        """Delete embedding file."""
-        file_path = os.path.join(self.storage_path, 'embeddings', f"{element_pk}.npy")
-
+        """Delete embedding files (both old and new formats)."""
+        # Delete new JSON format
+        json_file_path = os.path.join(self.storage_path, 'embeddings', f"{element_pk}.json")
         try:
-            if os.path.exists(file_path):
-                os.remove(file_path)
+            if os.path.exists(json_file_path):
+                os.remove(json_file_path)
         except Exception as e:
-            logger.error(f"Error deleting embedding file {file_path}: {str(e)}")
+            logger.error(f"Error deleting embedding JSON file {json_file_path}: {str(e)}")
+
+        # Delete old .npy format if it exists
+        npy_file_path = os.path.join(self.storage_path, 'embeddings', f"{element_pk}.npy")
+        try:
+            if os.path.exists(npy_file_path):
+                os.remove(npy_file_path)
+        except Exception as e:
+            logger.error(f"Error deleting embedding NPY file {npy_file_path}: {str(e)}")
 
     @staticmethod
     def _has_element_changed(new_element: Dict[str, Any],

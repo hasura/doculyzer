@@ -907,17 +907,21 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
             self.cursor.execute(
                 """
                 INSERT INTO embeddings 
-                (element_pk, embedding, dimensions, created_at)
-                VALUES (%s, %s, %s, %s)
+                (element_pk, embedding, dimensions, topics, confidence, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT (element_pk) DO UPDATE 
                 SET embedding = EXCLUDED.embedding, 
                     dimensions = EXCLUDED.dimensions, 
+                    topics = EXCLUDED.topics,
+                    confidence = EXCLUDED.confidence,
                     created_at = EXCLUDED.created_at
                 """,
                 (
                     element_pk,
                     embedding_json,
                     len(embedding),
+                    json.dumps([]),  # Default to empty topics
+                    1.0,  # Default confidence
                     time.time()
                 )
             )
@@ -1270,14 +1274,25 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
             CREATE INDEX IF NOT EXISTS idx_relationships_type ON relationships(relationship_type)
             """)
 
-            # Modified embeddings table with element_pk as reference
+            # Modified embeddings table with topic support
             self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS embeddings (
                 element_pk INTEGER PRIMARY KEY REFERENCES elements(element_pk) ON DELETE CASCADE,
                 embedding JSONB,
                 dimensions INTEGER,
+                topics JSONB DEFAULT '[]'::jsonb,
+                confidence REAL DEFAULT 1.0,
                 created_at DOUBLE PRECISION
             )
+            """)
+
+            # Add indexes for topic searching
+            self.cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_embeddings_topics ON embeddings USING GIN (topics)
+            """)
+
+            self.cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_embeddings_confidence ON embeddings(confidence)
             """)
 
             self.cursor.execute("""
@@ -1414,3 +1429,369 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
 
         # Calculate cosine similarity
         return float(dot_product / (magnitude1 * magnitude2))
+
+    # ========================================
+    # NEW: TOPIC SUPPORT METHODS
+    # ========================================
+
+    def supports_topics(self) -> bool:
+        """
+        Indicate whether this backend supports topic-aware embeddings.
+
+        Returns:
+            True since PostgreSQL implementation supports topics
+        """
+        return True
+
+    def store_embedding_with_topics(self, element_pk: int, embedding: VectorType,
+                                    topics: List[str], confidence: float = 1.0) -> None:
+        """
+        Store embedding for an element with topic assignments.
+
+        Args:
+            element_pk: Element primary key
+            embedding: Vector embedding
+            topics: List of topic strings (e.g., ['security.policy', 'compliance'])
+            confidence: Overall confidence in this embedding/topic assignment
+        """
+        if not self.cursor:
+            raise ValueError("Database not initialized")
+
+        # Verify element exists
+        self.cursor.execute(
+            "SELECT element_pk FROM elements WHERE element_pk = %s",
+            (element_pk,)
+        )
+
+        if self.cursor.fetchone() is None:
+            raise ValueError(f"Element not found: {element_pk}")
+
+        # Update vector dimension based on actual data
+        self.vector_dimension = max(self.vector_dimension, len(embedding))
+
+        try:
+            # Store embedding with topics in the main embeddings table
+            embedding_json = json.dumps(embedding)
+            topics_json = json.dumps(topics)
+
+            self.cursor.execute(
+                """
+                INSERT INTO embeddings 
+                (element_pk, embedding, dimensions, topics, confidence, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (element_pk) DO UPDATE 
+                SET embedding = EXCLUDED.embedding, 
+                    dimensions = EXCLUDED.dimensions,
+                    topics = EXCLUDED.topics,
+                    confidence = EXCLUDED.confidence,
+                    created_at = EXCLUDED.created_at
+                """,
+                (
+                    element_pk,
+                    embedding_json,
+                    len(embedding),
+                    topics_json,
+                    confidence,
+                    time.time()
+                )
+            )
+
+            # If pgvector is available, also store in vector column
+            if self.vector_extension == "pgvector":
+                self.cursor.execute(
+                    """
+                    UPDATE embeddings
+                    SET vector_embedding = %s::vector
+                    WHERE element_pk = %s
+                    """,
+                    (embedding_json, element_pk)
+                )
+
+            self.conn.commit()
+
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"Error storing embedding with topics for {element_pk}: {str(e)}")
+            raise
+
+    def search_by_text_and_topics(self, search_text: str = None,
+                                  include_topics: Optional[List[str]] = None,
+                                  exclude_topics: Optional[List[str]] = None,
+                                  min_confidence: float = 0.7,
+                                  limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Search elements by text with topic filtering using LIKE patterns.
+
+        Args:
+            search_text: Text to search for semantically (optional)
+            include_topics: Topic LIKE patterns to include (e.g., ['security%', '%.policy%'])
+            exclude_topics: Topic LIKE patterns to exclude (e.g., ['deprecated%'])
+            min_confidence: Minimum confidence threshold for embeddings
+            limit: Maximum number of results
+
+        Returns:
+            List of dictionaries with keys:
+            - element_pk: Element primary key
+            - similarity: Similarity score (if search_text provided)
+            - confidence: Overall embedding confidence
+            - topics: List of assigned topic strings
+        """
+        if not self.cursor:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Generate embedding for search text if provided
+            query_embedding = None
+            if search_text:
+                # Import necessary modules
+                from ..embeddings import get_embedding_generator
+
+                # Initialize embedding generator if not already done
+                if self.embedding_generator is None:
+                    config_obj = self.conn_params.get('config')
+                    if not config_obj:
+                        from ..config import Config
+                        config_obj = Config(os.environ.get("DOCULYZER_CONFIG_PATH", "./config.yaml"))
+                    self.embedding_generator = get_embedding_generator(config_obj)
+
+                query_embedding = self.embedding_generator.generate(search_text)
+
+            # Build the query based on whether we have search text and vector support
+            if search_text and self.vector_extension == "pgvector":
+                return self._search_by_text_and_topics_pgvector(
+                    query_embedding, include_topics, exclude_topics, min_confidence, limit
+                )
+            else:
+                return self._search_by_text_and_topics_fallback(
+                    query_embedding, include_topics, exclude_topics, min_confidence, limit
+                )
+
+        except Exception as e:
+            logger.error(f"Error in topic-aware search: {str(e)}")
+            return []
+
+    def _search_by_text_and_topics_pgvector(self, query_embedding: VectorType,
+                                            include_topics: Optional[List[str]] = None,
+                                            exclude_topics: Optional[List[str]] = None,
+                                            min_confidence: float = 0.7,
+                                            limit: int = 10) -> List[Dict[str, Any]]:
+        """Search using pgvector with topic filtering."""
+        vector_json = json.dumps(query_embedding)
+
+        # Base query with similarity calculation
+        sql = """
+        SELECT 
+            em.element_pk,
+            1 - (em.vector_embedding <=> %s::vector) as similarity,
+            em.confidence,
+            em.topics
+        FROM embeddings em
+        WHERE em.confidence >= %s
+        """
+        params = [vector_json, min_confidence]
+
+        # Add topic filtering conditions
+        sql, params = self._add_topic_filters(sql, params, include_topics, exclude_topics)
+
+        # Order by similarity and limit
+        sql += " ORDER BY similarity DESC LIMIT %s"
+        params.append(limit)
+
+        self.cursor.execute(sql, params)
+
+        results = []
+        for row in self.cursor.fetchall():
+            try:
+                topics = row[3] if row[3] else []
+            except (json.JSONDecodeError, TypeError):
+                topics = []
+
+            results.append({
+                'element_pk': row[0],
+                'similarity': float(row[1]),
+                'confidence': float(row[2]),
+                'topics': topics
+            })
+
+        return results
+
+    def _search_by_text_and_topics_fallback(self, query_embedding: Optional[VectorType] = None,
+                                            include_topics: Optional[List[str]] = None,
+                                            exclude_topics: Optional[List[str]] = None,
+                                            min_confidence: float = 0.7,
+                                            limit: int = 10) -> List[Dict[str, Any]]:
+        """Fallback search using Python similarity calculation with topic filtering."""
+
+        # Base query to get embeddings with topic filtering
+        sql = """
+        SELECT em.element_pk, em.embedding, em.confidence, em.topics
+        FROM embeddings em
+        WHERE em.confidence >= %s
+        """
+        params = [min_confidence]
+
+        # Add topic filtering conditions
+        sql, params = self._add_topic_filters(sql, params, include_topics, exclude_topics)
+
+        self.cursor.execute(sql, params)
+
+        # Calculate similarities if we have a query embedding
+        results = []
+        for row in self.cursor.fetchall():
+            try:
+                topics = row[3] if row[3] else []
+            except (json.JSONDecodeError, TypeError):
+                topics = []
+
+            result = {
+                'element_pk': row[0],
+                'confidence': float(row[2]),
+                'topics': topics
+            }
+
+            # Calculate similarity if we have a query embedding
+            if query_embedding:
+                try:
+                    embedding = row[1]
+                    if NUMPY_AVAILABLE:
+                        similarity = self._cosine_similarity_numpy(query_embedding, embedding)
+                    else:
+                        similarity = self._cosine_similarity_python(query_embedding, embedding)
+                    result['similarity'] = float(similarity)
+                except Exception as e:
+                    logger.warning(f"Error calculating similarity for element {row[0]}: {str(e)}")
+                    result['similarity'] = 0.0
+            else:
+                result['similarity'] = 1.0  # No text search, all results have equal similarity
+
+            results.append(result)
+
+        # Sort by similarity if we calculated it
+        if query_embedding:
+            results.sort(key=lambda x: x['similarity'], reverse=True)
+
+        return results[:limit]
+
+    def _add_topic_filters(self, sql: str, params: List,
+                           include_topics: Optional[List[str]] = None,
+                           exclude_topics: Optional[List[str]] = None) -> tuple[str, List]:
+        """Add topic filtering conditions to SQL query."""
+
+        # Add include topic filters
+        if include_topics:
+            include_conditions = []
+            for topic_pattern in include_topics:
+                # Check if any topic in the topics JSON array matches the pattern
+                include_conditions.append("""
+                    EXISTS (
+                        SELECT 1 FROM jsonb_array_elements_text(em.topics) AS topic
+                        WHERE topic LIKE %s
+                    )
+                """)
+                params.append(topic_pattern)
+
+            if include_conditions:
+                sql += " AND (" + " OR ".join(include_conditions) + ")"
+
+        # Add exclude topic filters
+        if exclude_topics:
+            exclude_conditions = []
+            for topic_pattern in exclude_topics:
+                # Check that no topic in the topics JSON array matches the pattern
+                exclude_conditions.append("""
+                    NOT EXISTS (
+                        SELECT 1 FROM jsonb_array_elements_text(em.topics) AS topic
+                        WHERE topic LIKE %s
+                    )
+                """)
+                params.append(topic_pattern)
+
+            if exclude_conditions:
+                sql += " AND " + " AND ".join(exclude_conditions)
+
+        return sql, params
+
+    def get_topic_statistics(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get statistics about topic distribution across embeddings.
+
+        Returns:
+            Dictionary mapping topic strings to statistics:
+            {
+                'security.policy': {
+                    'embedding_count': int,
+                    'document_count': int,
+                    'avg_embedding_confidence': float
+                }
+            }
+        """
+        if not self.cursor:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Query to get topic statistics using PostgreSQL JSON functions
+            self.cursor.execute("""
+                WITH topic_expanded AS (
+                    SELECT 
+                        jsonb_array_elements_text(topics) AS topic,
+                        confidence,
+                        e.doc_id
+                    FROM embeddings em
+                    JOIN elements e ON em.element_pk = e.element_pk
+                    WHERE topics IS NOT NULL AND jsonb_array_length(topics) > 0
+                )
+                SELECT 
+                    topic,
+                    COUNT(*) as embedding_count,
+                    COUNT(DISTINCT doc_id) as document_count,
+                    AVG(confidence) as avg_confidence
+                FROM topic_expanded
+                GROUP BY topic
+                ORDER BY embedding_count DESC
+            """)
+
+            statistics = {}
+            for row in self.cursor.fetchall():
+                statistics[row[0]] = {
+                    'embedding_count': int(row[1]),
+                    'document_count': int(row[2]),
+                    'avg_embedding_confidence': float(row[3])
+                }
+
+            return statistics
+
+        except Exception as e:
+            logger.error(f"Error getting topic statistics: {str(e)}")
+            return {}
+
+    def get_embedding_topics(self, element_pk: int) -> List[str]:
+        """
+        Get topics assigned to a specific embedding.
+
+        Args:
+            element_pk: Element primary key
+
+        Returns:
+            List of topic strings assigned to this embedding
+        """
+        if not self.cursor:
+            raise ValueError("Database not initialized")
+
+        try:
+            self.cursor.execute(
+                "SELECT topics FROM embeddings WHERE element_pk = %s",
+                (element_pk,)
+            )
+
+            row = self.cursor.fetchone()
+            if row is None or row[0] is None:
+                return []
+
+            try:
+                return row[0] if isinstance(row[0], list) else []
+            except (json.JSONDecodeError, TypeError):
+                return []
+
+        except Exception as e:
+            logger.error(f"Error getting topics for element {element_pk}: {str(e)}")
+            return []

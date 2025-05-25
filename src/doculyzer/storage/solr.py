@@ -1,17 +1,29 @@
+import json
 import logging
 import os
-import json
+from typing import Dict, Any, List, Optional, Tuple, Union, TYPE_CHECKING
+
 import time
-from typing import Dict, Any, List, Optional, Tuple, Union
+
+# Import types for type checking only
+if TYPE_CHECKING:
+    import numpy as np
+    from numpy.typing import NDArray
+
+    # Define type aliases for type checking
+    VectorType = NDArray[np.float32]
+else:
+    # Runtime type aliases - use generic Python types
+    VectorType = List[float]
 
 from .element_relationship import ElementRelationship
-from .element_element import ElementBase, ElementHierarchical
 from .base import DocumentDatabase
 
 logger = logging.getLogger(__name__)
 
-# Define global flag for availability - will be set at runtime
+# Define global flags for availability - will be set at runtime
 PYSOLR_AVAILABLE = False
+NUMPY_AVAILABLE = False
 
 # Try to import SOLR library at runtime
 try:
@@ -21,12 +33,19 @@ try:
 except ImportError:
     logger.warning("pysolr not available. Install with 'pip install pysolr'.")
 
-
     # Create a placeholder for type checking
     class pysolr:
         class Solr:
             def __init__(self, *args, **kwargs):
                 pass
+
+# Try to import NumPy conditionally
+try:
+    import numpy as np
+
+    NUMPY_AVAILABLE = True
+except ImportError:
+    logger.warning("NumPy not available. Will use slower pure Python vector operations.")
 
 # Try to import the config
 try:
@@ -68,18 +87,23 @@ class SolrDocumentDatabase(DocumentDatabase):
         self.elements_core = f"{self.core_prefix}_elements"
         self.relationships_core = f"{self.core_prefix}_relationships"
         self.history_core = f"{self.core_prefix}_history"
+        self.embeddings_core = f"{self.core_prefix}_embeddings"
 
         # Initialize SOLR clients to None - will be created in initialize()
         self.documents = None
         self.elements = None
         self.relationships = None
         self.history = None
+        self.embeddings = None
 
         # Auto-increment counters
         self.element_pk_counter = 0
 
         # Configuration for vector search
         self.vector_dimension = conn_params.get('vector_dimension', 384)
+        if config:
+            self.vector_dimension = config.config.get('embedding', {}).get('dimensions', self.vector_dimension)
+
         self.embedding_generator = None
 
     def initialize(self) -> None:
@@ -93,6 +117,7 @@ class SolrDocumentDatabase(DocumentDatabase):
             self.elements = pysolr.Solr(f"{self.base_url}/{self.elements_core}", always_commit=True)
             self.relationships = pysolr.Solr(f"{self.base_url}/{self.relationships_core}", always_commit=True)
             self.history = pysolr.Solr(f"{self.base_url}/{self.history_core}", always_commit=True)
+            self.embeddings = pysolr.Solr(f"{self.base_url}/{self.embeddings_core}", always_commit=True)
 
             # Check if cores exist by making a simple query
             try:
@@ -133,6 +158,7 @@ class SolrDocumentDatabase(DocumentDatabase):
         self.elements = None
         self.relationships = None
         self.history = None
+        self.embeddings = None
 
     def get_last_processed_info(self, source_id: str) -> Optional[Dict[str, Any]]:
         """Get information about when a document was last processed."""
@@ -326,8 +352,17 @@ class SolrDocumentDatabase(DocumentDatabase):
             if isinstance(solr_document.get("metadata"), dict):
                 solr_document["metadata_json"] = json.dumps(solr_document["metadata"])
 
+            # Get existing elements to clean up embeddings
+            existing_elements = self.get_document_elements(doc_id)
+            existing_element_pks = [int(elem.get("element_pk", 0)) for elem in existing_elements]
+
             # Delete existing document elements
             self.elements.delete(f"doc_id:{doc_id}")
+
+            # Delete existing embeddings for document elements
+            if existing_element_pks:
+                element_pks_str = " OR ".join([str(pk) for pk in existing_element_pks])
+                self.embeddings.delete(f"element_pk:({element_pks_str})")
 
             # Delete existing relationships for document elements
             element_ids = [f'"{element["element_id"]}"' for element in elements]
@@ -747,125 +782,6 @@ class SolrDocumentDatabase(DocumentDatabase):
             logger.error(f"Error searching elements by content: {str(e)}")
             return []
 
-    def store_embedding(self, element_pk: int, embedding: List[float]) -> None:
-        """
-        Store embedding for an element.
-
-        Args:
-            element_pk: Element ID
-            embedding: Vector embedding
-        """
-        if not self.elements:
-            raise ValueError("Database not initialized")
-
-        try:
-            # Get the element
-            element = self.get_element(element_pk)
-            if not element:
-                raise ValueError(f"Element not found: {element_pk}")
-
-            # Update the element with embedding
-            element["embedding"] = embedding
-            element["embedding_dimensions"] = len(embedding)
-
-            # Add to SOLR (will replace existing document with same ID)
-            self.elements.add([element])
-
-            logger.debug(f"Stored embedding for element {element_pk}")
-
-        except Exception as e:
-            logger.error(f"Error storing embedding for element {element_pk}: {str(e)}")
-            raise
-
-    def get_embedding(self, element_pk: int) -> Optional[List[float]]:
-        """
-        Get embedding for an element.
-
-        Args:
-            element_pk: Element ID
-
-        Returns:
-            Vector embedding or None if not found
-        """
-        if not self.elements:
-            raise ValueError("Database not initialized")
-
-        try:
-            element = self.get_element(element_pk)
-            if not element:
-                return None
-
-            embedding = element.get("embedding")
-            return embedding
-
-        except Exception as e:
-            logger.error(f"Error getting embedding for element {element_pk}: {str(e)}")
-            return None
-
-    def search_by_embedding(self, query_embedding: List[float], limit: int = 10,
-                            filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
-        """
-        Search elements by embedding similarity with optional filtering.
-
-        Args:
-            query_embedding: Query embedding vector
-            limit: Maximum number of results
-            filter_criteria: Optional dictionary with criteria to filter results
-                             (e.g. {"element_type": ["header", "section"]})
-
-        Returns:
-            List of (element_pk, similarity_score) tuples for matching elements
-        """
-        if not self.elements:
-            raise ValueError("Database not initialized")
-
-        try:
-            # Build KNN query
-            vector_str = ",".join(str(v) for v in query_embedding)
-            knn_query = f"{{!knn f=embedding topK={limit * 3}}} {vector_str}"
-
-            # Add filter queries if needed
-            params = {"rows": limit * 3}  # Get more results for better filtering
-
-            if filter_criteria:
-                fq = []
-                for key, value in filter_criteria.items():
-                    if key == "element_type" and isinstance(value, list):
-                        # Handle list of element types
-                        values_str = " OR ".join([f'"{v}"' for v in value])
-                        fq.append(f"element_type:({values_str})")
-                    elif key == "doc_id" and isinstance(value, list):
-                        # Handle list of document IDs
-                        values_str = " OR ".join([f'"{v}"' for v in value])
-                        fq.append(f"doc_id:({values_str})")
-                    elif key == "exclude_doc_id" and isinstance(value, list):
-                        # Handle list of document IDs to exclude
-                        values_str = " OR ".join([f'"{v}"' for v in value])
-                        fq.append(f"-doc_id:({values_str})")
-                    else:
-                        # Simple equality
-                        fq.append(f'{key}:"{value}"')
-
-                if fq:
-                    params["fq"] = fq
-
-            # Execute query
-            results = self.elements.search(knn_query, **params)
-
-            # Format results as (element_pk, similarity_score) tuples
-            # SOLR returns scores where higher is better
-            element_scores = []
-            for doc in results.docs:
-                element_pk = int(doc["element_pk"])
-                score = float(doc.get("score", 0.0))
-                element_scores.append((element_pk, score))
-
-            return element_scores[:limit]
-
-        except Exception as e:
-            logger.error(f"Error searching by embedding: {str(e)}")
-            return []
-
     def delete_document(self, doc_id: str) -> bool:
         """
         Delete a document and all associated elements and relationships.
@@ -885,9 +801,15 @@ class SolrDocumentDatabase(DocumentDatabase):
             if not document:
                 return False
 
-            # Get all element IDs for this document
+            # Get all elements for this document to clean up embeddings
             elements = self.get_document_elements(doc_id)
+            element_pks = [int(elem.get("element_pk", 0)) for elem in elements]
             element_ids = [element["element_id"] for element in elements]
+
+            # Delete embeddings for these elements
+            if element_pks:
+                element_pks_str = " OR ".join([str(pk) for pk in element_pks])
+                self.embeddings.delete(f"element_pk:({element_pks_str})")
 
             # Delete relationships involving these elements
             if element_ids:
@@ -906,6 +828,213 @@ class SolrDocumentDatabase(DocumentDatabase):
         except Exception as e:
             logger.error(f"Error deleting document {doc_id}: {str(e)}")
             return False
+
+    def store_relationship(self, relationship: Dict[str, Any]) -> None:
+        """
+        Store a relationship between elements.
+
+        Args:
+            relationship: Relationship data with source_id, relationship_type, and target_reference
+        """
+        if not self.relationships:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Prepare relationship for SOLR
+            solr_rel = {**relationship}
+            solr_rel["id"] = relationship["relationship_id"]  # SOLR requires unique ID
+
+            # Convert metadata to JSON if it's a dict
+            if isinstance(solr_rel.get("metadata"), dict):
+                solr_rel["metadata_json"] = json.dumps(solr_rel["metadata"])
+
+            # Store relationship
+            self.relationships.add([solr_rel])
+            logger.debug(f"Stored relationship {relationship['relationship_id']}")
+
+        except Exception as e:
+            logger.error(f"Error storing relationship: {str(e)}")
+            raise
+
+    def delete_relationships_for_element(self, element_id: str, relationship_type: str = None) -> None:
+        """
+        Delete relationships for an element.
+
+        Args:
+            element_id: Element ID
+            relationship_type: Optional relationship type to filter by
+        """
+        if not self.relationships:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Build query for source relationships
+            source_query = f'source_id:"{element_id}"'
+            if relationship_type:
+                source_query += f' AND relationship_type:"{relationship_type}"'
+
+            # Build query for target relationships
+            target_query = f'target_reference:"{element_id}"'
+            if relationship_type:
+                target_query += f' AND relationship_type:"{relationship_type}"'
+
+            # Delete source relationships
+            self.relationships.delete(source_query)
+
+            # Delete target relationships
+            self.relationships.delete(target_query)
+
+            logger.debug(f"Deleted relationships for element {element_id}")
+
+        except Exception as e:
+            logger.error(f"Error deleting relationships for element {element_id}: {str(e)}")
+            raise
+
+    # ========================================
+    # ENHANCED EMBEDDING FUNCTIONS
+    # ========================================
+
+    def store_embedding(self, element_pk: int, embedding: VectorType) -> None:
+        """
+        Store embedding for an element.
+
+        Args:
+            element_pk: Element ID
+            embedding: Vector embedding
+        """
+        if not self.embeddings:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Verify element exists
+            element = self.get_element(element_pk)
+            if not element:
+                raise ValueError(f"Element not found: {element_pk}")
+
+            # Create enhanced embedding document
+            embedding_doc = {
+                "id": str(element_pk),  # SOLR unique ID
+                "element_pk": element_pk,
+                "embedding": embedding,
+                "dimensions": len(embedding),
+                "topics": [],  # Default to empty topics
+                "confidence": 1.0,  # Default confidence
+                "created_at": time.time()
+            }
+
+            # Store in embeddings core
+            self.embeddings.add([embedding_doc])
+            logger.debug(f"Stored embedding for element {element_pk}")
+
+        except Exception as e:
+            logger.error(f"Error storing embedding for element {element_pk}: {str(e)}")
+            raise
+
+    def get_embedding(self, element_pk: int) -> Optional[VectorType]:
+        """
+        Get embedding for an element.
+
+        Args:
+            element_pk: Element ID
+
+        Returns:
+            Vector embedding or None if not found
+        """
+        if not self.embeddings:
+            raise ValueError("Database not initialized")
+
+        try:
+            results = self.embeddings.search(f"element_pk:{element_pk}", rows=1)
+            if len(results) == 0:
+                return None
+
+            embedding_doc = dict(results.docs[0])
+            return embedding_doc.get("embedding")
+
+        except Exception as e:
+            logger.error(f"Error getting embedding for element {element_pk}: {str(e)}")
+            return None
+
+    def search_by_embedding(self, query_embedding: VectorType, limit: int = 10,
+                            filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
+        """
+        Search elements by embedding similarity with optional filtering.
+
+        Args:
+            query_embedding: Query embedding vector
+            limit: Maximum number of results
+            filter_criteria: Optional dictionary with criteria to filter results
+
+        Returns:
+            List of (element_pk, similarity_score) tuples for matching elements
+        """
+        if not self.embeddings:
+            raise ValueError("Database not initialized")
+
+        try:
+            # For SOLR, we'll fetch all embeddings and compute similarity in Python
+            # since SOLR's vector search capabilities vary by version
+            return self._fallback_embedding_search(query_embedding, limit, filter_criteria)
+
+        except Exception as e:
+            logger.error(f"Error searching by embedding: {str(e)}")
+            return []
+
+    def _fallback_embedding_search(self, query_embedding: VectorType, limit: int = 10,
+                                   filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
+        """
+        Fallback implementation for embedding search using Python similarity calculation.
+        """
+        try:
+            # Build SOLR query to get embeddings
+            solr_query = "*:*"
+            filter_queries = []
+
+            # Add element filters if provided
+            if filter_criteria:
+                # Get element IDs that match the filter criteria
+                matching_elements = self.find_elements(filter_criteria, limit=10000)
+                if not matching_elements:
+                    return []
+
+                element_pks = [int(elem["element_pk"]) for elem in matching_elements]
+                element_pks_str = " OR ".join([str(pk) for pk in element_pks])
+                filter_queries.append(f"element_pk:({element_pks_str})")
+
+            # Execute query to get all embeddings
+            params = {"rows": 10000}  # Get large number for better results
+            if filter_queries:
+                params["fq"] = filter_queries
+
+            results = self.embeddings.search(solr_query, **params)
+
+            # Calculate similarities in Python
+            similarities = []
+            for doc in results.docs:
+                element_pk = int(doc["element_pk"])
+                embedding = doc.get("embedding", [])
+
+                if not embedding:
+                    continue
+
+                try:
+                    # Calculate cosine similarity
+                    if NUMPY_AVAILABLE:
+                        similarity = self._cosine_similarity_numpy(query_embedding, embedding)
+                    else:
+                        similarity = self._cosine_similarity_python(query_embedding, embedding)
+
+                    similarities.append((element_pk, similarity))
+                except Exception as e:
+                    logger.warning(f"Error calculating similarity for element {element_pk}: {str(e)}")
+
+            # Sort by similarity (highest first) and limit results
+            similarities.sort(key=lambda x: x[1], reverse=True)
+            return similarities[:limit]
+
+        except Exception as e:
+            logger.error(f"Error in fallback embedding search: {str(e)}")
+            return []
 
     def search_by_text(self, search_text: str, limit: int = 10,
                        filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
@@ -968,7 +1097,6 @@ class SolrDocumentDatabase(DocumentDatabase):
                 # Import embedding generator on-demand if not already loaded
                 if self.embedding_generator is None:
                     from ..embeddings import get_embedding_generator
-                    from ..config import Config
                     # Try to get config from the module scope
                     config_instance = config or Config()
                     self.embedding_generator = get_embedding_generator(config_instance)
@@ -1093,3 +1221,365 @@ class SolrDocumentDatabase(DocumentDatabase):
         except Exception as e:
             logger.error(f"Error getting outgoing relationships for element {element_pk}: {str(e)}")
             return []
+
+    # ========================================
+    # NEW: TOPIC SUPPORT METHODS
+    # ========================================
+
+    def supports_topics(self) -> bool:
+        """
+        Indicate whether this backend supports topic-aware embeddings.
+
+        Returns:
+            True since SOLR implementation now supports topics
+        """
+        return True
+
+    def store_embedding_with_topics(self, element_pk: int, embedding: VectorType,
+                                    topics: List[str], confidence: float = 1.0) -> None:
+        """
+        Store embedding for an element with topic assignments.
+
+        Args:
+            element_pk: Element primary key
+            embedding: Vector embedding
+            topics: List of topic strings (e.g., ['security.policy', 'compliance'])
+            confidence: Overall confidence in this embedding/topic assignment
+        """
+        if not self.embeddings:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Verify element exists
+            element = self.get_element(element_pk)
+            if not element:
+                raise ValueError(f"Element not found: {element_pk}")
+
+            # Create enhanced embedding document
+            embedding_doc = {
+                "id": str(element_pk),  # SOLR unique ID
+                "element_pk": element_pk,
+                "embedding": embedding,
+                "dimensions": len(embedding),
+                "topics": topics,  # SOLR can handle multi-valued fields
+                "topics_json": json.dumps(topics),  # Also store as JSON for complex queries
+                "confidence": confidence,
+                "created_at": time.time()
+            }
+
+            # Store in embeddings core
+            self.embeddings.add([embedding_doc])
+            logger.debug(f"Stored embedding with topics for element {element_pk}")
+
+        except Exception as e:
+            logger.error(f"Error storing embedding with topics for element {element_pk}: {str(e)}")
+            raise
+
+    def search_by_text_and_topics(self, search_text: str = None,
+                                  include_topics: Optional[List[str]] = None,
+                                  exclude_topics: Optional[List[str]] = None,
+                                  min_confidence: float = 0.7,
+                                  limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Search elements by text with topic filtering using pattern matching.
+
+        Args:
+            search_text: Text to search for semantically (optional)
+            include_topics: Topic patterns to include (e.g., ['security*', '*.policy*'])
+            exclude_topics: Topic patterns to exclude (e.g., ['deprecated*'])
+            min_confidence: Minimum confidence threshold for embeddings
+            limit: Maximum number of results
+
+        Returns:
+            List of dictionaries with keys:
+            - element_pk: Element primary key
+            - similarity: Similarity score (if search_text provided)
+            - confidence: Overall embedding confidence
+            - topics: List of assigned topic strings
+        """
+        if not self.embeddings:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Generate embedding for search text if provided
+            query_embedding = None
+            if search_text:
+                if self.embedding_generator is None:
+                    from ..embeddings import get_embedding_generator
+                    config_instance = config or Config()
+                    self.embedding_generator = get_embedding_generator(config_instance)
+
+                query_embedding = self.embedding_generator.generate(search_text)
+
+            return self._search_by_text_and_topics_fallback(
+                query_embedding, include_topics, exclude_topics, min_confidence, limit
+            )
+
+        except Exception as e:
+            logger.error(f"Error in topic-aware search: {str(e)}")
+            return []
+
+    def _search_by_text_and_topics_fallback(self, query_embedding: Optional[VectorType] = None,
+                                            include_topics: Optional[List[str]] = None,
+                                            exclude_topics: Optional[List[str]] = None,
+                                            min_confidence: float = 0.7,
+                                            limit: int = 10) -> List[Dict[str, Any]]:
+        """Fallback search using Python similarity calculation with topic filtering."""
+
+        try:
+            # Build SOLR query with confidence filtering
+            solr_query = f"confidence:[{min_confidence} TO *]"
+
+            # Execute query to get all embeddings above confidence threshold
+            results = self.embeddings.search(solr_query, rows=10000)
+
+            # Process results in Python with topic filtering
+            filtered_results = []
+            for doc in results.docs:
+                element_pk = int(doc["element_pk"])
+                embedding = doc.get("embedding", [])
+                confidence = float(doc.get("confidence", 1.0))
+
+                # Parse topics
+                topics = []
+                if "topics" in doc:
+                    topics = doc["topics"] if isinstance(doc["topics"], list) else [doc["topics"]]
+                elif "topics_json" in doc:
+                    try:
+                        topics = json.loads(doc["topics_json"])
+                    except:
+                        topics = []
+
+                # Apply topic filtering
+                if not self._matches_topic_filters(topics, include_topics, exclude_topics):
+                    continue
+
+                result_dict = {
+                    'element_pk': element_pk,
+                    'confidence': confidence,
+                    'topics': topics
+                }
+
+                # Calculate similarity if we have a query embedding
+                if query_embedding and embedding:
+                    try:
+                        if NUMPY_AVAILABLE:
+                            similarity = self._cosine_similarity_numpy(query_embedding, embedding)
+                        else:
+                            similarity = self._cosine_similarity_python(query_embedding, embedding)
+                        result_dict['similarity'] = float(similarity)
+                    except Exception as e:
+                        logger.warning(f"Error calculating similarity for element {element_pk}: {str(e)}")
+                        result_dict['similarity'] = 0.0
+                else:
+                    result_dict['similarity'] = 1.0  # No text search, all results have equal similarity
+
+                filtered_results.append(result_dict)
+
+            # Sort by similarity if we calculated it
+            if query_embedding:
+                filtered_results.sort(key=lambda x: x['similarity'], reverse=True)
+
+            return filtered_results[:limit]
+
+        except Exception as e:
+            logger.error(f"Error in fallback topic search: {str(e)}")
+            return []
+
+    def _matches_topic_filters(self, topics: List[str],
+                               include_topics: Optional[List[str]] = None,
+                               exclude_topics: Optional[List[str]] = None) -> bool:
+        """Check if topics match the include/exclude filters using pattern matching."""
+        import fnmatch
+
+        # Check include filters - at least one must match
+        if include_topics:
+            include_match = False
+            for topic in topics:
+                for pattern in include_topics:
+                    if fnmatch.fnmatch(topic, pattern):
+                        include_match = True
+                        break
+                if include_match:
+                    break
+
+            if not include_match:
+                return False
+
+        # Check exclude filters - none should match
+        if exclude_topics:
+            for topic in topics:
+                for pattern in exclude_topics:
+                    if fnmatch.fnmatch(topic, pattern):
+                        return False
+
+        return True
+
+    def get_topic_statistics(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get statistics about topic distribution across embeddings.
+
+        Returns:
+            Dictionary mapping topic strings to statistics
+        """
+        if not self.embeddings:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Get all embeddings with topics
+            results = self.embeddings.search("topics:[* TO *]", rows=10000)
+
+            topic_stats = {}
+            for doc in results.docs:
+                confidence = float(doc.get("confidence", 1.0))
+
+                # Parse topics
+                topics = []
+                if "topics" in doc:
+                    topics = doc["topics"] if isinstance(doc["topics"], list) else [doc["topics"]]
+                elif "topics_json" in doc:
+                    try:
+                        topics = json.loads(doc["topics_json"])
+                    except:
+                        topics = []
+
+                # Get document ID for this element
+                element_pk = int(doc["element_pk"])
+                element = self.get_element(element_pk)
+                doc_id = element.get("doc_id") if element else None
+
+                for topic in topics:
+                    if topic not in topic_stats:
+                        topic_stats[topic] = {
+                            'embedding_count': 0,
+                            'document_ids': set(),
+                            'confidences': []
+                        }
+
+                    topic_stats[topic]['embedding_count'] += 1
+                    topic_stats[topic]['confidences'].append(confidence)
+                    if doc_id:
+                        topic_stats[topic]['document_ids'].add(doc_id)
+
+            # Calculate final statistics
+            final_stats = {}
+            for topic, stats in topic_stats.items():
+                final_stats[topic] = {
+                    'embedding_count': stats['embedding_count'],
+                    'document_count': len(stats['document_ids']),
+                    'avg_embedding_confidence': sum(stats['confidences']) / len(stats['confidences'])
+                }
+
+            return final_stats
+
+        except Exception as e:
+            logger.error(f"Error getting topic statistics: {str(e)}")
+            return {}
+
+    def get_embedding_topics(self, element_pk: int) -> List[str]:
+        """
+        Get topics assigned to a specific embedding.
+
+        Args:
+            element_pk: Element primary key
+
+        Returns:
+            List of topic strings assigned to this embedding
+        """
+        if not self.embeddings:
+            raise ValueError("Database not initialized")
+
+        try:
+            results = self.embeddings.search(f"element_pk:{element_pk}", rows=1)
+            if len(results) == 0:
+                return []
+
+            doc = results.docs[0]
+
+            # Parse topics
+            if "topics" in doc:
+                topics = doc["topics"]
+                return topics if isinstance(topics, list) else [topics]
+            elif "topics_json" in doc:
+                try:
+                    return json.loads(doc["topics_json"])
+                except:
+                    return []
+
+            return []
+
+        except Exception as e:
+            logger.error(f"Error getting topics for element {element_pk}: {str(e)}")
+            return []
+
+    @staticmethod
+    def _cosine_similarity_numpy(vec1: VectorType, vec2: VectorType) -> float:
+        """
+        Calculate cosine similarity between two vectors using NumPy.
+
+        Args:
+            vec1: First vector
+            vec2: Second vector
+
+        Returns:
+            Cosine similarity (between -1 and 1)
+        """
+        if not NUMPY_AVAILABLE:
+            raise ImportError("NumPy is required for this method but not available")
+
+        # Make sure vectors are the same length
+        if len(vec1) != len(vec2):
+            min_len = min(len(vec1), len(vec2))
+            vec1 = vec1[:min_len]
+            vec2 = vec2[:min_len]
+
+        # Convert to numpy arrays
+        vec1_np = np.array(vec1)
+        vec2_np = np.array(vec2)
+
+        # Calculate dot product
+        dot_product = np.dot(vec1_np, vec2_np)
+
+        # Calculate magnitudes
+        norm1 = np.linalg.norm(vec1_np)
+        norm2 = np.linalg.norm(vec2_np)
+
+        # Avoid division by zero
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+
+        # Calculate cosine similarity
+        return float(dot_product / (norm1 * norm2))
+
+    @staticmethod
+    def _cosine_similarity_python(vec1: VectorType, vec2: VectorType) -> float:
+        """
+        Calculate cosine similarity between two vectors using pure Python.
+        This is a fallback when NumPy is not available.
+
+        Args:
+            vec1: First vector
+            vec2: Second vector
+
+        Returns:
+            Cosine similarity (between -1 and 1)
+        """
+        # Make sure vectors are the same length
+        if len(vec1) != len(vec2):
+            min_len = min(len(vec1), len(vec2))
+            vec1 = vec1[:min_len]
+            vec2 = vec2[:min_len]
+
+        # Calculate dot product
+        dot_product = sum(a * b for a, b in zip(vec1, vec2))
+
+        # Calculate magnitudes
+        magnitude1 = sum(a * a for a in vec1) ** 0.5
+        magnitude2 = sum(b * b for b in vec2) ** 0.5
+
+        # Check for zero magnitudes
+        if magnitude1 == 0 or magnitude2 == 0:
+            return 0.0
+
+        # Calculate cosine similarity
+        return float(dot_product / (magnitude1 * magnitude2))

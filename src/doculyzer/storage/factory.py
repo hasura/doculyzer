@@ -13,6 +13,7 @@ from .neo4j_graph import Neo4jDocumentDatabase
 from .postgres import PostgreSQLDocumentDatabase
 from .solr import SolrDocumentDatabase
 from .sqlite import SQLiteDocumentDatabase
+from .sqlalchemy_ import SQLAlchemyDocumentDatabase
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,8 @@ def get_document_database(config: Dict[str, Any]) -> DocumentDatabase:
         }))
     elif backend_type.startswith("postgres"):
         return PostgreSQLDocumentDatabase(config.get("postgres", config.get("postgresql", {})))
+    elif backend_type.startswith("sqlalchemy"):
+        return SQLAlchemyDocumentDatabase(config.get("sqlalchemy"))
     elif backend_type == "mongodb":
         # Extract MongoDB connection parameters from config
         conn_params = config.get("mongodb", {})

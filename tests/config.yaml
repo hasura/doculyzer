@@ -3,6 +3,7 @@ storage:
   path: "./data"  # Kept for compatibility
   postgresql:  # Added PostgreSQL-specific configuration
     uri: ${DOCUMENTS_URI}
+
 embedding:
   enabled: true
   provider: fastembed
@@ -16,6 +17,13 @@ embedding:
   predecessor_count: 1
   successor_count: 1
   ancestor_depth: 2
+
+# Topic hierarchy uses dot notation: category.subcategory.specific_topic
+# Examples:
+# - source.internal.confluence
+# - domain.business.finance
+# - type.documentation.technical
+# - external.wikipedia.reference
 
 content_sources:
 #  - name: "Company Confluence"
@@ -53,6 +61,9 @@ content_sources:
 #    # API settings
 #    expand_macros: true
 #    limit: 500
+#    # Topics using dot notation hierarchy
+#    topics: ["source.internal.confluence", "type.documentation.collaborative", "access.authenticated"]
+
   - name: "file-docs"
     type: "file"
     base_path: "./assets"
@@ -61,6 +72,9 @@ content_sources:
     include_extensions: ["md", "txt", "xml", "pptx", "csv", "docx", "xlsx", "pdf"]
     watch_for_changes: true
     max_link_depth: 2
+    # Topics using dot notation hierarchy
+    topics: ["source.local.filesystem", "type.documents.mixed", "access.local"]
+
   - name: "wikipedia"
     type: "web"
     base_url: "https://en.wikipedia.org"
@@ -77,6 +91,27 @@ content_sources:
       User-Agent: "DoculyzerBot/1.0 (educational project; contact@lambda-connector-customizations.com)"
     max_link_depth: 1
     refresh_interval: 604800  # 7 days in seconds
+    # Topics using dot notation hierarchy
+    topics: ["source.external.wikipedia", "type.reference.encyclopedia", "domain.technology.document_management", "access.public"]
+
+  - name: "cash_management_research"
+    type: "web"
+    base_url: "https://en.wikipedia.org"
+    url_list:
+      - "https://en.wikipedia.org/wiki/Cash_management"
+    include_patterns:
+      - "^https://en.wikipedia.org/wiki/"
+    exclude_patterns:
+      - "/Special:"
+      - "/Talk:"
+      - "/Category:"
+      - "/File:"
+    headers:
+      User-Agent: "DoculyzerBot/1.0 (educational project; contact@lambda-connector-customizations.com)"
+    max_link_depth: 1
+    refresh_interval: 604800  # 7 days in seconds
+    # Topics using dot notation hierarchy
+    topics: ["source.external.wikipedia", "domain.business.finance.cash_management", "type.research.financial", "access.public"]
 
 relationship_detection:
   enabled: true

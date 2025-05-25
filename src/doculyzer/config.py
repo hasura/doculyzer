@@ -3,7 +3,9 @@ import logging
 import os
 import re
 from typing import Dict, Any, List, Optional
+
 from dotenv import load_dotenv
+
 load_dotenv()
 
 import yaml
@@ -40,7 +42,8 @@ class Config:
         return {
             "storage": {
                 "path": "./data",
-                "backend": "file"  # Options: file, sqlite, duckdb
+                "backend": "file",  # Options: file, sqlite, duckdb
+                "topic_support": False  # NEW: Enable topic features
             },
             "embedding": {
                 "enabled": False,
@@ -168,6 +171,13 @@ class Config:
                 logger.error(message)
                 raise ValueError(message)
 
+            # NEW: Validate topics field if present
+            topics = source.get("topics")
+            if topics is not None and not isinstance(topics, list):
+                message = f"Content source at index {idx}: 'topics' must be a list of strings"
+                logger.error(message)
+                raise ValueError(message)
+
         logger.debug("Config validation complete")
 
     def get_storage_path(self) -> str:
@@ -178,6 +188,11 @@ class Config:
     def get_storage_backend(self) -> str:
         """Get the storage backend type."""
         return self.config["storage"]["backend"]
+
+    # NEW: Check if topic support is enabled
+    def is_topic_support_enabled(self) -> bool:
+        """Check if topic support is enabled."""
+        return self.config.get("storage", {}).get("topic_support", False)
 
     def is_embedding_enabled(self) -> bool:
         """Check if embeddings are enabled."""
@@ -194,6 +209,22 @@ class Config:
     def get_content_sources(self) -> List[Dict[str, Any]]:
         """Get configured content sources."""
         return self.config["content_sources"]
+
+    # NEW: Get topics for a content source
+    def get_source_topics(self, source_name: str) -> List[str]:
+        """
+        Get topics configured for a specific content source.
+
+        Args:
+            source_name: Name of the content source
+
+        Returns:
+            List of topic strings, empty list if no topics configured
+        """
+        for source in self.get_content_sources():
+            if source.get("name") == source_name:
+                return source.get("topics", [])
+        return []
 
     def get_relationship_detection_config(self) -> Dict[str, Any]:
         """Get relationship detection configuration."""
@@ -228,6 +259,16 @@ class Config:
         """
         db = self.get_document_database()
         logger.debug("Initializing database")
+
+        # NEW: Check topic support compatibility
+        if self.is_topic_support_enabled() and hasattr(db, 'supports_topics') and not db.supports_topics():
+            logger.warning(
+                f"Topic support enabled in config but {self.get_storage_backend()} "
+                f"backend does not support topics. Topic features will be disabled."
+            )
+        elif self.is_topic_support_enabled() and hasattr(db, 'supports_topics') and db.supports_topics():
+            logger.info("Topic support enabled and available")
+
         db.initialize()
         return db
 

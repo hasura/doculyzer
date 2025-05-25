@@ -23,6 +23,7 @@ Doculyzer is a powerful document management system that creates a universal, str
 - **Preservation of Structure**: Maintains hierarchical document structure
 - **Content Resolution**: Resolves pointers back to original content when needed
 - **Contextual Semantic Search**: Uses advanced embedding techniques that incorporate document context (hierarchy, neighbors) for more accurate semantic search
+- **Topic-Aware Organization**: Categorize and filter content by topics for enhanced organization and discovery
 - **Element-Level Precision**: Maintains granular accuracy to specific document elements
 - **Relationship Mapping**: Identifies connections between document elements
 - **Configurable Vector Representations**: Support for different vector dimensions based on content needs, allowing larger vectors for technical content and smaller vectors for general content
@@ -85,19 +86,19 @@ except ImportError as e:
 
 Doculyzer supports multiple storage backends through a modular, pluggable architecture. Each backend has its own optional dependencies, which are only required if you use that specific storage method:
 
-| Storage Backend | Description | Required Dependencies | Installation |
-|-----------------|-------------|----------------------|--------------|
-| File-based | Simple storage using the file system | None (core) | Default install |
-| SQLite | Lightweight, embedded database | None (core) | Default install |
-| SQLite Enhanced | SQLite with vector extension support | `sqlean.py` | `pip install "doculyzer[db-core]"` |
-| Neo4J | Graph database with native relationship support | `neo4j` | `pip install "doculyzer[db-neo4j]"` |
-| PostgreSQL | Robust relational database for production | `psycopg2` | `pip install "doculyzer[db-postgresql]"` |
-| PostgreSQL + pgvector | PostgreSQL with vector search | `psycopg2`, `pgvector` | `pip install "doculyzer[db-postgresql,db-vector]"` |
-| MongoDB | Document-oriented database | `pymongo` | `pip install "doculyzer[db-mongodb]"` |
-| MySQL/MariaDB | Popular open-source SQL database | `sqlalchemy`, `pymysql` | `pip install "doculyzer[db-mysql]"` |
-| Oracle | Enterprise SQL database | `sqlalchemy`, `cx_Oracle` | `pip install "doculyzer[db-oracle]"` |
-| Microsoft SQL Server | Enterprise SQL database | `sqlalchemy`, `pymssql` | `pip install "doculyzer[db-mssql]"` |
-| libSQL | SQLite-compatible distributed database | `libsql-client` | `pip install "doculyzer[db-libsql]"` |
+| Storage Backend | Description | Topic Support | Required Dependencies | Installation |
+|-----------------|-------------|---------------|----------------------|--------------|
+| File-based | Simple storage using the file system | ❌ | None (core) | Default install |
+| SQLite | Lightweight, embedded database | ✅ | None (core) | Default install |
+| SQLite Enhanced | SQLite with vector extension support | ✅ | `sqlean.py` | `pip install "doculyzer[db-core]"` |
+| Neo4J | Graph database with native relationship support | ❌ | `neo4j` | `pip install "doculyzer[db-neo4j]"` |
+| PostgreSQL | Robust relational database for production | ✅ | `psycopg2` | `pip install "doculyzer[db-postgresql]"` |
+| PostgreSQL + pgvector | PostgreSQL with vector search | ✅ | `psycopg2`, `pgvector` | `pip install "doculyzer[db-postgresql,db-vector]"` |
+| MongoDB | Document-oriented database | ❌ | `pymongo` | `pip install "doculyzer[db-mongodb]"` |
+| MySQL/MariaDB | Popular open-source SQL database | ❌ | `sqlalchemy`, `pymysql` | `pip install "doculyzer[db-mysql]"` |
+| Oracle | Enterprise SQL database | ❌ | `sqlalchemy`, `cx_Oracle` | `pip install "doculyzer[db-oracle]"` |
+| Microsoft SQL Server | Enterprise SQL database | ❌ | `sqlalchemy`, `pymssql` | `pip install "doculyzer[db-mssql]"` |
+| libSQL | SQLite-compatible distributed database | ❌ | `libsql-client` | `pip install "doculyzer[db-libsql]"` |
 
 ### Storage Backend Graceful Fallbacks
 
@@ -135,6 +136,7 @@ You can easily switch between different backend implementations by changing your
 storage:
   backend: sqlite
   path: "./data/docs.db"
+  topic_support: true  # Enable topic features
 
 # Neo4j (requires neo4j Python driver)
 storage:
@@ -148,6 +150,7 @@ storage:
 # PostgreSQL (requires psycopg2)
 storage:
   backend: postgresql
+  topic_support: true  # Enable topic features
   postgresql:
     host: "localhost"
     port: 5432
@@ -245,12 +248,12 @@ except ImportError as e:
 
 For semantic search, Doculyzer supports several vector-capable database backends:
 
-| Storage Backend | Vector Technology | Required Dependencies | Installation |
-|-----------------|------------------|----------------------|--------------|
-| SQLite + sqlite-vec | SIMD-accelerated vector search | `sqlean.py`, `sqlite-vec` | `pip install "doculyzer[db-core,db-vector]"` |
-| PostgreSQL + pgvector | Postgres vector extension | `psycopg2`, `pgvector` | `pip install "doculyzer[db-postgresql,db-vector]"` |
-| MongoDB Atlas | Vector search capability | `pymongo` | `pip install "doculyzer[db-mongodb]"` |
-| Neo4j Vector Search | Graph + vector search | `neo4j` | `pip install "doculyzer[db-neo4j]"` |
+| Storage Backend | Vector Technology | Topic Support | Required Dependencies | Installation |
+|-----------------|------------------|---------------|----------------------|--------------|
+| SQLite + sqlite-vec | SIMD-accelerated vector search | ✅ | `sqlean.py`, `sqlite-vec` | `pip install "doculyzer[db-core,db-vector]"` |
+| PostgreSQL + pgvector | Postgres vector extension | ✅ | `psycopg2`, `pgvector` | `pip install "doculyzer[db-postgresql,db-vector]"` |
+| MongoDB Atlas | Vector search capability | ❌ | `pymongo` | `pip install "doculyzer[db-mongodb]"` |
+| Neo4j Vector Search | Graph + vector search | ❌ | `neo4j` | `pip install "doculyzer[db-neo4j]"` |
 
 ```python
 # Configure vector-capable storage
@@ -259,6 +262,7 @@ from doculyzer import Config
 config = Config({
     "storage": {
         "backend": "postgresql",
+        "topic_support": True,  # Enable topic features
         "postgresql": {
             "host": "localhost",
             "port": 5432,
@@ -293,6 +297,7 @@ The system is built with a modular architecture:
 4. **Content Resolver**: Retrieves original content when needed
 5. **Embedding Generator**: Creates vector representations for semantic search (with model-specific dependencies)
 6. **Relationship Detector**: Identifies connections between document elements
+7. **Topic Manager**: Organizes content by topics for enhanced categorization and filtering
 
 ## Content Monitoring and Updates
 
@@ -478,6 +483,7 @@ Create a configuration file `config.yaml`:
 storage:
   backend: sqlite  # Options: file, sqlite, mongodb, postgresql, sqlalchemy
   path: "./data"
+  topic_support: true  # Enable topic features
   
   # MongoDB-specific configuration (if using MongoDB)
   mongodb:
@@ -529,6 +535,7 @@ content_sources:
     base_path: "./docs"
     file_pattern: "**/*.md"
     max_link_depth: 2
+    topics: ["documentation", "user-guides"]  # Assign topics to this source
     
   # Example of a blob-based database content source (requires sqlalchemy)
   - name: "database-blobs"
@@ -539,6 +546,7 @@ content_sources:
     content_column: "content_blob" 
     metadata_columns: ["title", "author", "created_date"]
     timestamp_column: "updated_at"
+    topics: ["database", "technical-docs"]  # Assign topics to this source
     
   # Example of Confluence content source (requires atlassian-python-api)
   - name: "confluence-docs"
@@ -548,6 +556,7 @@ content_sources:
     password: "${CONFLUENCE_PASS}"
     space_keys: ["DEV", "PROD"]
     max_results: 1000
+    topics: ["confluence", "team-docs", "development"]  # Assign topics to this source
 
   # Example of S3 bucket content source (requires boto3)
   - name: "aws-documents"
@@ -556,6 +565,7 @@ content_sources:
     prefix: "technical-docs/"
     region: "us-west-2"
     file_pattern: "*.{pdf,docx,xlsx}"
+    topics: ["cloud", "aws", "infrastructure"]  # Assign topics to this source
 
 relationship_detection:
   enabled: true
@@ -647,6 +657,76 @@ except ImportError as e:
 
 ## Advanced Features
 
+### Topic-Aware Organization
+
+Doculyzer includes a powerful topic system for organizing and categorizing content:
+
+- **Source-Level Topics**: Assign topics to content sources during configuration
+- **Topic-Aware Embeddings**: Store embeddings with associated topics for enhanced organization
+- **Topic Filtering**: Search and filter content by topic patterns using LIKE syntax
+- **Topic Analytics**: Get statistics on topic distribution across your document collection
+
+#### Topic Configuration
+
+Topics can be assigned to content sources in your configuration:
+
+```yaml
+content_sources:
+  - name: "security-docs"
+    type: "file"
+    base_path: "./security"
+    topics: ["security", "compliance", "policies"]
+    
+  - name: "dev-confluence"
+    type: "confluence"
+    space_keys: ["DEV"]
+    topics: ["development", "engineering", "technical"]
+```
+
+#### Topic-Aware Search
+
+```python
+# Search with topic filtering (requires topic-enabled backend)
+if db.supports_topics():
+    # Search for security-related content
+    results = db.search_by_text_and_topics(
+        search_text="authentication policy",
+        include_topics=["security%", "%.policy%"],  # LIKE patterns
+        exclude_topics=["deprecated%"],
+        min_confidence=0.8,
+        limit=10
+    )
+    
+    for result in results:
+        print(f"Element {result['element_pk']}: {result['similarity']:.2f}")
+        print(f"Topics: {result['topics']}")
+        print(f"Confidence: {result['confidence']:.2f}")
+        
+    # Get topic statistics
+    stats = db.get_topic_statistics()
+    for topic, info in stats.items():
+        print(f"{topic}: {info['embedding_count']} embeddings, {info['document_count']} docs")
+```
+
+#### Storing Topic-Aware Embeddings
+
+```python
+# Store embeddings with topics
+topics = config.get_source_topics("security-docs")  # Get topics from config
+embedding = embedding_generator.generate("security policy content")
+
+db.store_embedding_with_topics(
+    element_pk=123,
+    embedding=embedding,
+    topics=topics + ["authentication"],  # Combine source topics with content-specific topics
+    confidence=0.95
+)
+
+# Get topics for a specific embedding
+element_topics = db.get_embedding_topics(element_pk=123)
+print(f"Element topics: {element_topics}")
+```
+
 ### Relationship Detection
 
 Doculyzer can detect various types of relationships between document elements:
@@ -716,9 +796,14 @@ fastembed_embedder = create_embedding_generator(
 elements = db.get_document_elements(doc_id)
 embeddings = embedding_generator.generate_from_elements(elements)
 
-# Store embeddings
+# Store embeddings with topics
+source_topics = config.get_source_topics(source_name)
 for element_id, embedding in embeddings.items():
-    db.store_embedding(element_id, embedding)
+    element = db.get_element(element_id)
+    if db.supports_topics():
+        db.store_embedding_with_topics(element_id, embedding, source_topics)
+    else:
+        db.store_embedding(element_id, embedding)
 ```
 
 ### Handling Missing Dependencies
@@ -768,10 +853,17 @@ pip install "doculyzer[db-postgresql,source-database,fastembed]"
 pip install "doculyzer[db-all,embedding-all,source-all,cloud-aws]"
 ```
 
+### Topic-Aware Document Management
+```
+pip install "doculyzer[db-postgresql,fastembed]"
+```
+
 # Verified Compatibility
 
 Tested and working with:
 - SQLite storage (with and without vector search plugins)
+- PostgreSQL storage (with and without pgvector extension)
+- Topic-aware embeddings and search
 - Web Content Source
 - File Content Source
 - Database Content Source

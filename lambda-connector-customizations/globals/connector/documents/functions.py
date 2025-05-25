@@ -266,6 +266,8 @@ async def search_document_detail(
             "search_for": search_for,
             "limit": str(limit),
             "min_score": str(min_score),
+            "resolve_text": str(resolve_text),
+            "resolve_content": str(resolve_content),
             "include_parents": str(include_parents),
             "just_documents": str(just_documents),
         })

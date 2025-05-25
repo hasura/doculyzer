@@ -240,24 +240,110 @@ class DocumentDatabase(ABC):
 
     @abstractmethod
     def get_outgoing_relationships(self, element_pk: int) -> List[ElementRelationship]:
+        """Find all relationships where the specified element_pk is the source."""
+        pass
+
+    # ========================================
+    # NEW: SIMPLIFIED TOPIC SUPPORT
+    # ========================================
+
+    def supports_topics(self) -> bool:
         """
-        Find all relationships where the specified element_pk is the source.
-
-        This method returns only the outgoing relationships - those where
-        the specified element is the source and points to other elements or references.
-
-        The returned relationships may include:
-        - Structural relationships (contains, next_sibling, etc.)
-        - Explicit links (links to other elements)
-        - Semantic similarity relationships (similar content)
-
-        Args:
-            element_pk: The primary key of the element
+        Indicate whether this backend supports topic-aware embeddings.
 
         Returns:
-            List of ElementRelationship objects where the specified element is the source
+            True if topics are supported, False otherwise
         """
-        pass
+        return False  # Default: no topic support
+
+    def store_embedding_with_topics(self, element_pk: int, embedding: List[float],
+                                    topics: List[str], confidence: float = 1.0) -> None:
+        """
+        Store embedding for an element with topic assignments.
+
+        Args:
+            element_pk: Element primary key
+            embedding: Vector embedding
+            topics: List of topic strings (e.g., ['security.policy', 'compliance'])
+            confidence: Overall confidence in this embedding/topic assignment
+        """
+        # Default implementation: fallback to regular embedding storage
+        self.store_embedding(element_pk, embedding)
+
+    def search_by_text_and_topics(self, search_text: str = None,
+                                  include_topics: Optional[List[str]] = None,
+                                  exclude_topics: Optional[List[str]] = None,
+                                  min_confidence: float = 0.7,
+                                  limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Search elements by text with topic filtering using LIKE patterns.
+
+        Args:
+            search_text: Text to search for semantically (optional)
+            include_topics: Topic LIKE patterns to include (e.g., ['security%', '%.policy%'])
+            exclude_topics: Topic LIKE patterns to exclude (e.g., ['deprecated%'])
+            min_confidence: Minimum confidence threshold for embeddings
+            limit: Maximum number of results
+
+        Returns:
+            List of dictionaries with keys:
+            - element_pk: Element primary key
+            - similarity: Similarity score (if search_text provided)
+            - confidence: Overall embedding confidence
+            - topics: List of assigned topic strings
+        """
+        # Default implementation: fallback to regular text search
+        if include_topics or exclude_topics:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning("Topic filtering not supported by this backend, performing regular search")
+
+        if search_text:
+            results = self.search_by_text(search_text, limit)
+            return [
+                {
+                    'element_pk': element_pk,
+                    'similarity': similarity,
+                    'confidence': 1.0,
+                    'topics': []
+                }
+                for element_pk, similarity in results
+            ]
+        else:
+            # No search text and no topic support - return empty
+            return []
+
+    def get_topic_statistics(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get statistics about topic distribution across embeddings.
+
+        Returns:
+            Dictionary mapping topic strings to statistics:
+            {
+                'security.policy': {
+                    'embedding_count': int,
+                    'document_count': int,
+                    'avg_embedding_confidence': float
+                }
+            }
+        """
+        return {}  # Default: empty statistics
+
+    def get_embedding_topics(self, element_pk: int) -> List[str]:
+        """
+        Get topics assigned to a specific embedding.
+
+        Args:
+            element_pk: Element primary key
+
+        Returns:
+            List of topic strings assigned to this embedding
+        """
+        return []  # Default: no topics
+
+    # ========================================
+    # EXISTING HIERARCHY METHODS (unchanged)
+    # ========================================
 
     def get_results_outline(self, elements: List[Tuple[int, float]]) -> List[ElementHierarchical]:
         """

@@ -35,8 +35,8 @@ NUMPY_AVAILABLE = False
 
 # Try to import Neo4j conditionally at runtime
 try:
-    from neo4j_graph import GraphDatabase
-    from neo4j_graph.exceptions import ServiceUnavailable, AuthError
+    from neo4j import GraphDatabase
+    from neo4j.exceptions import ServiceUnavailable, AuthError
 
     NEO4J_AVAILABLE = True
 except ImportError:
@@ -51,7 +51,7 @@ try:
 
     NUMPY_AVAILABLE = True
 except ImportError:
-    logger.warning("numpy not available. Install with 'pip install numpy'.")
+    logger.warning("NumPy not available. Will use slower pure Python vector operations.")
 
 # Try to import the config
 try:
@@ -132,14 +132,17 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                 "CREATE CONSTRAINT IF NOT EXISTS ON (d:Document) ASSERT d.doc_id IS UNIQUE",
                 "CREATE CONSTRAINT IF NOT EXISTS ON (e:Element) ASSERT e.element_id IS UNIQUE",
                 "CREATE CONSTRAINT IF NOT EXISTS ON (d:Document) ASSERT d.source IS UNIQUE",
-                "CREATE CONSTRAINT IF NOT EXISTS ON (h:ProcessingHistory) ASSERT h.source_id IS UNIQUE"
+                "CREATE CONSTRAINT IF NOT EXISTS ON (h:ProcessingHistory) ASSERT h.source_id IS UNIQUE",
+                "CREATE CONSTRAINT IF NOT EXISTS ON (emb:Embedding) ASSERT emb.element_pk IS UNIQUE"
             ]
 
             # Create indexes for faster lookups
             indexes = [
                 "CREATE INDEX IF NOT EXISTS FOR (e:Element) ON (e.doc_id)",
                 "CREATE INDEX IF NOT EXISTS FOR (e:Element) ON (e.element_type)",
-                "CREATE INDEX IF NOT EXISTS FOR (r:RELATIONSHIP) ON (r.relationship_type)"
+                "CREATE INDEX IF NOT EXISTS FOR (r:RELATES_TO) ON (r.relationship_type)",
+                "CREATE INDEX IF NOT EXISTS FOR (emb:Embedding) ON (emb.confidence)",
+                "CREATE INDEX IF NOT EXISTS FOR (emb:Embedding) ON (emb.created_at)"
             ]
 
             # Execute all constraints and indexes
@@ -338,6 +341,8 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                 record = result.single()
                 if record:
                     element_pk_map[element_id] = record["node_id"]
+                    # Store the element_pk back in the element
+                    element["element_pk"] = record["node_id"]
 
             # Create parent-child relationships between elements
             for element in elements:
@@ -815,18 +820,8 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                 OPTIONAL MATCH (e)-[r3:CHILD_OF]->()
                 OPTIONAL MATCH ()-[r4:CHILD_OF]->(e)
                 OPTIONAL MATCH (e)-[r5:BELONGS_TO]->()
-                DELETE r, r2, r3, r4, r5, e, d
-                """,
-                doc_id=doc_id
-            )
-
-            # Delete embeddings in a separate query
-            session.run(
-                """
-                MATCH (d:Document {doc_id: $doc_id})
-                OPTIONAL MATCH (e:Element)-[:BELONGS_TO]->(d)
-                OPTIONAL MATCH (emb:Embedding)-[:EMBEDDING_OF]->(e)
-                DELETE emb
+                OPTIONAL MATCH (emb:Embedding)-[r6:EMBEDDING_OF]->(e)
+                DELETE r, r2, r3, r4, r5, r6, emb, e, d
                 """,
                 doc_id=doc_id
             )
@@ -915,7 +910,10 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                     element_id=element_id
                 )
 
-    # Embedding functions
+    # ========================================
+    # ENHANCED EMBEDDING FUNCTIONS
+    # ========================================
+
     def store_embedding(self, element_pk: Union[int, str], embedding: VectorType) -> None:
         """Store embedding for an element."""
         if not self.driver:
@@ -934,12 +932,16 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                     MERGE (emb:Embedding {element_pk: $element_pk})
                     SET emb.embedding = $embedding,
                         emb.dimensions = $dimensions,
+                        emb.topics = $topics,
+                        emb.confidence = $confidence,
                         emb.created_at = $created_at
                     MERGE (emb)-[:EMBEDDING_OF]->(e)
                     """,
                     element_pk=int(element_pk),
                     embedding=embedding_json,
                     dimensions=len(embedding),
+                    topics=json.dumps([]),  # Default to empty topics
+                    confidence=1.0,  # Default confidence
                     created_at=time.time()
                 )
             else:
@@ -951,12 +953,16 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                     MERGE (emb:Embedding {element_pk: element_pk})
                     SET emb.embedding = $embedding,
                         emb.dimensions = $dimensions,
+                        emb.topics = $topics,
+                        emb.confidence = $confidence,
                         emb.created_at = $created_at
                     MERGE (emb)-[:EMBEDDING_OF]->(e)
                     """,
                     element_id=str(element_pk),
                     embedding=embedding_json,
                     dimensions=len(embedding),
+                    topics=json.dumps([]),  # Default to empty topics
+                    confidence=1.0,  # Default confidence
                     created_at=time.time()
                 )
 
@@ -999,103 +1005,28 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                             filter_criteria: Dict[str, Any] = None) -> List[Tuple[Union[int, str], float]]:
         """
         Search elements by embedding similarity.
-
-        Note: This is a simplified implementation. Neo4j supports vector search plugins
-        like neo4j-vector-search for more efficient similarity search.
         """
         if not self.driver:
             raise ValueError("Database not initialized")
 
-        # Convert query embedding to JSON
-        query_embedding_json = json.dumps(query_embedding)
-
-        with self.driver.session(database=self.database) as session:
-            # Start building query
-            cypher_query = """
-            // Load custom procedures for vector similarity
-            CALL apoc.custom.declareFunction(
-                'vector.cosineSimilarity',
-                'RETURN apoc.algo.cosineSimilarity($embedding1, $embedding2) AS similarity',
-                'DOUBLE',
-                [['embedding1', 'LIST'], ['embedding2', 'LIST']]
-            )
-
-            // Main query
-            MATCH (emb:Embedding)-[:EMBEDDING_OF]->(e:Element)-[:BELONGS_TO]->(d:Document)
-            WHERE emb.dimensions = $dimensions
-            """
-
-            params = {
-                "query_embedding": query_embedding_json,
-                "dimensions": len(query_embedding)
-            }
-
-            # Add filter criteria if provided
-            if filter_criteria:
-                for key, value in filter_criteria.items():
-                    if key == "element_type" and isinstance(value, list):
-                        # Handle list of allowed element types
-                        cypher_query += " AND e.element_type IN $element_types"
-                        params["element_types"] = value
-                    elif key == "doc_id" and isinstance(value, list):
-                        # Handle list of document IDs to include
-                        cypher_query += " AND e.doc_id IN $doc_ids"
-                        params["doc_ids"] = value
-                    elif key == "exclude_doc_id" and isinstance(value, list):
-                        # Handle list of document IDs to exclude
-                        cypher_query += " AND NOT e.doc_id IN $exclude_doc_ids"
-                        params["exclude_doc_ids"] = value
-                    elif key == "exclude_doc_source" and isinstance(value, list):
-                        # Handle list of document sources to exclude
-                        cypher_query += " AND NOT d.source IN $exclude_sources"
-                        params["exclude_sources"] = value
-                    else:
-                        # Simple equality filter
-                        cypher_query += f" AND e.{key} = ${key}"
-                        params[key] = value
-
-            # Complete the query
-            cypher_query += """
-            WITH e, id(e) AS element_pk, emb, 
-                 apoc.custom.vector.cosineSimilarity(
-                    $query_embedding, 
-                    json_extract_as_list(emb.embedding)
-                 ) AS similarity
-            RETURN element_pk, similarity
-            ORDER BY similarity DESC
-            LIMIT $limit
-            """
-
-            params["limit"] = limit
-
-            try:
-                # Execute query
-                result = session.run(cypher_query, params)
-
-                # Process results
-                return [(record["element_pk"], record["similarity"]) for record in result]
-            except Exception as e:
-                logger.error(f"Error in vector search: {str(e)}")
-
-                # Fall back to a simpler implementation if the vector functions fail
-                return self._fallback_embedding_search(query_embedding, limit, filter_criteria)
+        # Always use fallback implementation since most Neo4j instances won't have vector extensions
+        return self._fallback_embedding_search(query_embedding, limit, filter_criteria)
 
     def _fallback_embedding_search(self, query_embedding: VectorType, limit: int = 10,
                                    filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
         """
-        Fallback implementation for embedding search if vector extensions fail.
-        This is much slower as it processes embeddings in Python instead of in the database.
+        Fallback implementation for embedding search.
+        This processes embeddings in Python instead of in the database.
         """
         # Check if NumPy is available for optimized calculation
-        if not NUMPY_AVAILABLE:
-            return self._fallback_embedding_search_pure_python(query_embedding, limit, filter_criteria)
-        else:
+        if NUMPY_AVAILABLE:
             return self._fallback_embedding_search_numpy(query_embedding, limit, filter_criteria)
+        else:
+            return self._fallback_embedding_search_pure_python(query_embedding, limit, filter_criteria)
 
     def _fallback_embedding_search_numpy(self, query_embedding: VectorType, limit: int = 10,
                                          filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
         """NumPy implementation of fallback embedding search."""
-        import numpy as np
         # Convert query embedding to numpy array
         query_np = np.array(query_embedding)
 
@@ -1149,15 +1080,7 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                     embedding_np = np.array(embedding)
 
                     # Calculate cosine similarity
-                    dot_product = np.dot(query_np, embedding_np)
-                    norm1 = np.linalg.norm(query_np)
-                    norm2 = np.linalg.norm(embedding_np)
-
-                    if norm1 == 0 or norm2 == 0:
-                        similarity = 0.0
-                    else:
-                        similarity = float(dot_product / (norm1 * norm2))
-
+                    similarity = self._cosine_similarity_numpy(query_np, embedding_np)
                     similarities.append((element_pk, similarity))
                 except Exception as e:
                     logger.warning(f"Error processing embedding: {str(e)}")
@@ -1218,15 +1141,7 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                     embedding = json.loads(embedding_json)
 
                     # Calculate cosine similarity using pure Python
-                    dot_product = sum(a * b for a, b in zip(query_embedding, embedding))
-                    mag1 = sum(a * a for a in query_embedding) ** 0.5
-                    mag2 = sum(b * b for b in embedding) ** 0.5
-
-                    if mag1 == 0 or mag2 == 0:
-                        similarity = 0.0
-                    else:
-                        similarity = float(dot_product / (mag1 * mag2))
-
+                    similarity = self._cosine_similarity_python(query_embedding, embedding)
                     similarities.append((element_pk, similarity))
                 except Exception as e:
                     logger.warning(f"Error processing embedding: {str(e)}")
@@ -1274,3 +1189,397 @@ class Neo4jDocumentDatabase(DocumentDatabase):
         except Exception as e:
             logger.error(f"Error in semantic search by text: {str(e)}")
             return []
+
+    # ========================================
+    # NEW: TOPIC SUPPORT METHODS
+    # ========================================
+
+    def supports_topics(self) -> bool:
+        """
+        Indicate whether this backend supports topic-aware embeddings.
+
+        Returns:
+            True since Neo4j implementation now supports topics
+        """
+        return True
+
+    def store_embedding_with_topics(self, element_pk: Union[int, str], embedding: VectorType,
+                                    topics: List[str], confidence: float = 1.0) -> None:
+        """
+        Store embedding for an element with topic assignments.
+
+        Args:
+            element_pk: Element primary key
+            embedding: Vector embedding
+            topics: List of topic strings (e.g., ['security.policy', 'compliance'])
+            confidence: Overall confidence in this embedding/topic assignment
+        """
+        if not self.driver:
+            raise ValueError("Database not initialized")
+
+        # Convert embedding and topics to JSON strings for storage
+        embedding_json = json.dumps(embedding)
+        topics_json = json.dumps(topics)
+
+        with self.driver.session(database=self.database) as session:
+            if str(element_pk).isdigit():
+                # Using Neo4j internal ID
+                session.run(
+                    """
+                    MATCH (e:Element)
+                    WHERE id(e) = $element_pk
+                    MERGE (emb:Embedding {element_pk: $element_pk})
+                    SET emb.embedding = $embedding,
+                        emb.dimensions = $dimensions,
+                        emb.topics = $topics,
+                        emb.confidence = $confidence,
+                        emb.created_at = $created_at
+                    MERGE (emb)-[:EMBEDDING_OF]->(e)
+                    """,
+                    element_pk=int(element_pk),
+                    embedding=embedding_json,
+                    dimensions=len(embedding),
+                    topics=topics_json,
+                    confidence=confidence,
+                    created_at=time.time()
+                )
+            else:
+                # Using element_id string
+                session.run(
+                    """
+                    MATCH (e:Element {element_id: $element_id})
+                    WITH e, id(e) AS element_pk
+                    MERGE (emb:Embedding {element_pk: element_pk})
+                    SET emb.embedding = $embedding,
+                        emb.dimensions = $dimensions,
+                        emb.topics = $topics,
+                        emb.confidence = $confidence,
+                        emb.created_at = $created_at
+                    MERGE (emb)-[:EMBEDDING_OF]->(e)
+                    """,
+                    element_id=str(element_pk),
+                    embedding=embedding_json,
+                    dimensions=len(embedding),
+                    topics=topics_json,
+                    confidence=confidence,
+                    created_at=time.time()
+                )
+
+    def search_by_text_and_topics(self, search_text: str = None,
+                                  include_topics: Optional[List[str]] = None,
+                                  exclude_topics: Optional[List[str]] = None,
+                                  min_confidence: float = 0.7,
+                                  limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Search elements by text with topic filtering using pattern matching.
+
+        Args:
+            search_text: Text to search for semantically (optional)
+            include_topics: Topic patterns to include (e.g., ['security*', '*.policy*'])
+            exclude_topics: Topic patterns to exclude (e.g., ['deprecated*'])
+            min_confidence: Minimum confidence threshold for embeddings
+            limit: Maximum number of results
+
+        Returns:
+            List of dictionaries with keys:
+            - element_pk: Element primary key
+            - similarity: Similarity score (if search_text provided)
+            - confidence: Overall embedding confidence
+            - topics: List of assigned topic strings
+        """
+        if not self.driver:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Generate embedding for search text if provided
+            query_embedding = None
+            if search_text:
+                if self.embedding_generator is None:
+                    from ..embeddings import get_embedding_generator
+                    if config:
+                        self.embedding_generator = get_embedding_generator(config)
+                    else:
+                        logger.error("Config not available for embedding generator")
+                        return []
+
+                query_embedding = self.embedding_generator.generate(search_text)
+
+            return self._search_by_text_and_topics_fallback(
+                query_embedding, include_topics, exclude_topics, min_confidence, limit
+            )
+
+        except Exception as e:
+            logger.error(f"Error in topic-aware search: {str(e)}")
+            return []
+
+    def _search_by_text_and_topics_fallback(self, query_embedding: Optional[VectorType] = None,
+                                            include_topics: Optional[List[str]] = None,
+                                            exclude_topics: Optional[List[str]] = None,
+                                            min_confidence: float = 0.7,
+                                            limit: int = 10) -> List[Dict[str, Any]]:
+        """Fallback search using Python similarity calculation with topic filtering."""
+
+        with self.driver.session(database=self.database) as session:
+            # Base query to get embeddings with confidence filtering
+            cypher_query = """
+            MATCH (emb:Embedding)-[:EMBEDDING_OF]->(e:Element)-[:BELONGS_TO]->(d:Document)
+            WHERE emb.confidence >= $min_confidence
+            RETURN id(e) AS element_pk, emb.embedding AS embedding, 
+                   emb.confidence AS confidence, emb.topics AS topics
+            """
+
+            params = {"min_confidence": min_confidence}
+
+            # Execute query
+            result = session.run(cypher_query, params)
+
+            results = []
+            for record in result:
+                element_pk = record["element_pk"]
+                embedding_json = record["embedding"]
+                confidence = record["confidence"]
+                topics_json = record["topics"]
+
+                try:
+                    # Parse topics
+                    topics = json.loads(topics_json) if topics_json else []
+                except (json.JSONDecodeError, TypeError):
+                    topics = []
+
+                # Apply topic filtering
+                if not self._matches_topic_filters(topics, include_topics, exclude_topics):
+                    continue
+
+                result_dict = {
+                    'element_pk': element_pk,
+                    'confidence': float(confidence),
+                    'topics': topics
+                }
+
+                # Calculate similarity if we have a query embedding
+                if query_embedding:
+                    try:
+                        embedding = json.loads(embedding_json)
+                        if NUMPY_AVAILABLE:
+                            similarity = self._cosine_similarity_numpy(query_embedding, embedding)
+                        else:
+                            similarity = self._cosine_similarity_python(query_embedding, embedding)
+                        result_dict['similarity'] = float(similarity)
+                    except Exception as e:
+                        logger.warning(f"Error calculating similarity for element {element_pk}: {str(e)}")
+                        result_dict['similarity'] = 0.0
+                else:
+                    result_dict['similarity'] = 1.0  # No text search, all results have equal similarity
+
+                results.append(result_dict)
+
+            # Sort by similarity if we calculated it
+            if query_embedding:
+                results.sort(key=lambda x: x['similarity'], reverse=True)
+
+            return results[:limit]
+
+    def _matches_topic_filters(self, topics: List[str],
+                               include_topics: Optional[List[str]] = None,
+                               exclude_topics: Optional[List[str]] = None) -> bool:
+        """Check if topics match the include/exclude filters using pattern matching."""
+        import fnmatch
+
+        # Check include filters - at least one must match
+        if include_topics:
+            include_match = False
+            for topic in topics:
+                for pattern in include_topics:
+                    if fnmatch.fnmatch(topic, pattern):
+                        include_match = True
+                        break
+                if include_match:
+                    break
+
+            if not include_match:
+                return False
+
+        # Check exclude filters - none should match
+        if exclude_topics:
+            for topic in topics:
+                for pattern in exclude_topics:
+                    if fnmatch.fnmatch(topic, pattern):
+                        return False
+
+        return True
+
+    def get_topic_statistics(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get statistics about topic distribution across embeddings.
+
+        Returns:
+            Dictionary mapping topic strings to statistics
+        """
+        if not self.driver:
+            raise ValueError("Database not initialized")
+
+        try:
+            topic_stats = {}
+
+            with self.driver.session(database=self.database) as session:
+                # Get all embeddings with topics
+                result = session.run("""
+                    MATCH (emb:Embedding)-[:EMBEDDING_OF]->(e:Element)-[:BELONGS_TO]->(d:Document)
+                    WHERE emb.topics IS NOT NULL
+                    RETURN emb.topics AS topics, emb.confidence AS confidence, d.doc_id AS doc_id
+                """)
+
+                for record in result:
+                    try:
+                        topics = json.loads(record["topics"]) if record["topics"] else []
+                        confidence = record["confidence"]
+                        doc_id = record["doc_id"]
+
+                        for topic in topics:
+                            if topic not in topic_stats:
+                                topic_stats[topic] = {
+                                    'embedding_count': 0,
+                                    'document_ids': set(),
+                                    'confidences': []
+                                }
+
+                            topic_stats[topic]['embedding_count'] += 1
+                            topic_stats[topic]['confidences'].append(confidence)
+                            if doc_id:
+                                topic_stats[topic]['document_ids'].add(doc_id)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+
+            # Calculate final statistics
+            final_stats = {}
+            for topic, stats in topic_stats.items():
+                final_stats[topic] = {
+                    'embedding_count': stats['embedding_count'],
+                    'document_count': len(stats['document_ids']),
+                    'avg_embedding_confidence': sum(stats['confidences']) / len(stats['confidences'])
+                }
+
+            return final_stats
+
+        except Exception as e:
+            logger.error(f"Error getting topic statistics: {str(e)}")
+            return {}
+
+    def get_embedding_topics(self, element_pk: Union[int, str]) -> List[str]:
+        """
+        Get topics assigned to a specific embedding.
+
+        Args:
+            element_pk: Element primary key
+
+        Returns:
+            List of topic strings assigned to this embedding
+        """
+        if not self.driver:
+            raise ValueError("Database not initialized")
+
+        try:
+            with self.driver.session(database=self.database) as session:
+                if str(element_pk).isdigit():
+                    result = session.run(
+                        """
+                        MATCH (emb:Embedding {element_pk: $element_pk})
+                        RETURN emb.topics AS topics
+                        """,
+                        element_pk=int(element_pk)
+                    )
+                else:
+                    result = session.run(
+                        """
+                        MATCH (e:Element {element_id: $element_id})
+                        WITH id(e) AS element_pk
+                        MATCH (emb:Embedding {element_pk: element_pk})
+                        RETURN emb.topics AS topics
+                        """,
+                        element_id=str(element_pk)
+                    )
+
+                record = result.single()
+                if not record or record["topics"] is None:
+                    return []
+
+                try:
+                    return json.loads(record["topics"])
+                except (json.JSONDecodeError, TypeError):
+                    return []
+
+        except Exception as e:
+            logger.error(f"Error getting topics for element {element_pk}: {str(e)}")
+            return []
+
+    @staticmethod
+    def _cosine_similarity_numpy(vec1: VectorType, vec2: VectorType) -> float:
+        """
+        Calculate cosine similarity between two vectors using NumPy.
+
+        Args:
+            vec1: First vector
+            vec2: Second vector
+
+        Returns:
+            Cosine similarity (between -1 and 1)
+        """
+        if not NUMPY_AVAILABLE:
+            raise ImportError("NumPy is required for this method but not available")
+
+        # Make sure vectors are the same length
+        if len(vec1) != len(vec2):
+            min_len = min(len(vec1), len(vec2))
+            vec1 = vec1[:min_len]
+            vec2 = vec2[:min_len]
+
+        # Convert to numpy arrays
+        vec1_np = np.array(vec1)
+        vec2_np = np.array(vec2)
+
+        # Calculate dot product
+        dot_product = np.dot(vec1_np, vec2_np)
+
+        # Calculate magnitudes
+        norm1 = np.linalg.norm(vec1_np)
+        norm2 = np.linalg.norm(vec2_np)
+
+        # Avoid division by zero
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+
+        # Calculate cosine similarity
+        return float(dot_product / (norm1 * norm2))
+
+    @staticmethod
+    def _cosine_similarity_python(vec1: VectorType, vec2: VectorType) -> float:
+        """
+        Calculate cosine similarity between two vectors using pure Python.
+        This is a fallback when NumPy is not available.
+
+        Args:
+            vec1: First vector
+            vec2: Second vector
+
+        Returns:
+            Cosine similarity (between -1 and 1)
+        """
+        # Make sure vectors are the same length
+        if len(vec1) != len(vec2):
+            min_len = min(len(vec1), len(vec2))
+            vec1 = vec1[:min_len]
+            vec2 = vec2[:min_len]
+
+        # Calculate dot product
+        dot_product = sum(a * b for a, b in zip(vec1, vec2))
+
+        # Calculate magnitudes
+        magnitude1 = sum(a * a for a in vec1) ** 0.5
+        magnitude2 = sum(b * b for b in vec2) ** 0.5
+
+        # Check for zero magnitudes
+        if magnitude1 == 0 or magnitude2 == 0:
+            return 0.0
+
+        # Calculate cosine similarity
+        return float(dot_product / (magnitude1 * magnitude2))

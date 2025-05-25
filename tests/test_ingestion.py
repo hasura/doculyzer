@@ -70,7 +70,7 @@ def test_document_search():
 
     # Run a sample search
     logger.info("Running ANN search")
-    query_text = "artists, rebels, professionals, banks, data"
+    query_text = "cash management"
     logger.info(f"Searching for similar elements: {query_text}")
     # results: List[SearchResult] = search_with_content(query_text, min_score=-1.0, limit=50)
     text_results = search_by_text(query_text, min_score=-1, limit=50, text=True)

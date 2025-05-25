@@ -829,13 +829,15 @@ class SQLiteDocumentDatabase(DocumentDatabase):
         self.conn.execute(
             """
             INSERT OR REPLACE INTO embeddings 
-            (element_pk, embedding, dimensions, created_at)
-            VALUES (?, ?, ?, ?)
+            (element_pk, embedding, dimensions, topics, confidence, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 element_pk,
                 embedding_blob,
                 len(embedding),
+                json.dumps([]),  # Default to empty topics
+                1.0,  # Default confidence
                 time.time()
             )
         )
@@ -1484,15 +1486,22 @@ class SQLiteDocumentDatabase(DocumentDatabase):
         CREATE INDEX IF NOT EXISTS idx_relationships_type ON relationships (relationship_type)
         """)
 
-        # Embeddings table
+        # Modified embeddings table with topic support
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS embeddings (
             element_pk INTEGER PRIMARY KEY, -- Links to elements.element_pk
             embedding BLOB,
             dimensions INTEGER,
+            topics TEXT DEFAULT '[]',
+            confidence REAL DEFAULT 1.0,
             created_at REAL,
             FOREIGN KEY (element_pk) REFERENCES elements (element_pk) ON DELETE CASCADE
         )
+        """)
+
+        # Add indexes for topic searching
+        self.conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_embeddings_confidence ON embeddings(confidence)
         """)
 
         # Processing history table
@@ -1617,3 +1626,382 @@ class SQLiteDocumentDatabase(DocumentDatabase):
 
         except Exception as e:
             logger.error(f"Error getting embeddings for vector tables: {str(e)}")
+
+    # ========================================
+    # NEW: TOPIC SUPPORT METHODS
+    # ========================================
+
+    def supports_topics(self) -> bool:
+        """
+        Indicate whether this backend supports topic-aware embeddings.
+
+        Returns:
+            True since SQLite implementation supports topics
+        """
+        return True
+
+    def store_embedding_with_topics(self, element_pk: int, embedding: VectorType,
+                                    topics: List[str], confidence: float = 1.0) -> None:
+        """
+        Store embedding for an element with topic assignments.
+
+        Args:
+            element_pk: Element primary key
+            embedding: Vector embedding
+            topics: List of topic strings (e.g., ['security.policy', 'compliance'])
+            confidence: Overall confidence in this embedding/topic assignment
+        """
+        if not self.conn:
+            raise ValueError("Database not initialized")
+
+        # Verify element exists
+        cursor = self.conn.execute(
+            "SELECT element_pk FROM elements WHERE element_pk = ?",
+            (element_pk,)
+        )
+
+        if cursor.fetchone() is None:
+            raise ValueError(f"Element not found: {element_pk}")
+
+        # Store embedding in the main embeddings table
+        embedding_blob = self._encode_embedding(embedding)
+        topics_json = json.dumps(topics)
+
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO embeddings 
+            (element_pk, embedding, dimensions, topics, confidence, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                element_pk,
+                embedding_blob,
+                len(embedding),
+                topics_json,
+                confidence,
+                time.time()
+            )
+        )
+
+        # Store embedding in extension tables if available
+        if self.vector_extension:
+            # Convert embedding to the required format
+            embedding_json = json.dumps(embedding)
+
+            try:
+                if self.vector_extension == "vec0" and SQLITE_VEC_AVAILABLE:
+                    # For sqlite-vec
+                    self.conn.execute(
+                        """
+                        INSERT OR REPLACE INTO embeddings_vec (rowid, embedding)
+                        VALUES (?, ?)
+                        """,
+                        (element_pk, embedding_json)
+                    )
+                elif self.vector_extension == "vss0" and SQLITE_VSS_AVAILABLE:
+                    # For sqlite-vss
+                    self.conn.execute(
+                        """
+                        INSERT OR REPLACE INTO embeddings_vss (rowid, embedding)
+                        VALUES (?, ?)
+                        """,
+                        (element_pk, embedding_json)
+                    )
+            except Exception as e:
+                logger.warning(f"Error storing embedding in extension table: {str(e)}")
+
+        self.conn.commit()
+
+    def search_by_text_and_topics(self, search_text: str = None,
+                                  include_topics: Optional[List[str]] = None,
+                                  exclude_topics: Optional[List[str]] = None,
+                                  min_confidence: float = 0.7,
+                                  limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Search elements by text with topic filtering using LIKE patterns.
+
+        Args:
+            search_text: Text to search for semantically (optional)
+            include_topics: Topic LIKE patterns to include (e.g., ['security%', '%.policy%'])
+            exclude_topics: Topic LIKE patterns to exclude (e.g., ['deprecated%'])
+            min_confidence: Minimum confidence threshold for embeddings
+            limit: Maximum number of results
+
+        Returns:
+            List of dictionaries with keys:
+            - element_pk: Element primary key
+            - similarity: Similarity score (if search_text provided)
+            - confidence: Overall embedding confidence
+            - topics: List of assigned topic strings
+        """
+        if not self.conn:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Generate embedding for search text if provided
+            query_embedding = None
+            if search_text:
+                if self.embedding_generator is None:
+                    try:
+                        from ..embeddings import get_embedding_generator
+                        self.embedding_generator = get_embedding_generator(config)
+                    except ImportError as e:
+                        logger.error(f"Error importing embedding generator: {str(e)}")
+                        raise ValueError("Embedding generator not available")
+
+                query_embedding = self.embedding_generator.generate(search_text)
+
+            # Build the query based on whether we have search text and vector support
+            if search_text and self.vector_extension:
+                return self._search_by_text_and_topics_with_extension(
+                    query_embedding, include_topics, exclude_topics, min_confidence, limit
+                )
+            else:
+                return self._search_by_text_and_topics_fallback(
+                    query_embedding, include_topics, exclude_topics, min_confidence, limit
+                )
+
+        except Exception as e:
+            logger.error(f"Error in topic-aware search: {str(e)}")
+            return []
+
+    def _search_by_text_and_topics_with_extension(self, query_embedding: VectorType,
+                                                  include_topics: Optional[List[str]] = None,
+                                                  exclude_topics: Optional[List[str]] = None,
+                                                  min_confidence: float = 0.7,
+                                                  limit: int = 10) -> List[Dict[str, Any]]:
+        """Search using vector extension with topic filtering."""
+
+        # Register similarity function for topic filtering
+        self._register_similarity_function()
+
+        # Convert query embedding to formats needed
+        query_blob = self._encode_embedding(query_embedding)
+
+        # Build base query with similarity calculation
+        sql = """
+        SELECT 
+            em.element_pk,
+            cosine_similarity(em.embedding, ?) as similarity,
+            em.confidence,
+            em.topics
+        FROM embeddings em
+        WHERE em.confidence >= ?
+        """
+        params = [query_blob, min_confidence]
+
+        # Add topic filtering conditions
+        sql, params = self._add_topic_filters_sqlite(sql, params, include_topics, exclude_topics)
+
+        # Order by similarity and limit
+        sql += " ORDER BY similarity DESC LIMIT ?"
+        params.append(limit)
+
+        cursor = self.conn.execute(sql, params)
+
+        results = []
+        for row in cursor.fetchall():
+            try:
+                topics = json.loads(row[3]) if row[3] else []
+            except (json.JSONDecodeError, TypeError):
+                topics = []
+
+            results.append({
+                'element_pk': row[0],
+                'similarity': float(row[1]),
+                'confidence': float(row[2]),
+                'topics': topics
+            })
+
+        return results
+
+    def _search_by_text_and_topics_fallback(self, query_embedding: Optional[VectorType] = None,
+                                            include_topics: Optional[List[str]] = None,
+                                            exclude_topics: Optional[List[str]] = None,
+                                            min_confidence: float = 0.7,
+                                            limit: int = 10) -> List[Dict[str, Any]]:
+        """Fallback search using Python similarity calculation with topic filtering."""
+
+        # Register similarity function if we have a query embedding
+        if query_embedding:
+            self._register_similarity_function()
+            query_blob = self._encode_embedding(query_embedding)
+
+        # Base query to get embeddings with topic filtering
+        sql = """
+        SELECT em.element_pk, em.embedding, em.confidence, em.topics
+        FROM embeddings em
+        WHERE em.confidence >= ?
+        """
+        params = [min_confidence]
+
+        # Add topic filtering conditions
+        sql, params = self._add_topic_filters_sqlite(sql, params, include_topics, exclude_topics)
+
+        cursor = self.conn.execute(sql, params)
+
+        # Calculate similarities if we have a query embedding
+        results = []
+        for row in cursor.fetchall():
+            try:
+                topics = json.loads(row[3]) if row[3] else []
+            except (json.JSONDecodeError, TypeError):
+                topics = []
+
+            result = {
+                'element_pk': row[0],
+                'confidence': float(row[2]),
+                'topics': topics
+            }
+
+            # Calculate similarity if we have a query embedding
+            if query_embedding:
+                try:
+                    embedding_blob = row[1]
+                    embedding = self._decode_embedding(embedding_blob)
+                    if NUMPY_AVAILABLE:
+                        # Use numpy for similarity calculation
+                        vec1_np = np.array(query_embedding)
+                        vec2_np = np.array(embedding)
+                        dot_product = np.dot(vec1_np, vec2_np)
+                        norm1 = np.linalg.norm(vec1_np)
+                        norm2 = np.linalg.norm(vec2_np)
+                        similarity = float(dot_product / (norm1 * norm2)) if norm1 != 0 and norm2 != 0 else 0.0
+                    else:
+                        # Pure Python calculation
+                        dot_product = sum(a * b for a, b in zip(query_embedding, embedding))
+                        mag1 = sum(a * a for a in query_embedding) ** 0.5
+                        mag2 = sum(b * b for b in embedding) ** 0.5
+                        similarity = float(dot_product / (mag1 * mag2)) if mag1 != 0 and mag2 != 0 else 0.0
+                    result['similarity'] = similarity
+                except Exception as e:
+                    logger.warning(f"Error calculating similarity for element {row[0]}: {str(e)}")
+                    result['similarity'] = 0.0
+            else:
+                result['similarity'] = 1.0  # No text search, all results have equal similarity
+
+            results.append(result)
+
+        # Sort by similarity if we calculated it
+        if query_embedding:
+            results.sort(key=lambda x: x['similarity'], reverse=True)
+
+        return results[:limit]
+
+    def _add_topic_filters_sqlite(self, sql: str, params: List,
+                                  include_topics: Optional[List[str]] = None,
+                                  exclude_topics: Optional[List[str]] = None) -> tuple[str, List]:
+        """Add topic filtering conditions to SQLite query using JSON functions."""
+
+        # Add include topic filters
+        if include_topics:
+            include_conditions = []
+            for topic_pattern in include_topics:
+                # Use JSON_EACH to iterate through topics array and check for LIKE match
+                include_conditions.append("""
+                    EXISTS (
+                        SELECT 1 FROM JSON_EACH(em.topics) 
+                        WHERE JSON_EACH.value LIKE ?
+                    )
+                """)
+                params.append(topic_pattern)
+
+            if include_conditions:
+                sql += " AND (" + " OR ".join(include_conditions) + ")"
+
+        # Add exclude topic filters
+        if exclude_topics:
+            exclude_conditions = []
+            for topic_pattern in exclude_topics:
+                # Use JSON_EACH to iterate through topics array and check for NO LIKE match
+                exclude_conditions.append("""
+                    NOT EXISTS (
+                        SELECT 1 FROM JSON_EACH(em.topics) 
+                        WHERE JSON_EACH.value LIKE ?
+                    )
+                """)
+                params.append(topic_pattern)
+
+            if exclude_conditions:
+                sql += " AND " + " AND ".join(exclude_conditions)
+
+        return sql, params
+
+    def get_topic_statistics(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get statistics about topic distribution across embeddings.
+
+        Returns:
+            Dictionary mapping topic strings to statistics:
+            {
+                'security.policy': {
+                    'embedding_count': int,
+                    'document_count': int,
+                    'avg_embedding_confidence': float
+                }
+            }
+        """
+        if not self.conn:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Query to get topic statistics using SQLite JSON functions
+            cursor = self.conn.execute("""
+                SELECT 
+                    JSON_EACH.value as topic,
+                    COUNT(*) as embedding_count,
+                    COUNT(DISTINCT e.doc_id) as document_count,
+                    AVG(em.confidence) as avg_confidence
+                FROM embeddings em
+                JOIN elements e ON em.element_pk = e.element_pk
+                JOIN JSON_EACH(em.topics) ON 1
+                WHERE em.topics != '[]'
+                GROUP BY JSON_EACH.value
+                ORDER BY embedding_count DESC
+            """)
+
+            statistics = {}
+            for row in cursor.fetchall():
+                statistics[row[0]] = {
+                    'embedding_count': int(row[1]),
+                    'document_count': int(row[2]),
+                    'avg_embedding_confidence': float(row[3])
+                }
+
+            return statistics
+
+        except Exception as e:
+            logger.error(f"Error getting topic statistics: {str(e)}")
+            return {}
+
+    def get_embedding_topics(self, element_pk: int) -> List[str]:
+        """
+        Get topics assigned to a specific embedding.
+
+        Args:
+            element_pk: Element primary key
+
+        Returns:
+            List of topic strings assigned to this embedding
+        """
+        if not self.conn:
+            raise ValueError("Database not initialized")
+
+        try:
+            cursor = self.conn.execute(
+                "SELECT topics FROM embeddings WHERE element_pk = ?",
+                (element_pk,)
+            )
+
+            row = cursor.fetchone()
+            if row is None or row[0] is None:
+                return []
+
+            try:
+                return json.loads(row[0]) if row[0] else []
+            except (json.JSONDecodeError, TypeError):
+                return []
+
+        except Exception as e:
+            logger.error(f"Error getting topics for element {element_pk}: {str(e)}")
+            return []

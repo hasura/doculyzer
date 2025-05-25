@@ -162,13 +162,15 @@ if SQLALCHEMY_AVAILABLE:
 
 
     class Embedding(Base):
-        """Embedding model for SQLAlchemy ORM."""
+        """Enhanced Embedding model with topic support for SQLAlchemy ORM."""
         __tablename__ = 'embeddings'
 
         element_pk = Column(Integer, ForeignKey('elements.element_pk', ondelete='CASCADE'),
                             primary_key=True)  # References element_pk
         embedding = Column(LargeBinary)
         dimensions = Column(Integer)
+        topics = Column(Text)  # JSON array of topic strings
+        confidence = Column(Float, default=1.0)  # Confidence score
         created_at = Column(Float)
 
         # Relationships
@@ -196,16 +198,6 @@ else:
 class SQLAlchemyDocumentDatabase(DocumentDatabase):
     """SQLAlchemy implementation of document database."""
 
-    """
-    Key updates to the SQLAlchemy implementation:
-    
-    1. Added conditional imports and availability flags
-    2. Added clear error handling when required dependencies aren't available
-    3. Improved type hinting with runtime/static type separation
-    4. Enhanced fallback implementations for different scenarios 
-    5. Added more robust error handling throughout
-    """
-
     def __init__(self, db_uri: str, echo: bool = False):
         """
         Initialize SQLAlchemy document database.
@@ -227,6 +219,7 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
         self.session: SQLAlchemySessionType = None
         self._vector_extension = None
         self._vector_dimension = config.config.get('embedding', {}).get('dimensions', 384) if config else 384
+        self.embedding_generator = None
 
     def initialize(self) -> None:
         """Initialize the database by creating tables if they don't exist."""
@@ -1027,6 +1020,39 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
 
         return result
 
+    def delete_document(self, doc_id: str) -> bool:
+        """Delete a document and all associated elements and relationships."""
+        if not self.session:
+            raise ValueError("Database not initialized")
+
+        # Check if document exists
+        document = self.session.query(Document).filter_by(doc_id=doc_id).first()
+        if not document:
+            return False
+
+        try:
+            # Start transaction
+            self.session.begin()
+
+            # Delete the document (cascading delete will handle elements,
+            # relationships, and embeddings due to our relationship configurations)
+            self.session.delete(document)
+
+            # Commit changes
+            self.session.commit()
+
+            logger.info(f"Deleted document {doc_id}")
+            return True
+
+        except Exception as e:
+            self.session.rollback()
+            logger.error(f"Error deleting document {doc_id}: {str(e)}")
+            return False
+
+    # ========================================
+    # ENHANCED EMBEDDING FUNCTIONS
+    # ========================================
+
     def store_embedding(self, element_pk: Union[int, str], embedding: VectorType) -> None:
         """Store embedding for an element."""
         if not self.session:
@@ -1051,6 +1077,8 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
                 # Update existing embedding
                 existing.embedding = embedding_blob
                 existing.dimensions = len(embedding)
+                existing.topics = json.dumps([])  # Default to empty topics
+                existing.confidence = 1.0  # Default confidence
                 existing.created_at = time.time()
             else:
                 # Create new embedding
@@ -1058,6 +1086,8 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
                     element_pk=element_pk,
                     embedding=embedding_blob,
                     dimensions=len(embedding),
+                    topics=json.dumps([]),  # Default to empty topics
+                    confidence=1.0,  # Default confidence
                     created_at=time.time()
                 )
                 self.session.add(new_embedding)
@@ -1363,9 +1393,7 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
             # Import necessary modules conditionally
             try:
                 # Try to get embedding generator
-                embedding_generator = None
-
-                try:
+                if self.embedding_generator is None:
                     from ..embeddings import get_embedding_generator
 
                     # Get config from the connection parameters or load from path
@@ -1379,16 +1407,13 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
                             config_obj = Config()
 
                     # Get the embedding generator
-                    embedding_generator = get_embedding_generator(config_obj)
-                except ImportError as e:
-                    logger.error(f"Error importing embedding generator: {str(e)}")
-                    raise ValueError("Embedding generator not available - embedding libraries may not be installed")
+                    self.embedding_generator = get_embedding_generator(config_obj)
 
-                if embedding_generator is None:
+                if self.embedding_generator is None:
                     raise ValueError("Could not initialize embedding generator")
 
                 # Generate embedding for the search text
-                query_embedding = embedding_generator.generate(search_text)
+                query_embedding = self.embedding_generator.generate(search_text)
 
                 # Use the embedding to search, passing the filter criteria
                 return self.search_by_embedding(query_embedding, limit, filter_criteria)
@@ -1401,34 +1426,305 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
             # Return empty list on error
             return []
 
-    def delete_document(self, doc_id: str) -> bool:
-        """Delete a document and all associated elements and relationships."""
+    # ========================================
+    # NEW: TOPIC SUPPORT METHODS
+    # ========================================
+
+    def supports_topics(self) -> bool:
+        """
+        Indicate whether this backend supports topic-aware embeddings.
+
+        Returns:
+            True since SQLAlchemy implementation now supports topics
+        """
+        return True
+
+    def store_embedding_with_topics(self, element_pk: Union[int, str], embedding: VectorType,
+                                    topics: List[str], confidence: float = 1.0) -> None:
+        """
+        Store embedding for an element with topic assignments.
+
+        Args:
+            element_pk: Element primary key
+            embedding: Vector embedding
+            topics: List of topic strings (e.g., ['security.policy', 'compliance'])
+            confidence: Overall confidence in this embedding/topic assignment
+        """
         if not self.session:
             raise ValueError("Database not initialized")
 
-        # Check if document exists
-        document = self.session.query(Document).filter_by(doc_id=doc_id).first()
-        if not document:
-            return False
+        # Verify element exists
+        element = self.session.query(Element).filter_by(element_pk=element_pk).first()
+        if not element:
+            raise ValueError(f"Element not found: {element_pk}")
+
+        # Update vector dimension
+        self._vector_dimension = max(self._vector_dimension, len(embedding))
 
         try:
-            # Start transaction
-            self.session.begin()
+            # Encode embedding as binary
+            embedding_blob = self._encode_embedding(embedding)
 
-            # Delete the document (cascading delete will handle elements,
-            # relationships, and embeddings due to our relationship configurations)
-            self.session.delete(document)
+            # Check if embedding already exists
+            existing = self.session.query(Embedding).filter_by(element_pk=element_pk).first()
+
+            if existing:
+                # Update existing embedding
+                existing.embedding = embedding_blob
+                existing.dimensions = len(embedding)
+                existing.topics = json.dumps(topics)
+                existing.confidence = confidence
+                existing.created_at = time.time()
+            else:
+                # Create new embedding
+                new_embedding = Embedding(
+                    element_pk=element_pk,
+                    embedding=embedding_blob,
+                    dimensions=len(embedding),
+                    topics=json.dumps(topics),
+                    confidence=confidence,
+                    created_at=time.time()
+                )
+                self.session.add(new_embedding)
 
             # Commit changes
             self.session.commit()
 
-            logger.info(f"Deleted document {doc_id}")
-            return True
+            # Handle vector extension specific storage
+            if self._vector_extension == "pgvector" and self.db_uri.startswith('postgresql'):
+                self._store_pgvector_embedding(element_pk, embedding)
+
+            logger.debug(f"Stored embedding with topics for element {element_pk}")
 
         except Exception as e:
             self.session.rollback()
-            logger.error(f"Error deleting document {doc_id}: {str(e)}")
-            return False
+            logger.error(f"Error storing embedding with topics for {element_pk}: {str(e)}")
+            raise
+
+    def search_by_text_and_topics(self, search_text: str = None,
+                                  include_topics: Optional[List[str]] = None,
+                                  exclude_topics: Optional[List[str]] = None,
+                                  min_confidence: float = 0.7,
+                                  limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Search elements by text with topic filtering using pattern matching.
+
+        Args:
+            search_text: Text to search for semantically (optional)
+            include_topics: Topic patterns to include (e.g., ['security*', '*.policy*'])
+            exclude_topics: Topic patterns to exclude (e.g., ['deprecated*'])
+            min_confidence: Minimum confidence threshold for embeddings
+            limit: Maximum number of results
+
+        Returns:
+            List of dictionaries with keys:
+            - element_pk: Element primary key
+            - similarity: Similarity score (if search_text provided)
+            - confidence: Overall embedding confidence
+            - topics: List of assigned topic strings
+        """
+        if not self.session:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Generate embedding for search text if provided
+            query_embedding = None
+            if search_text:
+                if self.embedding_generator is None:
+                    from ..embeddings import get_embedding_generator
+                    config_obj = config or Config()
+                    self.embedding_generator = get_embedding_generator(config_obj)
+
+                query_embedding = self.embedding_generator.generate(search_text)
+
+            return self._search_by_text_and_topics_fallback(
+                query_embedding, include_topics, exclude_topics, min_confidence, limit
+            )
+
+        except Exception as e:
+            logger.error(f"Error in topic-aware search: {str(e)}")
+            return []
+
+    def _search_by_text_and_topics_fallback(self, query_embedding: Optional[VectorType] = None,
+                                            include_topics: Optional[List[str]] = None,
+                                            exclude_topics: Optional[List[str]] = None,
+                                            min_confidence: float = 0.7,
+                                            limit: int = 10) -> List[Dict[str, Any]]:
+        """Fallback search using Python similarity calculation with topic filtering."""
+
+        try:
+            # Start building query with confidence filtering
+            query = self.session.query(Embedding).filter(Embedding.confidence >= min_confidence)
+
+            # Execute query to get all embeddings above confidence threshold
+            embeddings = query.all()
+
+            # Process results in Python with topic filtering
+            results = []
+            for embedding_record in embeddings:
+                element_pk = embedding_record.element_pk
+                confidence = embedding_record.confidence
+
+                # Parse topics
+                topics = []
+                if embedding_record.topics:
+                    try:
+                        topics = json.loads(embedding_record.topics)
+                    except (json.JSONDecodeError, TypeError):
+                        topics = []
+
+                # Apply topic filtering
+                if not self._matches_topic_filters(topics, include_topics, exclude_topics):
+                    continue
+
+                result_dict = {
+                    'element_pk': element_pk,
+                    'confidence': float(confidence),
+                    'topics': topics
+                }
+
+                # Calculate similarity if we have a query embedding
+                if query_embedding:
+                    try:
+                        embedding = self._decode_embedding(embedding_record.embedding)
+                        if NUMPY_AVAILABLE:
+                            similarity = self._cosine_similarity_numpy(
+                                np.array(query_embedding), np.array(embedding)
+                            )
+                        else:
+                            similarity = self._cosine_similarity_fallback(query_embedding, embedding)
+                        result_dict['similarity'] = float(similarity)
+                    except Exception as e:
+                        logger.warning(f"Error calculating similarity for element {element_pk}: {str(e)}")
+                        result_dict['similarity'] = 0.0
+                else:
+                    result_dict['similarity'] = 1.0  # No text search, all results have equal similarity
+
+                results.append(result_dict)
+
+            # Sort by similarity if we calculated it
+            if query_embedding:
+                results.sort(key=lambda x: x['similarity'], reverse=True)
+
+            return results[:limit]
+
+        except Exception as e:
+            logger.error(f"Error in fallback topic search: {str(e)}")
+            return []
+
+    def _matches_topic_filters(self, topics: List[str],
+                               include_topics: Optional[List[str]] = None,
+                               exclude_topics: Optional[List[str]] = None) -> bool:
+        """Check if topics match the include/exclude filters using pattern matching."""
+        import fnmatch
+
+        # Check include filters - at least one must match
+        if include_topics:
+            include_match = False
+            for topic in topics:
+                for pattern in include_topics:
+                    if fnmatch.fnmatch(topic, pattern):
+                        include_match = True
+                        break
+                if include_match:
+                    break
+
+            if not include_match:
+                return False
+
+        # Check exclude filters - none should match
+        if exclude_topics:
+            for topic in topics:
+                for pattern in exclude_topics:
+                    if fnmatch.fnmatch(topic, pattern):
+                        return False
+
+        return True
+
+    def get_topic_statistics(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get statistics about topic distribution across embeddings.
+
+        Returns:
+            Dictionary mapping topic strings to statistics
+        """
+        if not self.session:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Get all embeddings with topics
+            embeddings = self.session.query(Embedding).filter(Embedding.topics.isnot(None)).all()
+
+            topic_stats = {}
+            for embedding_record in embeddings:
+                confidence = embedding_record.confidence
+
+                # Parse topics
+                topics = []
+                if embedding_record.topics:
+                    try:
+                        topics = json.loads(embedding_record.topics)
+                    except (json.JSONDecodeError, TypeError):
+                        topics = []
+
+                # Get document ID for this element
+                element = self.session.query(Element).filter_by(element_pk=embedding_record.element_pk).first()
+                doc_id = element.doc_id if element else None
+
+                for topic in topics:
+                    if topic not in topic_stats:
+                        topic_stats[topic] = {
+                            'embedding_count': 0,
+                            'document_ids': set(),
+                            'confidences': []
+                        }
+
+                    topic_stats[topic]['embedding_count'] += 1
+                    topic_stats[topic]['confidences'].append(confidence)
+                    if doc_id:
+                        topic_stats[topic]['document_ids'].add(doc_id)
+
+            # Calculate final statistics
+            final_stats = {}
+            for topic, stats in topic_stats.items():
+                final_stats[topic] = {
+                    'embedding_count': stats['embedding_count'],
+                    'document_count': len(stats['document_ids']),
+                    'avg_embedding_confidence': sum(stats['confidences']) / len(stats['confidences'])
+                }
+
+            return final_stats
+
+        except Exception as e:
+            logger.error(f"Error getting topic statistics: {str(e)}")
+            return {}
+
+    def get_embedding_topics(self, element_pk: Union[int, str]) -> List[str]:
+        """
+        Get topics assigned to a specific embedding.
+
+        Args:
+            element_pk: Element primary key
+
+        Returns:
+            List of topic strings assigned to this embedding
+        """
+        if not self.session:
+            raise ValueError("Database not initialized")
+
+        try:
+            embedding_record = self.session.query(Embedding).filter_by(element_pk=element_pk).first()
+            if not embedding_record or not embedding_record.topics:
+                return []
+
+            try:
+                return json.loads(embedding_record.topics)
+            except (json.JSONDecodeError, TypeError):
+                return []
+
+        except Exception as e:
+            logger.error(f"Error getting topics for element {element_pk}: {str(e)}")
+            return []
 
     def _encode_embedding(self, embedding: VectorType) -> bytes:
         """Encode embedding as binary blob."""

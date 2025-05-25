@@ -47,7 +47,7 @@ class EnhancedContentResolver(ContentResolver):
         self.max_cache_size = self.config.get("max_cache_size", 1000)
         self.cache_ttl = self.config.get("cache_ttl", 3600)  # 1 hour in seconds
 
-    def resolve_content(self, content_location: Dict[str, Any], text: bool = True) -> str:
+    def resolve_content(self, content_location: Dict[str, Any] | str, text: bool = True) -> str:
         """
         Resolve content using appropriate adapter and parser.
 
@@ -61,6 +61,9 @@ class EnhancedContentResolver(ContentResolver):
         # Skip if empty
         if not content_location:
             return ""
+
+        if isinstance(content_location, str):
+            content_location = json.loads(content_location)
 
         # Check cache if enabled
         if self.cache_enabled:
@@ -301,7 +304,7 @@ class EnhancedContentResolver(ContentResolver):
             Updated location data with mappings applied
         """
         # Create a copy to avoid modifying the original
-        result = location_data.copy()
+        result = location_data.copy() if isinstance(location_data, dict) else str(location_data)
 
         # Apply mappings to source
         source = result.get('source', '')

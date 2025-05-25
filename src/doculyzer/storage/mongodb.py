@@ -286,12 +286,15 @@ class MongoDBDocumentDatabase(DocumentDatabase):
         self.db.relationships.create_index("source_id")
         self.db.relationships.create_index("relationship_type")
 
-        # Embeddings collection - Update to match SQLite schema
+        # Embeddings collection - Update to match SQLite schema with topic support
         if "embeddings" not in self.db.list_collection_names():
             self.db.create_collection("embeddings")
 
         # Create indexes for embeddings collection
         self.db.embeddings.create_index("element_pk", unique=True)
+        # Add indexes for topic searching
+        self.db.embeddings.create_index("topics")
+        self.db.embeddings.create_index("confidence")
 
         # Processing history collection
         if "processing_history" not in self.db.list_collection_names():
@@ -717,13 +720,15 @@ class MongoDBDocumentDatabase(DocumentDatabase):
         self.vector_dimension = max(self.vector_dimension, len(embedding))
 
         try:
-            # Store or update embedding
+            # Store or update embedding with default topics and confidence
             self.db.embeddings.update_one(
                 {"element_pk": element_pk},
                 {
                     "$set": {
                         "embedding": embedding,
                         "dimensions": len(embedding),
+                        "topics": [],  # Default to empty topics
+                        "confidence": 1.0,  # Default confidence
                         "created_at": time.time()
                     }
                 },
@@ -1210,4 +1215,390 @@ class MongoDBDocumentDatabase(DocumentDatabase):
         except Exception as e:
             logger.error(f"Error in semantic search by text: {str(e)}")
             # Return empty list on error
+            return []
+
+    # ========================================
+    # NEW: TOPIC SUPPORT METHODS
+    # ========================================
+
+    def supports_topics(self) -> bool:
+        """
+        Indicate whether this backend supports topic-aware embeddings.
+
+        Returns:
+            True since MongoDB implementation supports topics
+        """
+        return True
+
+    def store_embedding_with_topics(self, element_pk: int, embedding: VectorType,
+                                    topics: List[str], confidence: float = 1.0) -> None:
+        """
+        Store embedding for an element with topic assignments.
+
+        Args:
+            element_pk: Element primary key
+            embedding: Vector embedding
+            topics: List of topic strings (e.g., ['security.policy', 'compliance'])
+            confidence: Overall confidence in this embedding/topic assignment
+        """
+        if not self.db:
+            raise ValueError("Database not initialized")
+
+        # Verify element exists
+        element = self.db.elements.find_one({"element_pk": element_pk})
+        if not element:
+            raise ValueError(f"Element not found: {element_pk}")
+
+        # Update vector dimension based on actual data
+        self.vector_dimension = max(self.vector_dimension, len(embedding))
+
+        try:
+            # Store or update embedding with topics
+            self.db.embeddings.update_one(
+                {"element_pk": element_pk},
+                {
+                    "$set": {
+                        "embedding": embedding,
+                        "dimensions": len(embedding),
+                        "topics": topics,
+                        "confidence": confidence,
+                        "created_at": time.time()
+                    }
+                },
+                upsert=True
+            )
+
+            logger.debug(f"Stored embedding with topics for element {element_pk}: {topics}")
+
+        except Exception as e:
+            logger.error(f"Error storing embedding with topics for {element_pk}: {str(e)}")
+            raise
+
+    def search_by_text_and_topics(self, search_text: str = None,
+                                  include_topics: Optional[List[str]] = None,
+                                  exclude_topics: Optional[List[str]] = None,
+                                  min_confidence: float = 0.7,
+                                  limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Search elements by text with topic filtering using regex patterns.
+
+        Args:
+            search_text: Text to search for semantically (optional)
+            include_topics: Topic patterns to include (e.g., ['security.*', '.*policy.*'])
+            exclude_topics: Topic patterns to exclude (e.g., ['deprecated.*'])
+            min_confidence: Minimum confidence threshold for embeddings
+            limit: Maximum number of results
+
+        Returns:
+            List of dictionaries with keys:
+            - element_pk: Element primary key
+            - similarity: Similarity score (if search_text provided)
+            - confidence: Overall embedding confidence
+            - topics: List of assigned topic strings
+        """
+        if not self.db:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Generate embedding for search text if provided
+            query_embedding = None
+            if search_text:
+                try:
+                    from ..embeddings import get_embedding_generator
+                    if self.embedding_generator is None:
+                        self.embedding_generator = get_embedding_generator(config)
+                except ImportError as e:
+                    logger.error(f"Embedding generator not available: {str(e)}")
+                    raise ValueError("Embedding libraries are not installed.")
+
+                query_embedding = self.embedding_generator.generate(search_text)
+
+            # Build aggregation pipeline for topic-aware search
+            if search_text and self.vector_search:
+                return self._search_by_text_and_topics_vector(
+                    query_embedding, include_topics, exclude_topics, min_confidence, limit
+                )
+            else:
+                return self._search_by_text_and_topics_fallback(
+                    query_embedding, include_topics, exclude_topics, min_confidence, limit
+                )
+
+        except Exception as e:
+            logger.error(f"Error in topic-aware search: {str(e)}")
+            return []
+
+    def _search_by_text_and_topics_vector(self, query_embedding: VectorType,
+                                          include_topics: Optional[List[str]] = None,
+                                          exclude_topics: Optional[List[str]] = None,
+                                          min_confidence: float = 0.7,
+                                          limit: int = 10) -> List[Dict[str, Any]]:
+        """Search using MongoDB Atlas Vector Search with topic filtering."""
+        try:
+            # Start with vector search pipeline
+            pipeline = [{
+                "$vectorSearch": {
+                    "index": "embeddings_vector_index",
+                    "path": "embedding",
+                    "queryVector": query_embedding,
+                    "numCandidates": limit * 5,
+                    "limit": limit * 10
+                }
+            }]
+
+            # Add confidence and topic filtering
+            match_conditions = {"confidence": {"$gte": min_confidence}}
+
+            # Add topic filtering conditions
+            match_conditions = self._add_topic_filters_mongodb(match_conditions, include_topics, exclude_topics)
+
+            if match_conditions:
+                pipeline.append({"$match": match_conditions})
+
+            # Add projection and limit
+            pipeline.extend([
+                {
+                    "$project": {
+                        "_id": 0,
+                        "element_pk": 1,
+                        "confidence": 1,
+                        "topics": 1,
+                        "score": {"$meta": "vectorSearchScore"}
+                    }
+                },
+                {
+                    "$limit": limit
+                }
+            ])
+
+            # Execute the search
+            results = list(self.db.embeddings.aggregate(pipeline))
+
+            # Format results
+            formatted_results = []
+            for doc in results:
+                formatted_results.append({
+                    'element_pk': doc["element_pk"],
+                    'similarity': float(doc["score"]),
+                    'confidence': float(doc["confidence"]),
+                    'topics': doc.get("topics", [])
+                })
+
+            return formatted_results
+
+        except Exception as e:
+            logger.error(f"Error using vector search with topics: {str(e)}")
+            raise
+
+    def _search_by_text_and_topics_fallback(self, query_embedding: Optional[VectorType] = None,
+                                            include_topics: Optional[List[str]] = None,
+                                            exclude_topics: Optional[List[str]] = None,
+                                            min_confidence: float = 0.7,
+                                            limit: int = 10) -> List[Dict[str, Any]]:
+        """Fallback search using aggregation pipeline with topic filtering."""
+
+        # Base query with confidence filtering
+        match_conditions = {"confidence": {"$gte": min_confidence}}
+
+        # Add topic filtering conditions
+        match_conditions = self._add_topic_filters_mongodb(match_conditions, include_topics, exclude_topics)
+
+        # Build aggregation pipeline
+        pipeline = [
+            {"$match": match_conditions},
+            {
+                "$project": {
+                    "_id": 0,
+                    "element_pk": 1,
+                    "embedding": 1,
+                    "confidence": 1,
+                    "topics": 1
+                }
+            }
+        ]
+
+        # Execute aggregation to get filtered embeddings
+        filtered_embeddings = list(self.db.embeddings.aggregate(pipeline))
+
+        # Calculate similarities if we have a query embedding
+        results = []
+        for doc in filtered_embeddings:
+            result = {
+                'element_pk': doc["element_pk"],
+                'confidence': float(doc["confidence"]),
+                'topics': doc.get("topics", [])
+            }
+
+            # Calculate similarity if we have a query embedding
+            if query_embedding:
+                try:
+                    embedding = doc["embedding"]
+                    if embedding and len(embedding) == len(query_embedding):
+                        if NUMPY_AVAILABLE:
+                            # Use NumPy for efficient calculation
+                            query_array = np.array(query_embedding)
+                            embedding_array = np.array(embedding)
+                            dot_product = np.dot(query_array, embedding_array)
+                            norm1 = np.linalg.norm(query_array)
+                            norm2 = np.linalg.norm(embedding_array)
+                            similarity = float(dot_product / (norm1 * norm2)) if norm1 != 0 and norm2 != 0 else 0.0
+                        else:
+                            # Pure Python calculation
+                            dot_product = sum(a * b for a, b in zip(query_embedding, embedding))
+                            mag1 = sum(a * a for a in query_embedding) ** 0.5
+                            mag2 = sum(b * b for b in embedding) ** 0.5
+                            similarity = float(dot_product / (mag1 * mag2)) if mag1 != 0 and mag2 != 0 else 0.0
+                        result['similarity'] = similarity
+                    else:
+                        result['similarity'] = 0.0
+                except Exception as e:
+                    logger.warning(f"Error calculating similarity for element {doc['element_pk']}: {str(e)}")
+                    result['similarity'] = 0.0
+            else:
+                result['similarity'] = 1.0  # No text search, all results have equal similarity
+
+            results.append(result)
+
+        # Sort by similarity if we calculated it
+        if query_embedding:
+            results.sort(key=lambda x: x['similarity'], reverse=True)
+
+        return results[:limit]
+
+    def _add_topic_filters_mongodb(self, match_conditions: Dict[str, Any],
+                                   include_topics: Optional[List[str]] = None,
+                                   exclude_topics: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Add topic filtering conditions to MongoDB match query."""
+
+        # Add include topic filters
+        if include_topics:
+            # Convert LIKE patterns to regex patterns and create OR conditions
+            include_conditions = []
+            for topic_pattern in include_topics:
+                # Convert SQL LIKE pattern to regex
+                regex_pattern = topic_pattern.replace('%', '.*').replace('_', '.')
+                include_conditions.append({"topics": {"$regex": regex_pattern, "$options": "i"}})
+
+            if include_conditions:
+                match_conditions["$or"] = include_conditions
+
+        # Add exclude topic filters
+        if exclude_topics:
+            exclude_conditions = []
+            for topic_pattern in exclude_topics:
+                # Convert SQL LIKE pattern to regex
+                regex_pattern = topic_pattern.replace('%', '.*').replace('_', '.')
+                exclude_conditions.append({"topics": {"$not": {"$regex": regex_pattern, "$options": "i"}}})
+
+            if exclude_conditions:
+                match_conditions["$and"] = exclude_conditions
+
+        return match_conditions
+
+    def get_topic_statistics(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get statistics about topic distribution across embeddings.
+
+        Returns:
+            Dictionary mapping topic strings to statistics:
+            {
+                'security.policy': {
+                    'embedding_count': int,
+                    'document_count': int,
+                    'avg_embedding_confidence': float
+                }
+            }
+        """
+        if not self.db:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Use MongoDB aggregation pipeline to get topic statistics
+            pipeline = [
+                # Match embeddings that have topics
+                {"$match": {"topics": {"$exists": True, "$ne": []}}},
+
+                # Unwind topics array to get individual topics
+                {"$unwind": "$topics"},
+
+                # Lookup elements to get doc_id
+                {
+                    "$lookup": {
+                        "from": "elements",
+                        "localField": "element_pk",
+                        "foreignField": "element_pk",
+                        "as": "element"
+                    }
+                },
+
+                # Unwind element array
+                {"$unwind": "$element"},
+
+                # Group by topic to get statistics
+                {
+                    "$group": {
+                        "_id": "$topics",
+                        "embedding_count": {"$sum": 1},
+                        "document_count": {"$addToSet": "$element.doc_id"},
+                        "avg_confidence": {"$avg": "$confidence"}
+                    }
+                },
+
+                # Project final results
+                {
+                    "$project": {
+                        "_id": 0,
+                        "topic": "$_id",
+                        "embedding_count": 1,
+                        "document_count": {"$size": "$document_count"},
+                        "avg_embedding_confidence": "$avg_confidence"
+                    }
+                },
+
+                # Sort by embedding count descending
+                {"$sort": {"embedding_count": -1}}
+            ]
+
+            results = list(self.db.embeddings.aggregate(pipeline))
+
+            # Format results into the expected dictionary structure
+            statistics = {}
+            for result in results:
+                statistics[result["topic"]] = {
+                    'embedding_count': int(result["embedding_count"]),
+                    'document_count': int(result["document_count"]),
+                    'avg_embedding_confidence': float(result["avg_embedding_confidence"])
+                }
+
+            return statistics
+
+        except Exception as e:
+            logger.error(f"Error getting topic statistics: {str(e)}")
+            return {}
+
+    def get_embedding_topics(self, element_pk: int) -> List[str]:
+        """
+        Get topics assigned to a specific embedding.
+
+        Args:
+            element_pk: Element primary key
+
+        Returns:
+            List of topic strings assigned to this embedding
+        """
+        if not self.db:
+            raise ValueError("Database not initialized")
+
+        try:
+            embedding_doc = self.db.embeddings.find_one(
+                {"element_pk": element_pk},
+                {"topics": 1}
+            )
+
+            if not embedding_doc:
+                return []
+
+            return embedding_doc.get("topics", [])
+
+        except Exception as e:
+            logger.error(f"Error getting topics for element {element_pk}: {str(e)}")
             return []

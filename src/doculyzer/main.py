@@ -120,7 +120,7 @@ def ingest_documents(config: Config, source_configs=None, max_link_depth=None):
             _ingest_document_recursively(
                 source, doc_id, db, relationship_detector, embedding_generator,
                 processed_docs, stats, source_config.get('max_link_depth', 1),
-                global_visited_docs
+                global_visited_docs, source_config  # ← Added source_config parameter
             )
             logger.debug(f"Completed document {doc_idx + 1}/{len(documents)}: {doc_id}")
 
@@ -153,7 +153,7 @@ def ingest_documents(config: Config, source_configs=None, max_link_depth=None):
 
 def _ingest_document_recursively(source, doc_id, db, relationship_detector,
                                  embedding_generator: EmbeddingGenerator, processed_docs, stats,
-                                 max_depth, global_visited_docs, current_depth=0):
+                                 max_depth, global_visited_docs, source_config, current_depth=0):  # ← Added source_config parameter
     """
     Recursively ingest a document and its linked documents with global visited tracking.
     Skip documents that haven't changed since their last processing.
@@ -168,6 +168,7 @@ def _ingest_document_recursively(source, doc_id, db, relationship_detector,
         stats: Statistics dictionary to update
         max_depth: Maximum link depth to follow
         global_visited_docs: Global set of all visited document IDs
+        source_config: Source configuration containing topics and other settings
         current_depth: Current depth in the recursion
     """
     from .document_parser.factory import get_parser_for_content
@@ -276,11 +277,21 @@ def _ingest_document_recursively(source, doc_id, db, relationship_detector,
             # Generate embeddings using a consistent interface
             embeddings = embedding_generator.generate_from_elements(parsed_doc['elements'])
 
-            # Store embeddings
-            for element_id, embedding in embeddings.items():
-                db.store_embedding(element_id, embedding)
+            # Get topics from source configuration
+            source_topics = source_config.get('topics', [])
+            logger.debug(f"Using topics from source config: {source_topics}")
 
-            logger.debug(f"Generated and stored {len(embeddings)} embeddings")
+            # Store embeddings with topics (use enhanced method if database supports it)
+            if hasattr(db, 'store_embedding_with_topics') and db.supports_topics():
+                # Use the enhanced method with topics
+                for element_id, embedding in embeddings.items():
+                    db.store_embedding_with_topics(element_id, embedding, source_topics, 1.0)
+                logger.debug(f"Generated and stored {len(embeddings)} embeddings with topics: {source_topics}")
+            else:
+                # Fall back to basic method if topics not supported
+                for element_id, embedding in embeddings.items():
+                    db.store_embedding(element_id, embedding)
+                logger.debug(f"Generated and stored {len(embeddings)} embeddings (topics not supported by database)")
 
         # Update statistics
         stats['documents'] += 1
@@ -308,7 +319,7 @@ def _ingest_document_recursively(source, doc_id, db, relationship_detector,
                 _ingest_document_recursively(
                     source, linked_id, db, relationship_detector,
                     embedding_generator, processed_docs, stats,
-                    max_depth, global_visited_docs, current_depth + 1
+                    max_depth, global_visited_docs, source_config, current_depth + 1  # ← Pass source_config to recursive calls
                 )
                 logger.debug(f"Completed processing linked document: {linked_id}")
         else:

@@ -17,7 +17,7 @@ from . import file
 from . import mongodb
 from . import neo4j_graph
 from . import postgres
-from . import sqlalchemy
+from . import sqlalchemy_
 from . import sqlite
 from .base import DocumentDatabase
 from .element_element import ElementBase
@@ -46,6 +46,6 @@ from .mongodb import MongoDBDocumentDatabase
 from .neo4j_graph import DateTimeEncoder
 from .neo4j_graph import Neo4jDocumentDatabase
 from .postgres import PostgreSQLDocumentDatabase
-from .sqlalchemy import SQLAlchemyDocumentDatabase
+from .sqlalchemy_ import SQLAlchemyDocumentDatabase
 from .sqlite import DateTimeEncoder
 from .sqlite import SQLiteDocumentDatabase
