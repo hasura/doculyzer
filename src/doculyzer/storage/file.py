@@ -2,6 +2,7 @@ import glob
 import json
 import logging
 import os
+import fnmatch
 from typing import Optional, Dict, Any, List, Tuple, Union, TYPE_CHECKING
 
 import time
@@ -19,6 +20,7 @@ else:
 
 from .base import DocumentDatabase
 from .element_relationship import ElementRelationship
+from .element_element import ElementType, ElementBase  # Import existing enum and ElementBase
 
 logger = logging.getLogger(__name__)
 
@@ -419,27 +421,29 @@ class FileDocumentDatabase(DocumentDatabase):
         return None
 
     def find_documents(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
-        """Find documents matching query."""
+        """
+        Find documents matching query with support for LIKE patterns.
+
+        Args:
+            query: Query parameters. Enhanced syntax supports:
+                   - Exact matches: {"doc_type": "pdf"}
+                   - LIKE patterns: {"source_like": "%reports%"} (converted to fnmatch)
+                   - Case-insensitive LIKE: {"source_ilike": "%REPORTS%"}
+                   - List matching: {"doc_type": ["pdf", "docx"]}
+                   - Metadata exact: {"metadata": {"author": "John"}}
+                   - Metadata LIKE: {"metadata_like": {"title": "%annual%"}}
+            limit: Maximum number of results
+
+        Returns:
+            List of matching documents
+        """
         if query is None:
             query = {}
 
         results = []
 
         for doc in self.documents.values():
-            match = True
-
-            for key, value in query.items():
-                if key == "metadata":
-                    # Check metadata fields
-                    for meta_key, meta_value in value.items():
-                        if meta_key not in doc.get("metadata", {}) or doc["metadata"][meta_key] != meta_value:
-                            match = False
-                            break
-                elif key not in doc or doc[key] != value:
-                    match = False
-                    break
-
-            if match:
+            if self._matches_document_query(doc, query):
                 results.append(doc)
                 if len(results) >= limit:
                     break
@@ -447,42 +451,31 @@ class FileDocumentDatabase(DocumentDatabase):
         return results
 
     def find_elements(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
-        """Find elements matching query."""
+        """
+        Find elements matching query with support for LIKE patterns and ElementType enums.
+
+        Args:
+            query: Query parameters. Enhanced syntax supports:
+                   - Exact matches: {"element_type": "header"}
+                   - ElementType enums: {"element_type": ElementType.HEADER}
+                   - Multiple enums: {"element_type": [ElementType.HEADER, ElementType.PARAGRAPH]}
+                   - LIKE patterns: {"content_preview_like": "%important%"}
+                   - Case-insensitive LIKE: {"content_preview_ilike": "%IMPORTANT%"}
+                   - List matching: {"doc_id": ["doc1", "doc2"]}
+                   - Metadata exact: {"metadata": {"section": "intro"}}
+                   - Metadata LIKE: {"metadata_like": {"title": "%chapter%"}}
+            limit: Maximum number of results
+
+        Returns:
+            List of matching elements
+        """
         if query is None:
             query = {}
 
         results = []
 
         for element in self.elements.values():
-            match = True
-
-            for key, value in query.items():
-                if key == "metadata":
-                    # Check metadata fields
-                    for meta_key, meta_value in value.items():
-                        if meta_key not in element.get("metadata", {}) or element["metadata"][meta_key] != meta_value:
-                            match = False
-                            break
-                elif key == "element_type" and isinstance(value, list):
-                    # Handle list of allowed element types
-                    if element.get("element_type") not in value:
-                        match = False
-                        break
-                elif key == "doc_id" and isinstance(value, list):
-                    # Handle list of document IDs to include
-                    if element.get("doc_id") not in value:
-                        match = False
-                        break
-                elif key == "exclude_doc_id" and isinstance(value, list):
-                    # Handle list of document IDs to exclude
-                    if element.get("doc_id") in value:
-                        match = False
-                        break
-                elif key not in element or element[key] != value:
-                    match = False
-                    break
-
-            if match:
+            if self._matches_element_query(element, query):
                 results.append(element)
                 if len(results) >= limit:
                     break
@@ -573,38 +566,7 @@ class FileDocumentDatabase(DocumentDatabase):
                     continue
 
                 # Check if element matches all criteria
-                matches = True
-                for key, value in filter_criteria.items():
-                    if key == "element_type" and isinstance(value, list):
-                        # Handle list of allowed element types
-                        if element.get("element_type") not in value:
-                            matches = False
-                            break
-                    elif key == "doc_id" and isinstance(value, list):
-                        # Handle list of document IDs to include
-                        if element.get("doc_id") not in value:
-                            matches = False
-                            break
-                    elif key == "exclude_doc_id" and isinstance(value, list):
-                        # Handle list of document IDs to exclude
-                        if element.get("doc_id") in value:
-                            matches = False
-                            break
-                    elif key == "exclude_doc_source" and isinstance(value, list):
-                        # Handle list of document sources to exclude
-                        doc_id = element.get("doc_id")
-                        if doc_id:
-                            doc = self.documents.get(doc_id)
-                            if doc and doc.get("source") in value:
-                                matches = False
-                                break
-                    else:
-                        # Simple equality filter
-                        if element.get(key) != value:
-                            matches = False
-                            break
-
-                if matches:
+                if self._matches_filter_criteria(element, filter_criteria):
                     filtered_element_pks.append(element_pk)
         else:
             filtered_element_pks = element_pks_with_embeddings
@@ -710,7 +672,346 @@ class FileDocumentDatabase(DocumentDatabase):
             return []
 
     # ========================================
-    # NEW: TOPIC SUPPORT METHODS
+    # NEW: ENHANCED SEARCH HELPER METHODS
+    # ========================================
+
+    @staticmethod
+    def supports_like_patterns() -> bool:
+        """
+        Indicate whether this backend supports LIKE pattern matching.
+
+        Returns:
+            True since File implementation supports fnmatch patterns
+        """
+        return True
+
+    @staticmethod
+    def supports_case_insensitive_like() -> bool:
+        """
+        Indicate whether this backend supports case-insensitive LIKE (ILIKE).
+
+        Returns:
+            True since File implementation can handle case-insensitive patterns
+        """
+        return True
+
+    @staticmethod
+    def supports_element_type_enums() -> bool:
+        """
+        Indicate whether this backend supports ElementType enum integration.
+
+        Returns:
+            True since File implementation supports ElementType enums
+        """
+        return True
+
+    def _prepare_element_type_query(self, element_types: Union[
+        ElementType,
+        List[ElementType],
+        str,
+        List[str],
+        None
+    ]) -> Optional[List[str]]:
+        """
+        Prepare element type values for queries using existing ElementType enum.
+
+        Args:
+            element_types: ElementType enum(s), string(s), or None
+
+        Returns:
+            List of string values for query, or None
+        """
+        if element_types is None:
+            return None
+
+        if isinstance(element_types, ElementType):
+            return [element_types.value]
+        elif isinstance(element_types, str):
+            return [element_types]
+        elif isinstance(element_types, list):
+            result = []
+            for et in element_types:
+                if isinstance(et, ElementType):
+                    result.append(et.value)
+                elif isinstance(et, str):
+                    result.append(et)
+            return result if result else None
+
+        return None
+
+    @staticmethod
+    def get_element_types_by_category() -> Dict[str, List[ElementType]]:
+        """
+        Get categorized lists of ElementType enums.
+
+        Returns:
+            Dictionary with categorized element types
+        """
+        return {
+            "text_elements": [
+                ElementType.HEADER,
+                ElementType.PARAGRAPH,
+                ElementType.BLOCKQUOTE,
+                ElementType.TEXT_BOX
+            ],
+
+            "structural_elements": [
+                ElementType.ROOT,
+                ElementType.PAGE,
+                ElementType.BODY,
+                ElementType.PAGE_HEADER,
+                ElementType.PAGE_FOOTER
+            ],
+
+            "list_elements": [
+                ElementType.LIST,
+                ElementType.LIST_ITEM
+            ],
+
+            "table_elements": [
+                ElementType.TABLE,
+                ElementType.TABLE_ROW,
+                ElementType.TABLE_HEADER_ROW,
+                ElementType.TABLE_CELL,
+                ElementType.TABLE_HEADER
+            ],
+
+            "media_elements": [
+                ElementType.IMAGE,
+                ElementType.CHART,
+                ElementType.SHAPE,
+                ElementType.SHAPE_GROUP
+            ],
+
+            "code_elements": [
+                ElementType.CODE_BLOCK
+            ],
+
+            "presentation_elements": [
+                ElementType.SLIDE,
+                ElementType.SLIDE_NOTES,
+                ElementType.PRESENTATION_BODY,
+                ElementType.SLIDE_MASTERS,
+                ElementType.SLIDE_TEMPLATES,
+                ElementType.SLIDE_LAYOUT,
+                ElementType.SLIDE_MASTER
+            ],
+
+            "data_elements": [
+                ElementType.JSON_OBJECT,
+                ElementType.JSON_ARRAY,
+                ElementType.JSON_FIELD,
+                ElementType.JSON_ITEM
+            ],
+
+            "xml_elements": [
+                ElementType.XML_ELEMENT,
+                ElementType.XML_TEXT,
+                ElementType.XML_LIST,
+                ElementType.XML_OBJECT
+            ]
+        }
+
+    def find_elements_by_category(self, category: str, **other_filters) -> List[Dict[str, Any]]:
+        """
+        Find elements by predefined category using ElementType enums.
+
+        Args:
+            category: Category name from get_element_types_by_category()
+            **other_filters: Additional filter criteria
+
+        Returns:
+            List of matching elements
+
+        Examples:
+            find_elements_by_category("text_elements")
+            find_elements_by_category("table_elements", content_preview_like="%data%")
+        """
+        categories = self.get_element_types_by_category()
+
+        if category not in categories:
+            available = list(categories.keys())
+            raise ValueError(f"Unknown category: {category}. Available: {available}")
+
+        element_types = categories[category]
+        query = {"element_type": element_types}
+        query.update(other_filters)
+
+        return self.find_elements(query)
+
+    def find_elements_ilike(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Find elements with case-insensitive LIKE support.
+
+        File implementation supports case-insensitive patterns natively.
+
+        Args:
+            query: Query parameters with _ilike suffix support
+            limit: Maximum number of results
+
+        Returns:
+            List of matching elements
+        """
+        # File implementation supports case-insensitive patterns, so just use regular find_elements
+        return self.find_elements(query, limit)
+
+    def _convert_like_to_fnmatch(self, like_pattern: str) -> str:
+        """
+        Convert SQL LIKE pattern to fnmatch pattern.
+
+        Args:
+            like_pattern: SQL LIKE pattern (e.g., "%abc%", "abc_def")
+
+        Returns:
+            fnmatch pattern
+        """
+        # Convert % to * (match any characters)
+        pattern = like_pattern.replace('%', '*')
+        # Convert _ to ? (match single character)
+        pattern = pattern.replace('_', '?')
+        return pattern
+
+    def _matches_document_query(self, doc: Dict[str, Any], query: Dict[str, Any]) -> bool:
+        """Check if a document matches the query criteria."""
+        for key, value in query.items():
+            if key == "metadata":
+                # Handle metadata exact matches
+                for meta_key, meta_value in value.items():
+                    if meta_key not in doc.get("metadata", {}) or doc["metadata"][meta_key] != meta_value:
+                        return False
+            elif key == "metadata_like":
+                # Handle metadata LIKE patterns
+                for meta_key, meta_value in value.items():
+                    if meta_key not in doc.get("metadata", {}):
+                        return False
+                    pattern = self._convert_like_to_fnmatch(meta_value)
+                    if not fnmatch.fnmatch(str(doc["metadata"][meta_key]), pattern):
+                        return False
+            elif key == "metadata_ilike":
+                # Handle case-insensitive metadata LIKE patterns
+                for meta_key, meta_value in value.items():
+                    if meta_key not in doc.get("metadata", {}):
+                        return False
+                    pattern = self._convert_like_to_fnmatch(meta_value)
+                    if not fnmatch.fnmatch(str(doc["metadata"][meta_key]).lower(), pattern.lower()):
+                        return False
+            elif key.endswith("_ilike"):
+                # Case-insensitive LIKE pattern
+                field_name = key[:-6]  # Remove '_ilike' suffix
+                if field_name not in doc:
+                    return False
+                pattern = self._convert_like_to_fnmatch(value)
+                if not fnmatch.fnmatch(str(doc[field_name]).lower(), pattern.lower()):
+                    return False
+            elif key.endswith("_like"):
+                # LIKE pattern for regular fields
+                field_name = key[:-5]  # Remove '_like' suffix
+                if field_name not in doc:
+                    return False
+                pattern = self._convert_like_to_fnmatch(value)
+                if not fnmatch.fnmatch(str(doc[field_name]), pattern):
+                    return False
+            elif isinstance(value, list):
+                # Handle list fields with IN clause
+                if doc.get(key) not in value:
+                    return False
+            else:
+                # Exact match for regular fields
+                if key not in doc or doc[key] != value:
+                    return False
+
+        return True
+
+    def _matches_element_query(self, element: Dict[str, Any], query: Dict[str, Any]) -> bool:
+        """Check if an element matches the query criteria."""
+        for key, value in query.items():
+            if key == "metadata":
+                # Handle metadata exact matches
+                for meta_key, meta_value in value.items():
+                    if meta_key not in element.get("metadata", {}) or element["metadata"][meta_key] != meta_value:
+                        return False
+            elif key == "metadata_like":
+                # Handle metadata LIKE patterns
+                for meta_key, meta_value in value.items():
+                    if meta_key not in element.get("metadata", {}):
+                        return False
+                    pattern = self._convert_like_to_fnmatch(meta_value)
+                    if not fnmatch.fnmatch(str(element["metadata"][meta_key]), pattern):
+                        return False
+            elif key == "metadata_ilike":
+                # Handle case-insensitive metadata LIKE patterns
+                for meta_key, meta_value in value.items():
+                    if meta_key not in element.get("metadata", {}):
+                        return False
+                    pattern = self._convert_like_to_fnmatch(meta_value)
+                    if not fnmatch.fnmatch(str(element["metadata"][meta_key]).lower(), pattern.lower()):
+                        return False
+            elif key.endswith("_ilike"):
+                # Case-insensitive LIKE pattern
+                field_name = key[:-6]  # Remove '_ilike' suffix
+                if field_name not in element:
+                    return False
+                pattern = self._convert_like_to_fnmatch(value)
+                if not fnmatch.fnmatch(str(element[field_name]).lower(), pattern.lower()):
+                    return False
+            elif key.endswith("_like"):
+                # LIKE pattern for regular fields
+                field_name = key[:-5]  # Remove '_like' suffix
+                if field_name not in element:
+                    return False
+                pattern = self._convert_like_to_fnmatch(value)
+                if not fnmatch.fnmatch(str(element[field_name]), pattern):
+                    return False
+            elif key == "element_type":
+                # Handle ElementType enums, strings, and lists
+                type_values = self._prepare_element_type_query(value)
+                if type_values:
+                    if element.get("element_type") not in type_values:
+                        return False
+                else:
+                    return False
+            elif isinstance(value, list):
+                # Handle other list fields with IN clause
+                if element.get(key) not in value:
+                    return False
+            else:
+                # Exact match for regular fields
+                if key not in element or element[key] != value:
+                    return False
+
+        return True
+
+    def _matches_filter_criteria(self, element: Dict[str, Any], filter_criteria: Dict[str, Any]) -> bool:
+        """Check if an element matches filter criteria for embedding search."""
+        for key, value in filter_criteria.items():
+            if key == "element_type" and isinstance(value, list):
+                # Handle list of allowed element types
+                if element.get("element_type") not in value:
+                    return False
+            elif key == "doc_id" and isinstance(value, list):
+                # Handle list of document IDs to include
+                if element.get("doc_id") not in value:
+                    return False
+            elif key == "exclude_doc_id" and isinstance(value, list):
+                # Handle list of document IDs to exclude
+                if element.get("doc_id") in value:
+                    return False
+            elif key == "exclude_doc_source" and isinstance(value, list):
+                # Handle list of document sources to exclude
+                doc_id = element.get("doc_id")
+                if doc_id:
+                    doc = self.documents.get(doc_id)
+                    if doc and doc.get("source") in value:
+                        return False
+            else:
+                # Simple equality filter
+                if element.get(key) != value:
+                    return False
+
+        return True
+
+    # ========================================
+    # TOPIC SUPPORT METHODS (Enhanced)
     # ========================================
 
     def supports_topics(self) -> bool:
@@ -858,18 +1159,19 @@ class FileDocumentDatabase(DocumentDatabase):
 
         return results[:limit]
 
-    def _matches_topic_filters(self, topics: List[str],
+    @staticmethod
+    def _matches_topic_filters(topics: List[str],
                                include_topics: Optional[List[str]] = None,
                                exclude_topics: Optional[List[str]] = None) -> bool:
         """Check if topics match the include/exclude filters using pattern matching."""
-        import fnmatch
-
         # Check include filters - at least one must match
         if include_topics:
             include_match = False
             for topic in topics:
                 for pattern in include_topics:
-                    if fnmatch.fnmatch(topic, pattern):
+                    # Convert LIKE pattern to fnmatch pattern
+                    fnmatch_pattern = pattern.replace('%', '*').replace('_', '?')
+                    if fnmatch.fnmatch(topic, fnmatch_pattern):
                         include_match = True
                         break
                 if include_match:
@@ -882,7 +1184,9 @@ class FileDocumentDatabase(DocumentDatabase):
         if exclude_topics:
             for topic in topics:
                 for pattern in exclude_topics:
-                    if fnmatch.fnmatch(topic, pattern):
+                    # Convert LIKE pattern to fnmatch pattern
+                    fnmatch_pattern = pattern.replace('%', '*').replace('_', '?')
+                    if fnmatch.fnmatch(topic, fnmatch_pattern):
                         return False
 
         return True
@@ -966,6 +1270,134 @@ class FileDocumentDatabase(DocumentDatabase):
         except Exception as e:
             logger.error(f"Error getting topics for element {element_pk}: {str(e)}")
             return []
+
+    # ========================================
+    # HIERARCHY METHODS
+    # ========================================
+
+    def get_results_outline(self, elements: List[Tuple[int, float]]) -> List["ElementHierarchical"]:
+        """
+        For an arbitrary list of element pk search results, finds the root node of the source, and each
+        ancestor element, to create a root -> element array of arrays like this:
+        [(<parent element>, score, [children])]
+
+        (Note score is None if the element was not in the results param)
+
+        Then each additional element is analyzed, its hierarchy materialized, and merged into
+        the final result.
+        """
+        from .element_element import ElementHierarchical
+
+        # Dictionary to store element_pk -> score mapping for quick lookup
+        element_scores = {element_pk: score for element_pk, score in elements}
+
+        # Set to track processed element_pks to avoid duplicates
+        processed_elements = set()
+
+        # Final result structure
+        result_tree: List[ElementHierarchical] = []
+
+        # Process each element from the search results
+        for element_pk, score in elements:
+            if element_pk in processed_elements:
+                continue
+
+            # Find the complete ancestry path for this element
+            ancestry_path = self._get_element_ancestry_path(element_pk)
+
+            if not ancestry_path:
+                continue
+
+            # Mark this element as processed
+            processed_elements.add(element_pk)
+
+            # Start with the root level
+            current_level = result_tree
+
+            # Process each ancestor from root to the target element
+            for i, ancestor in enumerate(ancestry_path):
+                ancestor_pk = ancestor.element_pk
+
+                # Check if this ancestor is already in the current level
+                existing_idx = None
+                for idx, existing_element in enumerate(current_level):
+                    if existing_element.element_pk == ancestor_pk:
+                        existing_idx = idx
+                        break
+
+                if existing_idx is not None:
+                    # Ancestor exists, get its children
+                    current_level = current_level[existing_idx].child_elements  # Get children list
+                else:
+                    # Ancestor doesn't exist, add it with its score (or None if not in search results)
+                    ancestor_score = element_scores.get(ancestor_pk)
+                    children = []
+                    ancestor.score = ancestor_score
+                    h_ancestor = ancestor.to_hierarchical()
+                    h_ancestor.child_elements = children
+                    current_level.append(h_ancestor)
+                    current_level = children
+
+        return result_tree
+
+    def _get_element_ancestry_path(self, element_pk: int) -> List[ElementBase]:
+        """
+        Get the complete ancestry path for an element, from root to the element itself.
+
+        Uses parent_id to find parents instead of relationships.
+        """
+        # Get the element
+        element_dict = self.get_element(element_pk)
+        if not element_dict:
+            return []
+
+        # Convert to ElementBase instance
+        element = ElementBase(**element_dict)
+
+        # Start building the ancestry path with the element itself
+        ancestry = [element]
+
+        # Track to avoid circular references
+        visited = {element_pk}
+
+        # Current element to process
+        current_pk = element_pk
+
+        # Traverse up the hierarchy using parent_id
+        while True:
+            # Get the current element
+            current_element = self.get_element(current_pk)
+            if not current_element:
+                break
+
+            # Get parent ID
+            parent_id = current_element.get('parent_id')
+            if not parent_id:
+                break
+
+            # Get the parent element
+            parent_dict = self.get_element(parent_id)
+            if not parent_dict:
+                break
+
+            # Check for circular references
+            parent_pk = parent_dict.get('id') or parent_dict.get('pk') or parent_dict.get('element_id')
+            if parent_pk in visited:
+                break
+
+            # Convert to ElementBase
+            parent = ElementBase(**parent_dict)
+
+            # Add to visited set
+            visited.add(parent_pk)
+
+            # Add parent to the beginning of the ancestry list (root first)
+            ancestry.insert(0, parent)
+
+            # Move up to the parent
+            current_pk = parent_id
+
+        return ancestry
 
     def _cosine_similarity(self, vec1: VectorType, vec2: VectorType) -> float:
         """

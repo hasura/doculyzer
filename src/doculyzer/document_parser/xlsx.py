@@ -58,7 +58,8 @@ class XlsxParser(DocumentParser):
     """
 
     # Update the _extract_cell_style method to properly handle RGB objects
-    def _extract_cell_style(self, cell) -> Dict[str, Any]:
+    @staticmethod
+    def _extract_cell_style(cell) -> Dict[str, Any]:
         """
         Extract style information from an Excel cell with proper serialization.
 

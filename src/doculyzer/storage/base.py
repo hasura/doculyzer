@@ -1,8 +1,7 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Union
 
-from .element_element import ElementBase
-from .element_element import ElementHierarchical
+from .element_element import ElementBase, ElementType, ElementHierarchical
 from .element_relationship import ElementRelationship
 
 
@@ -126,10 +125,16 @@ class DocumentDatabase(ABC):
     @abstractmethod
     def find_documents(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
         """
-        Find documents matching query.
+        Find documents matching query with support for LIKE patterns.
 
         Args:
-            query: Query parameters
+            query: Query parameters. Enhanced syntax supports:
+                   - Exact matches: {"doc_type": "pdf"}
+                   - LIKE patterns: {"source_like": "%reports%"}
+                   - Case-insensitive LIKE: {"source_ilike": "%REPORTS%"} (if supported)
+                   - List matching: {"doc_type": ["pdf", "docx"]}
+                   - Metadata exact: {"metadata": {"author": "John"}}
+                   - Metadata LIKE: {"metadata_like": {"title": "%annual%"}}
             limit: Maximum number of results
 
         Returns:
@@ -140,10 +145,18 @@ class DocumentDatabase(ABC):
     @abstractmethod
     def find_elements(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
         """
-        Find elements matching query.
+        Find elements matching query with support for LIKE patterns and ElementType enums.
 
         Args:
-            query: Query parameters
+            query: Query parameters. Enhanced syntax supports:
+                   - Exact matches: {"element_type": "header"}
+                   - ElementType enums: {"element_type": ElementType.HEADER}
+                   - Multiple enums: {"element_type": [ElementType.HEADER, ElementType.PARAGRAPH]}
+                   - LIKE patterns: {"content_preview_like": "%summary%"}
+                   - Case-insensitive LIKE: {"content_preview_ilike": "%SUMMARY%"} (if supported)
+                   - List matching: {"doc_id": ["doc1", "doc2"]}
+                   - Metadata exact: {"metadata": {"section": "intro"}}
+                   - Metadata LIKE: {"metadata_like": {"title": "%chapter%"}}
             limit: Maximum number of results
 
         Returns:
@@ -244,7 +257,215 @@ class DocumentDatabase(ABC):
         pass
 
     # ========================================
-    # NEW: SIMPLIFIED TOPIC SUPPORT
+    # NEW: ENHANCED SEARCH HELPER METHODS
+    # ========================================
+
+    @staticmethod
+    def supports_like_patterns() -> bool:
+        """
+        Indicate whether this backend supports LIKE pattern matching.
+
+        Returns:
+            True if LIKE patterns are supported, False otherwise
+        """
+        return True  # Default: assume LIKE support
+
+    @staticmethod
+    def supports_case_insensitive_like() -> bool:
+        """
+        Indicate whether this backend supports case-insensitive LIKE (ILIKE).
+
+        Returns:
+            True if ILIKE patterns are supported, False otherwise
+        """
+        return False  # Default: assume no ILIKE support
+
+    @staticmethod
+    def supports_element_type_enums() -> bool:
+        """
+        Indicate whether this backend supports ElementType enum integration.
+
+        Returns:
+            True if ElementType enums are supported, False otherwise
+        """
+        return True  # Default: assume enum support
+
+    @staticmethod
+    def prepare_element_type_query(element_types: Union[
+        ElementType,
+        List[ElementType],
+        str,
+        List[str],
+        None
+    ]) -> Optional[List[str]]:
+        """
+        Prepare element type values for database queries.
+
+        Default implementation that subclasses can override.
+
+        Args:
+            element_types: ElementType enum(s), string(s), or None
+
+        Returns:
+            List of string values for database query, or None
+        """
+        if element_types is None:
+            return None
+
+        if isinstance(element_types, ElementType):
+            return [element_types.value]
+        elif isinstance(element_types, str):
+            return [element_types]
+        elif isinstance(element_types, list):
+            result = []
+            for et in element_types:
+                if isinstance(et, ElementType):
+                    result.append(et.value)
+                elif isinstance(et, str):
+                    result.append(et)
+            return result if result else None
+
+        return None
+
+    @staticmethod
+    def get_element_types_by_category() -> Dict[str, List[ElementType]]:
+        """
+        Get categorized lists of ElementType enums.
+
+        Default implementation that subclasses can override.
+
+        Returns:
+            Dictionary with categorized element types
+        """
+        return {
+            "text_elements": [
+                ElementType.HEADER,
+                ElementType.PARAGRAPH,
+                ElementType.BLOCKQUOTE,
+                ElementType.TEXT_BOX
+            ],
+
+            "structural_elements": [
+                ElementType.ROOT,
+                ElementType.PAGE,
+                ElementType.BODY,
+                ElementType.PAGE_HEADER,
+                ElementType.PAGE_FOOTER
+            ],
+
+            "list_elements": [
+                ElementType.LIST,
+                ElementType.LIST_ITEM
+            ],
+
+            "table_elements": [
+                ElementType.TABLE,
+                ElementType.TABLE_ROW,
+                ElementType.TABLE_HEADER_ROW,
+                ElementType.TABLE_CELL,
+                ElementType.TABLE_HEADER
+            ],
+
+            "media_elements": [
+                ElementType.IMAGE,
+                ElementType.CHART,
+                ElementType.SHAPE,
+                ElementType.SHAPE_GROUP
+            ],
+
+            "code_elements": [
+                ElementType.CODE_BLOCK
+            ],
+
+            "presentation_elements": [
+                ElementType.SLIDE,
+                ElementType.SLIDE_NOTES,
+                ElementType.PRESENTATION_BODY,
+                ElementType.SLIDE_MASTERS,
+                ElementType.SLIDE_TEMPLATES,
+                ElementType.SLIDE_LAYOUT,
+                ElementType.SLIDE_MASTER
+            ],
+
+            "data_elements": [
+                ElementType.JSON_OBJECT,
+                ElementType.JSON_ARRAY,
+                ElementType.JSON_FIELD,
+                ElementType.JSON_ITEM
+            ],
+
+            "xml_elements": [
+                ElementType.XML_ELEMENT,
+                ElementType.XML_TEXT,
+                ElementType.XML_LIST,
+                ElementType.XML_OBJECT
+            ]
+        }
+
+    def find_elements_by_category(self, category: str, **other_filters) -> List[Dict[str, Any]]:
+        """
+        Find elements by predefined category using ElementType enums.
+
+        Default implementation that subclasses can override for optimization.
+
+        Args:
+            category: Category name from get_element_types_by_category()
+            **other_filters: Additional filter criteria
+
+        Returns:
+            List of matching elements
+
+        Examples:
+            find_elements_by_category("text_elements")
+            find_elements_by_category("table_elements", content_preview_like="%data%")
+        """
+        categories = self.get_element_types_by_category()
+
+        if category not in categories:
+            available = list(categories.keys())
+            raise ValueError(f"Unknown category: {category}. Available: {available}")
+
+        element_types = categories[category]
+        query = {"element_type": element_types}
+        query.update(other_filters)
+
+        return self.find_elements(query)
+
+    def find_elements_ilike(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Find elements with case-insensitive LIKE support.
+
+        Default implementation falls back to regular find_elements.
+        Subclasses should override if they support native ILIKE.
+
+        Args:
+            query: Query parameters with _ilike suffix support
+            limit: Maximum number of results
+
+        Returns:
+            List of matching elements
+        """
+        if not self.supports_case_insensitive_like():
+            # Fallback: convert _ilike to _like and warn
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning("Case-insensitive LIKE not supported, falling back to case-sensitive")
+
+            if query:
+                # Convert _ilike keys to _like keys
+                converted_query = {}
+                for key, value in query.items():
+                    if key.endswith("_ilike"):
+                        new_key = key[:-6] + "_like"  # Replace _ilike with _like
+                        converted_query[new_key] = value
+                    else:
+                        converted_query[key] = value
+                query = converted_query
+
+        return self.find_elements(query, limit)
+
+    # ========================================
+    # EXISTING TOPIC SUPPORT (unchanged)
     # ========================================
 
     def supports_topics(self) -> bool:

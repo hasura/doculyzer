@@ -959,7 +959,8 @@ class SharePointContentSource(ContentSource):
             logger.error(f"Error processing folder {folder_url}: {str(e)}")
             return []
 
-    def _extract_document_info(self, source_id: str) -> Dict[str, Any]:
+    @staticmethod
+    def _extract_document_info(source_id: str) -> Dict[str, Any]:
         """
         Extract document information from source ID.
 
@@ -1030,7 +1031,8 @@ class SharePointContentSource(ContentSource):
         # If include patterns are configured and none matched, exclude
         return False
 
-    def _is_system_library(self, library_name: str) -> bool:
+    @staticmethod
+    def _is_system_library(library_name: str) -> bool:
         """
         Check if a library is a system library.
 
@@ -1094,7 +1096,8 @@ class SharePointContentSource(ContentSource):
 
         return True  # Default to treating it as a SharePoint link if it's not an external URL
 
-    def _normalize_sharepoint_url(self, url: str, site_url: str) -> Optional[str]:
+    @staticmethod
+    def _normalize_sharepoint_url(url: str, site_url: str) -> Optional[str]:
         """
         Normalize a SharePoint URL to a standard format.
 

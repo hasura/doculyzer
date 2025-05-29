@@ -27,6 +27,7 @@ else:
 
 from .base import DocumentDatabase
 from .element_relationship import ElementRelationship
+from .element_element import ElementType  # Import existing enum
 
 logger = logging.getLogger(__name__)
 
@@ -761,7 +762,22 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
             raise
 
     def find_documents(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
-        """Find documents matching query."""
+        """
+        Find documents matching query with support for LIKE patterns.
+
+        Args:
+            query: Query parameters. Use '_like' suffix for LIKE patterns.
+                   Examples:
+                   - {"doc_type": "pdf"} - exact match
+                   - {"source_like": "%reports%"} - LIKE pattern
+                   - {"source_ilike": "%REPORTS%"} - case-insensitive LIKE
+                   - {"metadata": {"author": "John"}} - metadata exact match
+                   - {"metadata_like": {"title": "%annual%"}} - metadata LIKE pattern
+            limit: Maximum number of results
+
+        Returns:
+            List of matching documents
+        """
         if not self.cursor:
             raise ValueError("Database not initialized")
 
@@ -775,11 +791,37 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
 
             for key, value in query.items():
                 if key == "metadata":
-                    # Metadata filters require special handling with JSONB
+                    # Metadata filters require special handling with JSONB (exact match)
                     for meta_key, meta_value in value.items():
-                        conditions.append(f"metadata->>'%s' = %s")
+                        conditions.append("metadata->>%s = %s")
                         params.extend([meta_key, str(meta_value)])
+                elif key == "metadata_like":
+                    # Metadata LIKE filters
+                    for meta_key, meta_value in value.items():
+                        conditions.append("metadata->>%s LIKE %s")
+                        params.extend([meta_key, str(meta_value)])
+                elif key == "metadata_ilike":
+                    # Case-insensitive metadata LIKE filters
+                    for meta_key, meta_value in value.items():
+                        conditions.append("metadata->>%s ILIKE %s")
+                        params.extend([meta_key, str(meta_value)])
+                elif key.endswith("_ilike"):
+                    # Case-insensitive LIKE pattern
+                    field_name = key[:-6]  # Remove '_ilike' suffix
+                    conditions.append(f"{field_name} ILIKE %s")
+                    params.append(value)
+                elif key.endswith("_like"):
+                    # LIKE pattern for regular fields
+                    field_name = key[:-5]  # Remove '_like' suffix
+                    conditions.append(f"{field_name} LIKE %s")
+                    params.append(value)
+                elif isinstance(value, list):
+                    # Handle list fields with IN clause
+                    placeholders = ', '.join(['%s'] * len(value))
+                    conditions.append(f"{key} IN ({placeholders})")
+                    params.extend(value)
                 else:
+                    # Exact match for regular fields
                     conditions.append(f"{key} = %s")
                     params.append(value)
 
@@ -808,7 +850,26 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
         return documents
 
     def find_elements(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
-        """Find elements matching query."""
+        """
+        Find elements matching query with support for LIKE patterns and ElementType enums.
+
+        Args:
+            query: Query parameters. Use '_like' suffix for LIKE patterns.
+                   Examples:
+                   - {"element_type": "header"} - exact match with string
+                   - {"element_type": ElementType.HEADER} - exact match with enum
+                   - {"element_type": [ElementType.HEADER, ElementType.PARAGRAPH]} - enum list
+                   - {"element_type_like": "head%"} - LIKE pattern
+                   - {"element_type_ilike": "HEAD%"} - case-insensitive LIKE
+                   - {"content_preview_like": "%important%"} - LIKE pattern
+                   - {"doc_id": ["doc1", "doc2"]} - list for IN clause
+                   - {"metadata": {"section": "intro"}} - metadata exact match
+                   - {"metadata_like": {"title": "%summary%"}} - metadata LIKE pattern
+            limit: Maximum number of results
+
+        Returns:
+            List of matching elements
+        """
         if not self.cursor:
             raise ValueError("Database not initialized")
 
@@ -822,16 +883,49 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
 
             for key, value in query.items():
                 if key == "metadata":
-                    # Metadata filters require special handling with JSONB
+                    # Metadata filters require special handling with JSONB (exact match)
                     for meta_key, meta_value in value.items():
-                        conditions.append(f"metadata->>'%s' = %s")
+                        conditions.append("metadata->>%s = %s")
                         params.extend([meta_key, str(meta_value)])
-                elif key == "element_type" and isinstance(value, list):
-                    # Handle list of element types
+                elif key == "metadata_like":
+                    # Metadata LIKE filters
+                    for meta_key, meta_value in value.items():
+                        conditions.append("metadata->>%s LIKE %s")
+                        params.extend([meta_key, str(meta_value)])
+                elif key == "metadata_ilike":
+                    # Case-insensitive metadata LIKE filters
+                    for meta_key, meta_value in value.items():
+                        conditions.append("metadata->>%s ILIKE %s")
+                        params.extend([meta_key, str(meta_value)])
+                elif key.endswith("_ilike"):
+                    # Case-insensitive LIKE pattern
+                    field_name = key[:-6]  # Remove '_ilike' suffix
+                    conditions.append(f"{field_name} ILIKE %s")
+                    params.append(value)
+                elif key.endswith("_like"):
+                    # LIKE pattern for regular fields
+                    field_name = key[:-5]  # Remove '_like' suffix
+                    conditions.append(f"{field_name} LIKE %s")
+                    params.append(value)
+                elif key == "element_type":
+                    # Handle ElementType enums, strings, and lists
+                    type_values = self._prepare_element_type_query(value)
+                    if type_values:
+                        if len(type_values) == 1:
+                            conditions.append("element_type = %s")
+                            params.append(type_values[0])
+                        else:
+                            placeholders = ', '.join(['%s'] * len(type_values))
+                            conditions.append(f"element_type IN ({placeholders})")
+                            params.extend(type_values)
+                elif isinstance(value, list):
+                    # Handle other list fields with IN clause
+                    field_name = key
                     placeholders = ', '.join(['%s'] * len(value))
-                    conditions.append(f"element_type IN ({placeholders})")
+                    conditions.append(f"{field_name} IN ({placeholders})")
                     params.extend(value)
                 else:
+                    # Exact match for regular fields
                     conditions.append(f"{key} = %s")
                     params.append(value)
 
@@ -1010,14 +1104,41 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
             # Add WHERE clauses if we have filter criteria
             if filter_criteria:
                 conditions = []
-                # [filter code remains unchanged]
+                for key, value in filter_criteria.items():
+                    if key == "element_type" and isinstance(value, list):
+                        # Handle list of allowed element types
+                        placeholders = ', '.join(['%s'] * len(value))
+                        conditions.append(f"e.element_type IN ({placeholders})")
+                        params.extend(value)
+                    elif key == "doc_id" and isinstance(value, list):
+                        # Handle list of document IDs to include
+                        placeholders = ', '.join(['%s'] * len(value))
+                        conditions.append(f"e.doc_id IN ({placeholders})")
+                        params.extend(value)
+                    elif key == "exclude_doc_id" and isinstance(value, list):
+                        # Handle list of document IDs to exclude
+                        placeholders = ', '.join(['%s'] * len(value))
+                        conditions.append(f"e.doc_id NOT IN ({placeholders})")
+                        params.extend(value)
+                    elif key == "exclude_doc_source" and isinstance(value, list):
+                        # Handle list of document sources to exclude
+                        placeholders = ', '.join(['%s'] * len(value))
+                        conditions.append(f"d.source NOT IN ({placeholders})")
+                        params.extend(value)
+                    else:
+                        # Simple equality filter
+                        conditions.append(f"e.{key} = %s")
+                        params.append(value)
+
+                if conditions:
+                    sql += " WHERE " + " AND ".join(conditions)
 
             # FIXED ORDER BY CLAUSE - order by similarity DESC instead of by distance
             sql += """
             ORDER BY similarity DESC
             LIMIT %s
             """
-            params.extend([limit])  # We no longer need to repeat the vector
+            params.append(limit)
 
             # Execute the query
             self.cursor.execute(sql, params)
@@ -1431,7 +1552,255 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
         return float(dot_product / (magnitude1 * magnitude2))
 
     # ========================================
-    # NEW: TOPIC SUPPORT METHODS
+    # NEW: ENHANCED SEARCH HELPER METHODS
+    # ========================================
+
+    def _prepare_element_type_query(self, element_types: Union[
+        ElementType,
+        List[ElementType],
+        str,
+        List[str],
+        None
+    ]) -> Optional[List[str]]:
+        """
+        Prepare element type values for database queries using existing ElementType enum.
+
+        Args:
+            element_types: ElementType enum(s), string(s), or None
+
+        Returns:
+            List of string values for database query, or None
+        """
+        if element_types is None:
+            return None
+
+        if isinstance(element_types, ElementType):
+            return [element_types.value]
+        elif isinstance(element_types, str):
+            return [element_types]
+        elif isinstance(element_types, list):
+            result = []
+            for et in element_types:
+                if isinstance(et, ElementType):
+                    result.append(et.value)
+                elif isinstance(et, str):
+                    result.append(et)
+            return result if result else None
+
+        return None
+
+    def get_element_types_by_category(self):
+        """
+        Get categorized lists of ElementType enums from your existing enum.
+
+        Returns:
+            Dictionary with categorized element types
+        """
+        return {
+            "text_elements": [
+                ElementType.HEADER,
+                ElementType.PARAGRAPH,
+                ElementType.BLOCKQUOTE,
+                ElementType.TEXT_BOX
+            ],
+
+            "structural_elements": [
+                ElementType.ROOT,
+                ElementType.PAGE,
+                ElementType.BODY,
+                ElementType.PAGE_HEADER,
+                ElementType.PAGE_FOOTER
+            ],
+
+            "list_elements": [
+                ElementType.LIST,
+                ElementType.LIST_ITEM
+            ],
+
+            "table_elements": [
+                ElementType.TABLE,
+                ElementType.TABLE_ROW,
+                ElementType.TABLE_HEADER_ROW,
+                ElementType.TABLE_CELL,
+                ElementType.TABLE_HEADER
+            ],
+
+            "media_elements": [
+                ElementType.IMAGE,
+                ElementType.CHART,
+                ElementType.SHAPE,
+                ElementType.SHAPE_GROUP
+            ],
+
+            "code_elements": [
+                ElementType.CODE_BLOCK
+            ],
+
+            "presentation_elements": [
+                ElementType.SLIDE,
+                ElementType.SLIDE_NOTES,
+                ElementType.PRESENTATION_BODY,
+                ElementType.SLIDE_MASTERS,
+                ElementType.SLIDE_TEMPLATES,
+                ElementType.SLIDE_LAYOUT,
+                ElementType.SLIDE_MASTER
+            ],
+
+            "data_elements": [
+                ElementType.JSON_OBJECT,
+                ElementType.JSON_ARRAY,
+                ElementType.JSON_FIELD,
+                ElementType.JSON_ITEM
+            ],
+
+            "xml_elements": [
+                ElementType.XML_ELEMENT,
+                ElementType.XML_TEXT,
+                ElementType.XML_LIST,
+                ElementType.XML_OBJECT
+            ]
+        }
+
+    def find_elements_by_category(self, category: str, **other_filters) -> List[Dict[str, Any]]:
+        """
+        Find elements by predefined category using your existing ElementType enum.
+
+        Args:
+            category: Category name from get_element_types_by_category()
+            **other_filters: Additional filter criteria
+
+        Returns:
+            List of matching elements
+
+        Examples:
+            find_elements_by_category("text_elements")
+            find_elements_by_category("table_elements", content_preview_like="%data%")
+        """
+        categories = self.get_element_types_by_category()
+
+        if category not in categories:
+            raise ValueError(f"Unknown category: {category}. Available: {list(categories.keys())}")
+
+        element_types = categories[category]
+        query = {"element_type": element_types}
+        query.update(other_filters)
+
+        return self.find_elements(query)
+
+    def find_elements_ilike(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Find elements with case-insensitive LIKE support.
+
+        PostgreSQL has native ILIKE support.
+
+        Args:
+            query: Query parameters with _ilike suffix support
+            limit: Maximum number of results
+
+        Returns:
+            List of matching elements
+        """
+        # PostgreSQL has native ILIKE, so just use the regular find_elements method
+        return self.find_elements(query, limit)
+
+    def supports_like_patterns(self) -> bool:
+        """PostgreSQL supports LIKE patterns."""
+        return True
+
+    def supports_case_insensitive_like(self) -> bool:
+        """PostgreSQL has native ILIKE support."""
+        return True
+
+    def supports_element_type_enums(self) -> bool:
+        """PostgreSQL supports ElementType enum integration."""
+        return True
+
+    def create_search_indexes(self):
+        """
+        Create additional indexes to optimize LIKE and enum searches.
+        Call this after database initialization for better performance.
+        """
+        if not self.cursor:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Index for content preview LIKE searches
+            self.cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_elements_content_preview_gin 
+            ON elements USING gin(content_preview gin_trgm_ops)
+            """)
+
+            # Index for element type searches
+            self.cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_elements_type_gin 
+            ON elements USING gin(element_type gin_trgm_ops)
+            """)
+
+            # Index for document source LIKE searches
+            self.cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_documents_source_gin 
+            ON documents USING gin(source gin_trgm_ops)
+            """)
+
+            # Create trigram extension if available for better LIKE performance
+            try:
+                self.cursor.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+                logger.info("Created trigram extension for better LIKE performance")
+            except Exception as e:
+                logger.debug(f"Could not create trigram extension: {str(e)}")
+
+            self.conn.commit()
+            logger.info("Created additional search optimization indexes for PostgreSQL")
+
+        except Exception as e:
+            logger.warning(f"Could not create search optimization indexes: {str(e)}")
+
+    def find_elements_with_jsonb_path(self, json_path: str, value: Any,
+                                      operator: str = "=", limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Find elements using PostgreSQL JSONB path expressions.
+
+        Args:
+            json_path: JSONB path expression (e.g., "author", "tags[0]", "details.title")
+            value: Value to search for
+            operator: Comparison operator ("=", "LIKE", "ILIKE", "!=", etc.)
+            limit: Maximum number of results
+
+        Returns:
+            List of matching elements
+
+        Examples:
+            find_elements_with_jsonb_path("author", "John", "=")
+            find_elements_with_jsonb_path("title", "%report%", "LIKE")
+            find_elements_with_jsonb_path("tags", "important", "@>")  # JSONB contains
+        """
+        if not self.cursor:
+            raise ValueError("Database not initialized")
+
+        # Build the query using JSONB operators
+        sql = f"""
+        SELECT * FROM elements 
+        WHERE metadata->>%s {operator} %s
+        LIMIT %s
+        """
+
+        params = [json_path, value if operator.upper() not in ["LIKE", "ILIKE"] else str(value), limit]
+
+        self.cursor.execute(sql, params)
+
+        elements = []
+        for row in self.cursor.fetchall():
+            element = dict(row)
+            try:
+                element["metadata"] = element["metadata"]
+            except (json.JSONDecodeError, TypeError):
+                element["metadata"] = {}
+            elements.append(element)
+
+        return elements
+
+    # ========================================
+    # EXISTING TOPIC SUPPORT METHODS
     # ========================================
 
     def supports_topics(self) -> bool:
@@ -1795,3 +2164,133 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
         except Exception as e:
             logger.error(f"Error getting topics for element {element_pk}: {str(e)}")
             return []
+
+    # ========================================
+    # EXISTING HIERARCHY METHODS (unchanged)
+    # ========================================
+
+    def get_results_outline(self, elements: List[Tuple[int, float]]) -> List["ElementHierarchical"]:
+        """
+        For an arbitrary list of element pk search results, finds the root node of the source, and each
+        ancestor element, to create a root -> element array of arrays like this:
+        [(<parent element>, score, [children])]
+
+        (Note score is None if the element was not in the results param)
+
+        Then each additional element is analyzed, its hierarchy materialized, and merged into
+        the final result.
+        """
+        from .element_element import ElementBase, ElementHierarchical
+
+        # Dictionary to store element_pk -> score mapping for quick lookup
+        element_scores = {element_pk: score for element_pk, score in elements}
+
+        # Set to track processed element_pks to avoid duplicates
+        processed_elements = set()
+
+        # Final result structure
+        result_tree: List[ElementHierarchical] = []
+
+        # Process each element from the search results
+        for element_pk, score in elements:
+            if element_pk in processed_elements:
+                continue
+
+            # Find the complete ancestry path for this element
+            ancestry_path = self._get_element_ancestry_path(element_pk)
+
+            if not ancestry_path:
+                continue
+
+            # Mark this element as processed
+            processed_elements.add(element_pk)
+
+            # Start with the root level
+            current_level = result_tree
+
+            # Process each ancestor from root to the target element
+            for i, ancestor in enumerate(ancestry_path):
+                ancestor_pk = ancestor.element_pk
+
+                # Check if this ancestor is already in the current level
+                existing_idx = None
+                for idx, existing_element in enumerate(current_level):
+                    if existing_element.element_pk == ancestor_pk:
+                        existing_idx = idx
+                        break
+
+                if existing_idx is not None:
+                    # Ancestor exists, get its children
+                    current_level = current_level[existing_idx].child_elements  # Get children list
+                else:
+                    # Ancestor doesn't exist, add it with its score (or None if not in search results)
+                    ancestor_score = element_scores.get(ancestor_pk)
+                    children = []
+                    ancestor.score = ancestor_score
+                    h_ancestor = ancestor.to_hierarchical()
+                    h_ancestor.child_elements = children
+                    current_level.append(h_ancestor)
+                    current_level = children
+
+        return result_tree
+
+    def _get_element_ancestry_path(self, element_pk: int) -> List["ElementBase"]:
+        """
+        Get the complete ancestry path for an element, from root to the element itself.
+
+        Uses parent_id to find parents instead of relationships.
+        """
+        from .element_element import ElementBase
+
+        # Get the element
+        element_dict = self.get_element(element_pk)
+        if not element_dict:
+            return []
+
+        # Convert to ElementElement instance
+        element = ElementBase(**element_dict)
+
+        # Start building the ancestry path with the element itself
+        ancestry = [element]
+
+        # Track to avoid circular references
+        visited = {element_pk}
+
+        # Current element to process
+        current_pk = element_pk
+
+        # Traverse up the hierarchy using parent_id
+        while True:
+            # Get the current element
+            current_element = self.get_element(current_pk)
+            if not current_element:
+                break
+
+            # Get parent ID
+            parent_id = current_element.get('parent_id')
+            if not parent_id:
+                break
+
+            # Get the parent element
+            parent_dict = self.get_element(parent_id)
+            if not parent_dict:
+                break
+
+            # Check for circular references
+            parent_pk = parent_dict.get('id') or parent_dict.get('pk') or parent_dict.get('element_id')
+            if parent_pk in visited:
+                break
+
+            # Convert to ElementElement
+            parent = ElementBase(**parent_dict)
+
+            # Add to visited set
+            visited.add(parent_pk)
+
+            # Add parent to the beginning of the ancestry list (root first)
+            ancestry.insert(0, parent)
+
+            # Move up to the parent
+            current_pk = parent_id
+
+        return ancestry

@@ -190,7 +190,8 @@ class JSONParser(DocumentParser):
 
         return json_obj
 
-    def _is_identity_field(self, field_name: str) -> bool:
+    @staticmethod
+    def _is_identity_field(field_name: str) -> bool:
         """
         Determines if a field likely represents an identity or entity.
 

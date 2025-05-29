@@ -22,6 +22,7 @@ Doculyzer is a powerful document management system that creates a universal, str
 - **Universal Document Model**: Common representation across document types
 - **Preservation of Structure**: Maintains hierarchical document structure
 - **Content Resolution**: Resolves pointers back to original content when needed
+- **Enhanced Search Capabilities**: Advanced pattern matching, element type filtering, and metadata search with LIKE patterns and ElementType enum support
 - **Contextual Semantic Search**: Uses advanced embedding techniques that incorporate document context (hierarchy, neighbors) for more accurate semantic search
 - **Topic-Aware Organization**: Categorize and filter content by topics for enhanced organization and discovery
 - **Element-Level Precision**: Maintains granular accuracy to specific document elements
@@ -290,6 +291,176 @@ The system is built with a modular architecture:
 5. **Embedding Generator**: Creates vector representations for semantic search (with model-specific dependencies)
 6. **Relationship Detector**: Identifies connections between document elements
 7. **Topic Manager**: Organizes content by topics for enhanced categorization and filtering
+
+## Enhanced Search Capabilities
+
+Doculyzer provides powerful, flexible search capabilities across all database backends with support for pattern matching, element type filtering, and metadata search.
+
+### Pattern Matching with LIKE Operators
+
+Use `_like` and `_ilike` suffixes for pattern matching across any field:
+
+```python
+# Case-sensitive LIKE patterns
+results = db.find_elements({
+    "content_preview_like": "%important%",
+    "element_type_like": "head%"
+})
+
+# Case-insensitive LIKE patterns (where supported)
+results = db.find_elements({
+    "content_preview_ilike": "%SUMMARY%",
+    "element_type_ilike": "HEAD%"
+})
+
+# Document search with patterns
+docs = db.find_documents({
+    "source_like": "%reports%",
+    "doc_type_ilike": "PDF"
+})
+```
+
+### ElementType Enum Integration
+
+Search using ElementType enums for type-safe, consistent queries:
+
+```python
+from doculyzer.db.element_element import ElementType
+
+# Search with single ElementType
+results = db.find_elements({
+    "element_type": ElementType.HEADER
+})
+
+# Search with multiple ElementTypes
+results = db.find_elements({
+    "element_type": [ElementType.HEADER, ElementType.PARAGRAPH, ElementType.BLOCKQUOTE]
+})
+
+# Mix enum and string queries
+results = db.find_elements({
+    "element_type": [ElementType.HEADER, "custom_type"],
+    "content_preview_like": "%important%"
+})
+```
+
+### Category-Based Search
+
+Use predefined element type categories for convenient grouping:
+
+```python
+# Search by predefined categories
+text_elements = db.find_elements_by_category("text_elements")
+table_elements = db.find_elements_by_category("table_elements")
+media_elements = db.find_elements_by_category("media_elements")
+
+# Combine category search with additional filters
+results = db.find_elements_by_category(
+    "text_elements",
+    content_preview_like="%important%",
+    doc_id=["doc1", "doc2"]
+)
+
+# Available categories
+categories = db.get_element_types_by_category()
+print("Available categories:", list(categories.keys()))
+# Output: ['text_elements', 'structural_elements', 'list_elements', 
+#          'table_elements', 'media_elements', 'code_elements', 
+#          'presentation_elements', 'data_elements', 'xml_elements']
+```
+
+### Advanced Metadata Search
+
+Search within JSON metadata using database-specific optimizations:
+
+```python
+# Exact metadata matching
+results = db.find_elements({
+    "metadata": {"section": "introduction", "priority": "high"}
+})
+
+# Metadata LIKE patterns
+results = db.find_elements({
+    "metadata_like": {"title": "%annual%", "author": "Smith%"}
+})
+
+# Case-insensitive metadata patterns (PostgreSQL)
+results = db.find_elements({
+    "metadata_ilike": {"title": "%ANNUAL%"}
+})
+
+# Document metadata search
+docs = db.find_documents({
+    "metadata_like": {"project": "%2024%"}
+})
+```
+
+### Complex Query Examples
+
+```python
+# Complex element search combining multiple criteria
+results = db.find_elements({
+    "element_type": [ElementType.HEADER, ElementType.PARAGRAPH],
+    "content_preview_like": "%security%",
+    "doc_id": ["security_doc_1", "security_doc_2"],
+    "metadata_like": {"classification": "%confidential%"}
+}, limit=50)
+
+# Search across different fields with patterns
+results = db.find_documents({
+    "doc_type": ["pdf", "docx"],
+    "source_like": "%/reports/%",
+    "metadata": {"status": "published"},
+    "metadata_like": {"title": "%quarterly%"}
+})
+
+# Case-insensitive search for flexible matching
+results = db.find_elements({
+    "element_type_ilike": "head%",  # Matches "HEADER", "Header", "header"
+    "content_preview_ilike": "%API%"  # Case-insensitive content search
+})
+```
+
+### Database-Specific Optimizations
+
+Doculyzer automatically uses database-specific features for optimal performance:
+
+#### PostgreSQL Features
+- Native `ILIKE` for case-insensitive patterns
+- JSONB operators for efficient metadata queries
+- GIN indexes for pattern matching performance
+- pgvector integration for vector similarity search
+
+#### SQLite Features  
+- JSON1 extension for metadata queries
+- FTS (Full Text Search) when available
+- sqlite-vec or sqlite-vss for vector search
+- COLLATE NOCASE for case-insensitive matching
+
+#### Universal Features
+- Automatic fallback to compatible implementations
+- Consistent API across all database backends
+- Pattern matching support in all storage layers
+- ElementType enum support everywhere
+
+### Search Capability Detection
+
+Check backend capabilities at runtime:
+
+```python
+# Check what search features are supported
+print(f"LIKE patterns: {db.supports_like_patterns()}")
+print(f"Case-insensitive LIKE: {db.supports_case_insensitive_like()}")
+print(f"ElementType enums: {db.supports_element_type_enums()}")
+print(f"Topic support: {db.supports_topics()}")
+
+# Use case-insensitive search when available
+if db.supports_case_insensitive_like():
+    results = db.find_elements_ilike({"content_preview_ilike": "%IMPORTANT%"})
+else:
+    # Fallback to case-sensitive search
+    results = db.find_elements({"content_preview_like": "%important%"})
+```
 
 ## Content Monitoring and Updates
 
@@ -582,10 +753,27 @@ db = config.initialize_database()
 stats = ingest_documents(config)
 print(f"Processed {stats['documents']} documents with {stats['elements']} elements")
 
-# Search documents
-results = db.search_elements_by_content("search term")
-for element in results:
-    print(f"Found in {element['element_id']}: {element['content_preview']}")
+# Enhanced search examples
+from doculyzer.db.element_element import ElementType
+
+# Search with pattern matching
+results = db.find_elements({
+    "content_preview_like": "%important%",
+    "element_type": ElementType.HEADER
+})
+
+# Search by category
+text_elements = db.find_elements_by_category(
+    "text_elements", 
+    content_preview_like="%summary%"
+)
+
+# Complex metadata search
+docs = db.find_documents({
+    "doc_type_like": "pdf",
+    "metadata_like": {"title": "%annual%"},
+    "source_like": "%reports%"
+})
 
 # Semantic search (if embeddings are enabled)
 from doculyzer.embeddings import get_embedding_generator
@@ -967,7 +1155,9 @@ pip install "doculyzer[db-postgresql,fastembed]"
 Tested and working with:
 - SQLite storage (with and without vector search plugins)
 - PostgreSQL storage (with and without pgvector extension)
+- Enhanced search capabilities (LIKE patterns, ElementType enums, metadata search)
 - Topic-aware embeddings and search
+- Category-based element filtering
 - Web Content Source
 - File Content Source
 - Database Content Source

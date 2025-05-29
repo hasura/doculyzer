@@ -1,7 +1,7 @@
 import logging
 import os
 from typing import Dict, Any, List, Optional, Tuple, Union, TYPE_CHECKING
-
+import re
 import time
 
 # Import types for type checking only - these won't be imported at runtime
@@ -24,6 +24,7 @@ else:
 
 from .element_relationship import ElementRelationship
 from .base import DocumentDatabase
+from .element_element import ElementType, ElementBase  # Import existing enum and ElementBase
 
 logger = logging.getLogger(__name__)
 
@@ -628,7 +629,22 @@ class MongoDBDocumentDatabase(DocumentDatabase):
         return element
 
     def find_documents(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
-        """Find documents matching query."""
+        """
+        Find documents matching query with support for LIKE patterns.
+
+        Args:
+            query: Query parameters. Enhanced syntax supports:
+                   - Exact matches: {"doc_type": "pdf"}
+                   - LIKE patterns: {"source_like": "%reports%"} (converted to regex)
+                   - Case-insensitive LIKE: {"source_ilike": "%REPORTS%"} (converted to case-insensitive regex)
+                   - List matching: {"doc_type": ["pdf", "docx"]}
+                   - Metadata exact: {"metadata": {"author": "John"}}
+                   - Metadata LIKE: {"metadata_like": {"title": "%annual%"}}
+            limit: Maximum number of results
+
+        Returns:
+            List of matching documents
+        """
         if not self.db:
             raise ValueError("Database not initialized")
 
@@ -638,10 +654,34 @@ class MongoDBDocumentDatabase(DocumentDatabase):
         if query:
             for key, value in query.items():
                 if key == "metadata":
-                    # Handle metadata queries
+                    # Handle metadata exact matches
                     for meta_key, meta_value in value.items():
                         mongo_query[f"metadata.{meta_key}"] = meta_value
+                elif key == "metadata_like":
+                    # Handle metadata LIKE patterns
+                    for meta_key, meta_value in value.items():
+                        regex_pattern = self._convert_like_to_regex(meta_value)
+                        mongo_query[f"metadata.{meta_key}"] = {"$regex": regex_pattern, "$options": "i"}
+                elif key == "metadata_ilike":
+                    # Case-insensitive metadata LIKE patterns (same as metadata_like in MongoDB)
+                    for meta_key, meta_value in value.items():
+                        regex_pattern = self._convert_like_to_regex(meta_value)
+                        mongo_query[f"metadata.{meta_key}"] = {"$regex": regex_pattern, "$options": "i"}
+                elif key.endswith("_ilike"):
+                    # Case-insensitive LIKE pattern
+                    field_name = key[:-6]  # Remove '_ilike' suffix
+                    regex_pattern = self._convert_like_to_regex(value)
+                    mongo_query[field_name] = {"$regex": regex_pattern, "$options": "i"}
+                elif key.endswith("_like"):
+                    # LIKE pattern for regular fields
+                    field_name = key[:-5]  # Remove '_like' suffix
+                    regex_pattern = self._convert_like_to_regex(value)
+                    mongo_query[field_name] = {"$regex": regex_pattern}
+                elif isinstance(value, list):
+                    # Handle list fields with IN clause
+                    mongo_query[key] = {"$in": value}
                 else:
+                    # Exact match for regular fields
                     mongo_query[key] = value
 
         # Execute query
@@ -655,7 +695,24 @@ class MongoDBDocumentDatabase(DocumentDatabase):
         return documents
 
     def find_elements(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
-        """Find elements matching query."""
+        """
+        Find elements matching query with support for LIKE patterns and ElementType enums.
+
+        Args:
+            query: Query parameters. Enhanced syntax supports:
+                   - Exact matches: {"element_type": "header"}
+                   - ElementType enums: {"element_type": ElementType.HEADER}
+                   - Multiple enums: {"element_type": [ElementType.HEADER, ElementType.PARAGRAPH]}
+                   - LIKE patterns: {"content_preview_like": "%important%"}
+                   - Case-insensitive LIKE: {"content_preview_ilike": "%IMPORTANT%"}
+                   - List matching: {"doc_id": ["doc1", "doc2"]}
+                   - Metadata exact: {"metadata": {"section": "intro"}}
+                   - Metadata LIKE: {"metadata_like": {"title": "%chapter%"}}
+            limit: Maximum number of results
+
+        Returns:
+            List of matching elements
+        """
         if not self.db:
             raise ValueError("Database not initialized")
 
@@ -665,16 +722,42 @@ class MongoDBDocumentDatabase(DocumentDatabase):
         if query:
             for key, value in query.items():
                 if key == "metadata":
-                    # Handle metadata queries
+                    # Handle metadata exact matches
                     for meta_key, meta_value in value.items():
                         mongo_query[f"metadata.{meta_key}"] = meta_value
-                elif key == "element_type" and isinstance(value, list):
-                    # Handle list of element types
-                    mongo_query["element_type"] = {"$in": value}
+                elif key == "metadata_like":
+                    # Handle metadata LIKE patterns
+                    for meta_key, meta_value in value.items():
+                        regex_pattern = self._convert_like_to_regex(meta_value)
+                        mongo_query[f"metadata.{meta_key}"] = {"$regex": regex_pattern, "$options": "i"}
+                elif key == "metadata_ilike":
+                    # Case-insensitive metadata LIKE patterns (same as metadata_like in MongoDB)
+                    for meta_key, meta_value in value.items():
+                        regex_pattern = self._convert_like_to_regex(meta_value)
+                        mongo_query[f"metadata.{meta_key}"] = {"$regex": regex_pattern, "$options": "i"}
+                elif key.endswith("_ilike"):
+                    # Case-insensitive LIKE pattern
+                    field_name = key[:-6]  # Remove '_ilike' suffix
+                    regex_pattern = self._convert_like_to_regex(value)
+                    mongo_query[field_name] = {"$regex": regex_pattern, "$options": "i"}
+                elif key.endswith("_like"):
+                    # LIKE pattern for regular fields
+                    field_name = key[:-5]  # Remove '_like' suffix
+                    regex_pattern = self._convert_like_to_regex(value)
+                    mongo_query[field_name] = {"$regex": regex_pattern}
+                elif key == "element_type":
+                    # Handle ElementType enums, strings, and lists
+                    type_values = self._prepare_element_type_query(value)
+                    if type_values:
+                        if len(type_values) == 1:
+                            mongo_query["element_type"] = type_values[0]
+                        else:
+                            mongo_query["element_type"] = {"$in": type_values}
                 elif isinstance(value, list):
-                    # Handle other list values (like doc_id list)
+                    # Handle other list fields with IN clause
                     mongo_query[key] = {"$in": value}
                 else:
+                    # Exact match for regular fields
                     mongo_query[key] = value
 
         # Execute query
@@ -1218,7 +1301,232 @@ class MongoDBDocumentDatabase(DocumentDatabase):
             return []
 
     # ========================================
-    # NEW: TOPIC SUPPORT METHODS
+    # NEW: ENHANCED SEARCH HELPER METHODS
+    # ========================================
+
+    @staticmethod
+    def supports_like_patterns() -> bool:
+        """
+        Indicate whether this backend supports LIKE pattern matching.
+
+        Returns:
+            True since MongoDB supports regex which can emulate LIKE patterns
+        """
+        return True
+
+    @staticmethod
+    def supports_case_insensitive_like() -> bool:
+        """
+        Indicate whether this backend supports case-insensitive LIKE (ILIKE).
+
+        Returns:
+            True since MongoDB regex supports case-insensitive matching
+        """
+        return True
+
+    @staticmethod
+    def supports_element_type_enums() -> bool:
+        """
+        Indicate whether this backend supports ElementType enum integration.
+
+        Returns:
+            True since MongoDB implementation supports ElementType enums
+        """
+        return True
+
+    def _prepare_element_type_query(self, element_types: Union[
+        ElementType,
+        List[ElementType],
+        str,
+        List[str],
+        None
+    ]) -> Optional[List[str]]:
+        """
+        Prepare element type values for database queries using existing ElementType enum.
+
+        Args:
+            element_types: ElementType enum(s), string(s), or None
+
+        Returns:
+            List of string values for database query, or None
+        """
+        if element_types is None:
+            return None
+
+        if isinstance(element_types, ElementType):
+            return [element_types.value]
+        elif isinstance(element_types, str):
+            return [element_types]
+        elif isinstance(element_types, list):
+            result = []
+            for et in element_types:
+                if isinstance(et, ElementType):
+                    result.append(et.value)
+                elif isinstance(et, str):
+                    result.append(et)
+            return result if result else None
+
+        return None
+
+    @staticmethod
+    def get_element_types_by_category() -> Dict[str, List[ElementType]]:
+        """
+        Get categorized lists of ElementType enums.
+
+        Returns:
+            Dictionary with categorized element types
+        """
+        return {
+            "text_elements": [
+                ElementType.HEADER,
+                ElementType.PARAGRAPH,
+                ElementType.BLOCKQUOTE,
+                ElementType.TEXT_BOX
+            ],
+
+            "structural_elements": [
+                ElementType.ROOT,
+                ElementType.PAGE,
+                ElementType.BODY,
+                ElementType.PAGE_HEADER,
+                ElementType.PAGE_FOOTER
+            ],
+
+            "list_elements": [
+                ElementType.LIST,
+                ElementType.LIST_ITEM
+            ],
+
+            "table_elements": [
+                ElementType.TABLE,
+                ElementType.TABLE_ROW,
+                ElementType.TABLE_HEADER_ROW,
+                ElementType.TABLE_CELL,
+                ElementType.TABLE_HEADER
+            ],
+
+            "media_elements": [
+                ElementType.IMAGE,
+                ElementType.CHART,
+                ElementType.SHAPE,
+                ElementType.SHAPE_GROUP
+            ],
+
+            "code_elements": [
+                ElementType.CODE_BLOCK
+            ],
+
+            "presentation_elements": [
+                ElementType.SLIDE,
+                ElementType.SLIDE_NOTES,
+                ElementType.PRESENTATION_BODY,
+                ElementType.SLIDE_MASTERS,
+                ElementType.SLIDE_TEMPLATES,
+                ElementType.SLIDE_LAYOUT,
+                ElementType.SLIDE_MASTER
+            ],
+
+            "data_elements": [
+                ElementType.JSON_OBJECT,
+                ElementType.JSON_ARRAY,
+                ElementType.JSON_FIELD,
+                ElementType.JSON_ITEM
+            ],
+
+            "xml_elements": [
+                ElementType.XML_ELEMENT,
+                ElementType.XML_TEXT,
+                ElementType.XML_LIST,
+                ElementType.XML_OBJECT
+            ]
+        }
+
+    def find_elements_by_category(self, category: str, **other_filters) -> List[Dict[str, Any]]:
+        """
+        Find elements by predefined category using ElementType enums.
+
+        Args:
+            category: Category name from get_element_types_by_category()
+            **other_filters: Additional filter criteria
+
+        Returns:
+            List of matching elements
+
+        Examples:
+            find_elements_by_category("text_elements")
+            find_elements_by_category("table_elements", content_preview_like="%data%")
+        """
+        categories = self.get_element_types_by_category()
+
+        if category not in categories:
+            available = list(categories.keys())
+            raise ValueError(f"Unknown category: {category}. Available: {available}")
+
+        element_types = categories[category]
+        query = {"element_type": element_types}
+        query.update(other_filters)
+
+        return self.find_elements(query)
+
+    def find_elements_ilike(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Find elements with case-insensitive LIKE support.
+
+        MongoDB supports case-insensitive regex natively.
+
+        Args:
+            query: Query parameters with _ilike suffix support
+            limit: Maximum number of results
+
+        Returns:
+            List of matching elements
+        """
+        # MongoDB supports case-insensitive regex, so just use the regular find_elements method
+        return self.find_elements(query, limit)
+
+    def _convert_like_to_regex(self, like_pattern: str) -> str:
+        """
+        Convert SQL LIKE pattern to MongoDB regex pattern.
+
+        Args:
+            like_pattern: SQL LIKE pattern (e.g., "%abc%", "abc_def")
+
+        Returns:
+            MongoDB regex pattern
+        """
+        # Escape special regex characters except % and _
+        escaped = re.escape(like_pattern)
+
+        # Convert % to .* (match any characters)
+        escaped = escaped.replace(r'\%', '.*')
+
+        # Convert _ to . (match single character)
+        escaped = escaped.replace(r'\_', '.')
+
+        return escaped
+
+    def create_text_indexes(self):
+        """
+        Create text indexes for better search performance.
+        Call this after database initialization for better performance.
+        """
+        if not self.db:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Create text index for content preview search
+            self.db.elements.create_index([("content_preview", "text")])
+
+            # Create text index for document source search
+            self.db.documents.create_index([("source", "text")])
+
+            logger.info("Created text indexes for better search performance")
+
+        except Exception as e:
+            logger.warning(f"Could not create text indexes: {str(e)}")
+
+    # ========================================
+    # TOPIC SUPPORT METHODS (Enhanced)
     # ========================================
 
     def supports_topics(self) -> bool:
@@ -1475,7 +1783,7 @@ class MongoDBDocumentDatabase(DocumentDatabase):
             include_conditions = []
             for topic_pattern in include_topics:
                 # Convert SQL LIKE pattern to regex
-                regex_pattern = topic_pattern.replace('%', '.*').replace('_', '.')
+                regex_pattern = self._convert_like_to_regex(topic_pattern)
                 include_conditions.append({"topics": {"$regex": regex_pattern, "$options": "i"}})
 
             if include_conditions:
@@ -1486,7 +1794,7 @@ class MongoDBDocumentDatabase(DocumentDatabase):
             exclude_conditions = []
             for topic_pattern in exclude_topics:
                 # Convert SQL LIKE pattern to regex
-                regex_pattern = topic_pattern.replace('%', '.*').replace('_', '.')
+                regex_pattern = self._convert_like_to_regex(topic_pattern)
                 exclude_conditions.append({"topics": {"$not": {"$regex": regex_pattern, "$options": "i"}}})
 
             if exclude_conditions:
@@ -1602,3 +1910,131 @@ class MongoDBDocumentDatabase(DocumentDatabase):
         except Exception as e:
             logger.error(f"Error getting topics for element {element_pk}: {str(e)}")
             return []
+
+    # ========================================
+    # HIERARCHY METHODS
+    # ========================================
+
+    def get_results_outline(self, elements: List[Tuple[int, float]]) -> List["ElementHierarchical"]:
+        """
+        For an arbitrary list of element pk search results, finds the root node of the source, and each
+        ancestor element, to create a root -> element array of arrays like this:
+        [(<parent element>, score, [children])]
+
+        (Note score is None if the element was not in the results param)
+
+        Then each additional element is analyzed, its hierarchy materialized, and merged into
+        the final result.
+        """
+        from .element_element import ElementHierarchical
+
+        # Dictionary to store element_pk -> score mapping for quick lookup
+        element_scores = {element_pk: score for element_pk, score in elements}
+
+        # Set to track processed element_pks to avoid duplicates
+        processed_elements = set()
+
+        # Final result structure
+        result_tree: List[ElementHierarchical] = []
+
+        # Process each element from the search results
+        for element_pk, score in elements:
+            if element_pk in processed_elements:
+                continue
+
+            # Find the complete ancestry path for this element
+            ancestry_path = self._get_element_ancestry_path(element_pk)
+
+            if not ancestry_path:
+                continue
+
+            # Mark this element as processed
+            processed_elements.add(element_pk)
+
+            # Start with the root level
+            current_level = result_tree
+
+            # Process each ancestor from root to the target element
+            for i, ancestor in enumerate(ancestry_path):
+                ancestor_pk = ancestor.element_pk
+
+                # Check if this ancestor is already in the current level
+                existing_idx = None
+                for idx, existing_element in enumerate(current_level):
+                    if existing_element.element_pk == ancestor_pk:
+                        existing_idx = idx
+                        break
+
+                if existing_idx is not None:
+                    # Ancestor exists, get its children
+                    current_level = current_level[existing_idx].child_elements  # Get children list
+                else:
+                    # Ancestor doesn't exist, add it with its score (or None if not in search results)
+                    ancestor_score = element_scores.get(ancestor_pk)
+                    children = []
+                    ancestor.score = ancestor_score
+                    h_ancestor = ancestor.to_hierarchical()
+                    h_ancestor.child_elements = children
+                    current_level.append(h_ancestor)
+                    current_level = children
+
+        return result_tree
+
+    def _get_element_ancestry_path(self, element_pk: int) -> List[ElementBase]:
+        """
+        Get the complete ancestry path for an element, from root to the element itself.
+
+        Uses parent_id to find parents instead of relationships.
+        """
+        # Get the element
+        element_dict = self.get_element(element_pk)
+        if not element_dict:
+            return []
+
+        # Convert to ElementBase instance
+        element = ElementBase(**element_dict)
+
+        # Start building the ancestry path with the element itself
+        ancestry = [element]
+
+        # Track to avoid circular references
+        visited = {element_pk}
+
+        # Current element to process
+        current_pk = element_pk
+
+        # Traverse up the hierarchy using parent_id
+        while True:
+            # Get the current element
+            current_element = self.get_element(current_pk)
+            if not current_element:
+                break
+
+            # Get parent ID
+            parent_id = current_element.get('parent_id')
+            if not parent_id:
+                break
+
+            # Get the parent element
+            parent_dict = self.get_element(parent_id)
+            if not parent_dict:
+                break
+
+            # Check for circular references
+            parent_pk = parent_dict.get('id') or parent_dict.get('pk') or parent_dict.get('element_id')
+            if parent_pk in visited:
+                break
+
+            # Convert to ElementBase
+            parent = ElementBase(**parent_dict)
+
+            # Add to visited set
+            visited.add(parent_pk)
+
+            # Add parent to the beginning of the ancestry list (root first)
+            ancestry.insert(0, parent)
+
+            # Move up to the parent
+            current_pk = parent_id
+
+        return ancestry

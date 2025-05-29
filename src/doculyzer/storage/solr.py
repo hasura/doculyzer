@@ -18,6 +18,7 @@ else:
 
 from .element_relationship import ElementRelationship
 from .base import DocumentDatabase
+from .element_element import ElementType, ElementBase  # Import existing enum and ElementBase
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ try:
     PYSOLR_AVAILABLE = True
 except ImportError:
     logger.warning("pysolr not available. Install with 'pip install pysolr'.")
+
 
     # Create a placeholder for type checking
     class pysolr:
@@ -166,7 +168,8 @@ class SolrDocumentDatabase(DocumentDatabase):
             raise ValueError("Database not initialized")
 
         try:
-            results = self.history.search(f"source_id:{source_id}", rows=1)
+            escaped_source = self._escape_solr_query(source_id)
+            results = self.history.search(f"source_id:{escaped_source}", rows=1)
             if len(results) == 0:
                 return None
 
@@ -185,7 +188,8 @@ class SolrDocumentDatabase(DocumentDatabase):
 
         try:
             # Check if record exists
-            existing = self.history.search(f"source_id:{source_id}", rows=1)
+            escaped_source = self._escape_solr_query(source_id)
+            existing = self.history.search(f"source_id:{escaped_source}", rows=1)
             processing_count = 1  # Default for new records
 
             if len(existing) > 0:
@@ -224,7 +228,8 @@ class SolrDocumentDatabase(DocumentDatabase):
 
         # Check if document already exists with this source
         if source:
-            existing_docs = self.documents.search(f"source:{source}", rows=1)
+            escaped_source = self._escape_solr_query(source)
+            existing_docs = self.documents.search(f"source:{escaped_source}", rows=1)
             if len(existing_docs) > 0:
                 # Document exists, update it
                 doc_id = existing_docs.docs[0]["doc_id"]
@@ -242,12 +247,10 @@ class SolrDocumentDatabase(DocumentDatabase):
 
         try:
             # Prepare document for SOLR
-            solr_document = {**document}
-            solr_document["id"] = doc_id  # SOLR requires a unique 'id' field
+            solr_document = {**document, "id": doc_id, "created_at": document.get("created_at", time.time()),
+                             "updated_at": document.get("updated_at", time.time())}
 
             # Add timestamps
-            solr_document["created_at"] = document.get("created_at", time.time())
-            solr_document["updated_at"] = document.get("updated_at", time.time())
 
             # Convert metadata to JSON if it's a dict
             if isinstance(solr_document.get("metadata"), dict):
@@ -334,7 +337,8 @@ class SolrDocumentDatabase(DocumentDatabase):
             raise ValueError("Database not initialized")
 
         # Check if document exists
-        existing_docs = self.documents.search(f"doc_id:{doc_id}", rows=1)
+        escaped_doc_id = self._escape_solr_query(doc_id)
+        existing_docs = self.documents.search(f"doc_id:{escaped_doc_id}", rows=1)
         if len(existing_docs) == 0:
             raise ValueError(f"Document not found: {doc_id}")
 
@@ -345,8 +349,7 @@ class SolrDocumentDatabase(DocumentDatabase):
                 document["created_at"] = existing_docs.docs[0].get("created_at", time.time())
 
             # Prepare document for SOLR
-            solr_document = {**document}
-            solr_document["id"] = doc_id  # SOLR requires a unique 'id' field
+            solr_document = {**document, "id": doc_id}
 
             # Convert metadata to JSON if it's a dict
             if isinstance(solr_document.get("metadata"), dict):
@@ -357,7 +360,7 @@ class SolrDocumentDatabase(DocumentDatabase):
             existing_element_pks = [int(elem.get("element_pk", 0)) for elem in existing_elements]
 
             # Delete existing document elements
-            self.elements.delete(f"doc_id:{doc_id}")
+            self.elements.delete(f"doc_id:{escaped_doc_id}")
 
             # Delete existing embeddings for document elements
             if existing_element_pks:
@@ -452,11 +455,13 @@ class SolrDocumentDatabase(DocumentDatabase):
 
         try:
             # Try to get by doc_id
-            results = self.documents.search(f"doc_id:{doc_id}", rows=1)
+            escaped_doc_id = self._escape_solr_query(doc_id)
+            results = self.documents.search(f"doc_id:{escaped_doc_id}", rows=1)
 
             if len(results) == 0:
                 # Try to get by source field
-                results = self.documents.search(f"source:{doc_id}", rows=1)
+                escaped_source = self._escape_solr_query(doc_id)
+                results = self.documents.search(f"source:{escaped_source}", rows=1)
 
                 if len(results) == 0:
                     return None
@@ -497,7 +502,8 @@ class SolrDocumentDatabase(DocumentDatabase):
                 doc_id = document["doc_id"]
 
             # Get elements
-            results = self.elements.search(f"doc_id:{doc_id}", rows=10000)
+            escaped_doc_id = self._escape_solr_query(doc_id)
+            results = self.elements.search(f"doc_id:{escaped_doc_id}", rows=10000)
 
             # Convert SOLR docs to dicts
             elements = []
@@ -535,7 +541,7 @@ class SolrDocumentDatabase(DocumentDatabase):
         try:
             # Get all element IDs for this document
             elements = self.get_document_elements(doc_id)
-            element_ids = [f'"{element["element_id"]}"' for element in elements]
+            element_ids = [self._escape_solr_query(element["element_id"]) for element in elements]
 
             if not element_ids:
                 return []
@@ -584,7 +590,8 @@ class SolrDocumentDatabase(DocumentDatabase):
                 results = self.elements.search(f"element_pk:{element_pk}", rows=1)
             except (ValueError, TypeError):
                 # If not an integer, treat as element_id (string)
-                results = self.elements.search(f"element_id:{element_id_or_pk}", rows=1)
+                escaped_element_id = self._escape_solr_query(element_id_or_pk)
+                results = self.elements.search(f"element_id:{escaped_element_id}", rows=1)
 
             if len(results) == 0:
                 return None
@@ -607,10 +614,16 @@ class SolrDocumentDatabase(DocumentDatabase):
 
     def find_documents(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
         """
-        Find documents matching query.
+        Find documents matching query with support for LIKE patterns.
 
         Args:
-            query: Query parameters
+            query: Query parameters. Enhanced syntax supports:
+                   - Exact matches: {"doc_type": "pdf"}
+                   - LIKE patterns: {"source_like": "%reports%"} (converted to wildcard)
+                   - Case-insensitive LIKE: {"source_ilike": "%REPORTS%"}
+                   - List matching: {"doc_type": ["pdf", "docx"]}
+                   - Metadata exact: {"metadata": {"author": "John"}}
+                   - Metadata LIKE: {"metadata_like": {"title": "%annual%"}}
             limit: Maximum number of results
 
         Returns:
@@ -629,17 +642,43 @@ class SolrDocumentDatabase(DocumentDatabase):
 
                 for key, value in query.items():
                     if key == "metadata":
-                        # Handle metadata queries
+                        # Handle metadata exact matches
                         for meta_key, meta_value in value.items():
                             # Use metadata_json for exact JSON structure
-                            filter_queries.append(f'metadata_json:"*\\"{meta_key}\\":\\"{meta_value}\\"*"')
+                            escaped_key = self._escape_solr_query(meta_key)
+                            escaped_value = self._escape_solr_query(str(meta_value))
+                            filter_queries.append(f'metadata_json:"*\\"{escaped_key}\\":\\"{escaped_value}\\"*"')
+                    elif key == "metadata_like":
+                        # Handle metadata LIKE patterns
+                        for meta_key, meta_value in value.items():
+                            pattern = self._convert_like_to_wildcard(meta_value)
+                            escaped_key = self._escape_solr_query(meta_key)
+                            filter_queries.append(f'metadata_json:*\\"{escaped_key}\\"\\:*{pattern}*')
+                    elif key == "metadata_ilike":
+                        # Handle case-insensitive metadata LIKE patterns (same as metadata_like in SOLR)
+                        for meta_key, meta_value in value.items():
+                            pattern = self._convert_like_to_wildcard(meta_value)
+                            escaped_key = self._escape_solr_query(meta_key)
+                            filter_queries.append(f'metadata_json:*\\"{escaped_key}\\"\\:*{pattern}*')
+                    elif key.endswith("_ilike"):
+                        # Case-insensitive LIKE pattern
+                        field_name = key[:-6]  # Remove '_ilike' suffix
+                        pattern = self._convert_like_to_wildcard(value)
+                        filter_queries.append(f"{field_name}:{pattern}")
+                    elif key.endswith("_like"):
+                        # LIKE pattern for regular fields
+                        field_name = key[:-5]  # Remove '_like' suffix
+                        pattern = self._convert_like_to_wildcard(value)
+                        filter_queries.append(f"{field_name}:{pattern}")
                     elif isinstance(value, list):
                         # Handle list values
-                        values_str = " OR ".join([f'"{v}"' for v in value])
+                        escaped_values = [self._escape_solr_query(str(v)) for v in value]
+                        values_str = " OR ".join(escaped_values)
                         filter_queries.append(f"{key}:({values_str})")
                     else:
                         # Simple equality
-                        query_parts.append(f'{key}:"{value}"')
+                        escaped_value = self._escape_solr_query(str(value))
+                        query_parts.append(f'{key}:{escaped_value}')
 
                 if query_parts:
                     solr_query = " AND ".join(query_parts)
@@ -673,10 +712,18 @@ class SolrDocumentDatabase(DocumentDatabase):
 
     def find_elements(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
         """
-        Find elements matching query.
+        Find elements matching query with support for LIKE patterns and ElementType enums.
 
         Args:
-            query: Query parameters
+            query: Query parameters. Enhanced syntax supports:
+                   - Exact matches: {"element_type": "header"}
+                   - ElementType enums: {"element_type": ElementType.HEADER}
+                   - Multiple enums: {"element_type": [ElementType.HEADER, ElementType.PARAGRAPH]}
+                   - LIKE patterns: {"content_preview_like": "%important%"}
+                   - Case-insensitive LIKE: {"content_preview_ilike": "%IMPORTANT%"}
+                   - List matching: {"doc_id": ["doc1", "doc2"]}
+                   - Metadata exact: {"metadata": {"section": "intro"}}
+                   - Metadata LIKE: {"metadata_like": {"title": "%chapter%"}}
             limit: Maximum number of results
 
         Returns:
@@ -695,21 +742,54 @@ class SolrDocumentDatabase(DocumentDatabase):
 
                 for key, value in query.items():
                     if key == "metadata":
-                        # Handle metadata queries
+                        # Handle metadata exact matches
                         for meta_key, meta_value in value.items():
                             # Use metadata_json for exact JSON structure
-                            filter_queries.append(f'metadata_json:"*\\"{meta_key}\\":\\"{meta_value}\\"*"')
-                    elif key == "element_type" and isinstance(value, list):
-                        # Handle list of element types
-                        values_str = " OR ".join([f'"{v}"' for v in value])
-                        filter_queries.append(f"element_type:({values_str})")
+                            escaped_key = self._escape_solr_query(meta_key)
+                            escaped_value = self._escape_solr_query(str(meta_value))
+                            filter_queries.append(f'metadata_json:"*\\"{escaped_key}\\":\\"{escaped_value}\\"*"')
+                    elif key == "metadata_like":
+                        # Handle metadata LIKE patterns
+                        for meta_key, meta_value in value.items():
+                            pattern = self._convert_like_to_wildcard(meta_value)
+                            escaped_key = self._escape_solr_query(meta_key)
+                            filter_queries.append(f'metadata_json:*\\"{escaped_key}\\"\\:*{pattern}*')
+                    elif key == "metadata_ilike":
+                        # Handle case-insensitive metadata LIKE patterns (same as metadata_like in SOLR)
+                        for meta_key, meta_value in value.items():
+                            pattern = self._convert_like_to_wildcard(meta_value)
+                            escaped_key = self._escape_solr_query(meta_key)
+                            filter_queries.append(f'metadata_json:*\\"{escaped_key}\\"\\:*{pattern}*')
+                    elif key.endswith("_ilike"):
+                        # Case-insensitive LIKE pattern
+                        field_name = key[:-6]  # Remove '_ilike' suffix
+                        pattern = self._convert_like_to_wildcard(value)
+                        filter_queries.append(f"{field_name}:{pattern}")
+                    elif key.endswith("_like"):
+                        # LIKE pattern for regular fields
+                        field_name = key[:-5]  # Remove '_like' suffix
+                        pattern = self._convert_like_to_wildcard(value)
+                        filter_queries.append(f"{field_name}:{pattern}")
+                    elif key == "element_type":
+                        # Handle ElementType enums, strings, and lists
+                        type_values = self._prepare_element_type_query(value)
+                        if type_values:
+                            if len(type_values) == 1:
+                                escaped_value = self._escape_solr_query(type_values[0])
+                                filter_queries.append(f"element_type:{escaped_value}")
+                            else:
+                                escaped_values = [self._escape_solr_query(v) for v in type_values]
+                                values_str = " OR ".join(escaped_values)
+                                filter_queries.append(f"element_type:({values_str})")
                     elif isinstance(value, list):
                         # Handle other list values
-                        values_str = " OR ".join([f'"{v}"' for v in value])
+                        escaped_values = [self._escape_solr_query(str(v)) for v in value]
+                        values_str = " OR ".join(escaped_values)
                         filter_queries.append(f"{key}:({values_str})")
                     else:
                         # Simple equality
-                        query_parts.append(f'{key}:"{value}"')
+                        escaped_value = self._escape_solr_query(str(value))
+                        query_parts.append(f'{key}:{escaped_value}')
 
                 if query_parts:
                     solr_query = " AND ".join(query_parts)
@@ -757,8 +837,8 @@ class SolrDocumentDatabase(DocumentDatabase):
 
         try:
             # Build query to search both content_preview and full_text
-            escaped_text = search_text.replace('"', '\\"')
-            query = f'content_preview:"{escaped_text}" OR full_text:"{escaped_text}"'
+            escaped_text = self._escape_solr_query(search_text)
+            query = f'content_preview:{escaped_text} OR full_text:{escaped_text}'
 
             results = self.elements.search(query, rows=limit)
 
@@ -804,7 +884,7 @@ class SolrDocumentDatabase(DocumentDatabase):
             # Get all elements for this document to clean up embeddings
             elements = self.get_document_elements(doc_id)
             element_pks = [int(elem.get("element_pk", 0)) for elem in elements]
-            element_ids = [element["element_id"] for element in elements]
+            element_ids = [elem["element_id"] for elem in elements]
 
             # Delete embeddings for these elements
             if element_pks:
@@ -813,14 +893,16 @@ class SolrDocumentDatabase(DocumentDatabase):
 
             # Delete relationships involving these elements
             if element_ids:
-                element_ids_str = " OR ".join([f'"{eid}"' for eid in element_ids])
+                escaped_element_ids = [self._escape_solr_query(eid) for eid in element_ids]
+                element_ids_str = " OR ".join(escaped_element_ids)
                 self.relationships.delete(f"source_id:({element_ids_str})")
 
             # Delete elements
-            self.elements.delete(f"doc_id:{doc_id}")
+            escaped_doc_id = self._escape_solr_query(doc_id)
+            self.elements.delete(f"doc_id:{escaped_doc_id}")
 
             # Delete document
-            self.documents.delete(f"doc_id:{doc_id}")
+            self.documents.delete(f"doc_id:{escaped_doc_id}")
 
             logger.info(f"Deleted document {doc_id} with {len(element_ids)} elements")
             return True
@@ -841,8 +923,7 @@ class SolrDocumentDatabase(DocumentDatabase):
 
         try:
             # Prepare relationship for SOLR
-            solr_rel = {**relationship}
-            solr_rel["id"] = relationship["relationship_id"]  # SOLR requires unique ID
+            solr_rel = {**relationship, "id": relationship["relationship_id"]}
 
             # Convert metadata to JSON if it's a dict
             if isinstance(solr_rel.get("metadata"), dict):
@@ -869,14 +950,17 @@ class SolrDocumentDatabase(DocumentDatabase):
 
         try:
             # Build query for source relationships
-            source_query = f'source_id:"{element_id}"'
+            escaped_element_id = self._escape_solr_query(element_id)
+            source_query = f'source_id:{escaped_element_id}'
             if relationship_type:
-                source_query += f' AND relationship_type:"{relationship_type}"'
+                escaped_rel_type = self._escape_solr_query(relationship_type)
+                source_query += f' AND relationship_type:{escaped_rel_type}'
 
             # Build query for target relationships
-            target_query = f'target_reference:"{element_id}"'
+            target_query = f'target_reference:{escaped_element_id}'
             if relationship_type:
-                target_query += f' AND relationship_type:"{relationship_type}"'
+                escaped_rel_type = self._escape_solr_query(relationship_type)
+                target_query += f' AND relationship_type:{escaped_rel_type}'
 
             # Delete source relationships
             self.relationships.delete(source_query)
@@ -1058,8 +1142,8 @@ class SolrDocumentDatabase(DocumentDatabase):
 
         try:
             # First, perform traditional text search
-            escaped_text = search_text.replace('"', '\\"')
-            text_query = f'content_preview:"{escaped_text}" OR full_text:"{escaped_text}"'
+            escaped_text = self._escape_solr_query(search_text)
+            text_query = f'content_preview:{escaped_text} OR full_text:{escaped_text}'
 
             # Add filter queries if needed
             params = {"rows": limit * 2}  # Get more results for better merging
@@ -1069,19 +1153,23 @@ class SolrDocumentDatabase(DocumentDatabase):
                 for key, value in filter_criteria.items():
                     if key == "element_type" and isinstance(value, list):
                         # Handle list of element types
-                        values_str = " OR ".join([f'"{v}"' for v in value])
+                        escaped_values = [self._escape_solr_query(v) for v in value]
+                        values_str = " OR ".join(escaped_values)
                         fq.append(f"element_type:({values_str})")
                     elif key == "doc_id" and isinstance(value, list):
                         # Handle list of document IDs
-                        values_str = " OR ".join([f'"{v}"' for v in value])
+                        escaped_values = [self._escape_solr_query(v) for v in value]
+                        values_str = " OR ".join(escaped_values)
                         fq.append(f"doc_id:({values_str})")
                     elif key == "exclude_doc_id" and isinstance(value, list):
                         # Handle list of document IDs to exclude
-                        values_str = " OR ".join([f'"{v}"' for v in value])
+                        escaped_values = [self._escape_solr_query(v) for v in value]
+                        values_str = " OR ".join(escaped_values)
                         fq.append(f"-doc_id:({values_str})")
                     else:
                         # Simple equality
-                        fq.append(f'{key}:"{value}"')
+                        escaped_value = self._escape_solr_query(str(value))
+                        fq.append(f'{key}:{escaped_value}')
 
                 if fq:
                     params["fq"] = fq
@@ -1172,7 +1260,8 @@ class SolrDocumentDatabase(DocumentDatabase):
             element_type = element.get("element_type", "")
 
             # Search for relationships where this element is the source
-            results = self.relationships.search(f'source_id:"{element_id}"', rows=10000)
+            escaped_element_id = self._escape_solr_query(element_id)
+            results = self.relationships.search(f'source_id:{escaped_element_id}', rows=10000)
 
             relationships = []
             for rel_doc in results.docs:
@@ -1223,7 +1312,227 @@ class SolrDocumentDatabase(DocumentDatabase):
             return []
 
     # ========================================
-    # NEW: TOPIC SUPPORT METHODS
+    # NEW: ENHANCED SEARCH HELPER METHODS
+    # ========================================
+
+    @staticmethod
+    def supports_like_patterns() -> bool:
+        """
+        Indicate whether this backend supports LIKE pattern matching.
+
+        Returns:
+            True since SOLR supports wildcard queries
+        """
+        return True
+
+    @staticmethod
+    def supports_case_insensitive_like() -> bool:
+        """
+        Indicate whether this backend supports case-insensitive LIKE (ILIKE).
+
+        Returns:
+            True since SOLR is case-insensitive by default
+        """
+        return True
+
+    @staticmethod
+    def supports_element_type_enums() -> bool:
+        """
+        Indicate whether this backend supports ElementType enum integration.
+
+        Returns:
+            True since SOLR implementation supports ElementType enums
+        """
+        return True
+
+    def _prepare_element_type_query(self, element_types: Union[
+        ElementType,
+        List[ElementType],
+        str,
+        List[str],
+        None
+    ]) -> Optional[List[str]]:
+        """
+        Prepare element type values for queries using existing ElementType enum.
+
+        Args:
+            element_types: ElementType enum(s), string(s), or None
+
+        Returns:
+            List of string values for query, or None
+        """
+        if element_types is None:
+            return None
+
+        if isinstance(element_types, ElementType):
+            return [element_types.value]
+        elif isinstance(element_types, str):
+            return [element_types]
+        elif isinstance(element_types, list):
+            result = []
+            for et in element_types:
+                if isinstance(et, ElementType):
+                    result.append(et.value)
+                elif isinstance(et, str):
+                    result.append(et)
+            return result if result else None
+
+        return None
+
+    @staticmethod
+    def get_element_types_by_category() -> Dict[str, List[ElementType]]:
+        """
+        Get categorized lists of ElementType enums.
+
+        Returns:
+            Dictionary with categorized element types
+        """
+        return {
+            "text_elements": [
+                ElementType.HEADER,
+                ElementType.PARAGRAPH,
+                ElementType.BLOCKQUOTE,
+                ElementType.TEXT_BOX
+            ],
+
+            "structural_elements": [
+                ElementType.ROOT,
+                ElementType.PAGE,
+                ElementType.BODY,
+                ElementType.PAGE_HEADER,
+                ElementType.PAGE_FOOTER
+            ],
+
+            "list_elements": [
+                ElementType.LIST,
+                ElementType.LIST_ITEM
+            ],
+
+            "table_elements": [
+                ElementType.TABLE,
+                ElementType.TABLE_ROW,
+                ElementType.TABLE_HEADER_ROW,
+                ElementType.TABLE_CELL,
+                ElementType.TABLE_HEADER
+            ],
+
+            "media_elements": [
+                ElementType.IMAGE,
+                ElementType.CHART,
+                ElementType.SHAPE,
+                ElementType.SHAPE_GROUP
+            ],
+
+            "code_elements": [
+                ElementType.CODE_BLOCK
+            ],
+
+            "presentation_elements": [
+                ElementType.SLIDE,
+                ElementType.SLIDE_NOTES,
+                ElementType.PRESENTATION_BODY,
+                ElementType.SLIDE_MASTERS,
+                ElementType.SLIDE_TEMPLATES,
+                ElementType.SLIDE_LAYOUT,
+                ElementType.SLIDE_MASTER
+            ],
+
+            "data_elements": [
+                ElementType.JSON_OBJECT,
+                ElementType.JSON_ARRAY,
+                ElementType.JSON_FIELD,
+                ElementType.JSON_ITEM
+            ],
+
+            "xml_elements": [
+                ElementType.XML_ELEMENT,
+                ElementType.XML_TEXT,
+                ElementType.XML_LIST,
+                ElementType.XML_OBJECT
+            ]
+        }
+
+    def find_elements_by_category(self, category: str, **other_filters) -> List[Dict[str, Any]]:
+        """
+        Find elements by predefined category using ElementType enums.
+
+        Args:
+            category: Category name from get_element_types_by_category()
+            **other_filters: Additional filter criteria
+
+        Returns:
+            List of matching elements
+
+        Examples:
+            find_elements_by_category("text_elements")
+            find_elements_by_category("table_elements", content_preview_like="%data%")
+        """
+        categories = self.get_element_types_by_category()
+
+        if category not in categories:
+            available = list(categories.keys())
+            raise ValueError(f"Unknown category: {category}. Available: {available}")
+
+        element_types = categories[category]
+        query = {"element_type": element_types}
+        query.update(other_filters)
+
+        return self.find_elements(query)
+
+    def find_elements_ilike(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Find elements with case-insensitive LIKE support.
+
+        SOLR is case-insensitive by default.
+
+        Args:
+            query: Query parameters with _ilike suffix support
+            limit: Maximum number of results
+
+        Returns:
+            List of matching elements
+        """
+        # SOLR is case-insensitive by default, so just use regular find_elements
+        return self.find_elements(query, limit)
+
+    def _convert_like_to_wildcard(self, like_pattern: str) -> str:
+        """
+        Convert SQL LIKE pattern to SOLR wildcard pattern.
+
+        Args:
+            like_pattern: SQL LIKE pattern (e.g., "%abc%", "abc_def")
+
+        Returns:
+            SOLR wildcard pattern
+        """
+        # Convert % to * (match any characters)
+        pattern = like_pattern.replace('%', '*')
+        # Convert _ to ? (match single character)
+        pattern = pattern.replace('_', '?')
+        return pattern
+
+    def _escape_solr_query(self, query_string: str) -> str:
+        """
+        Escape special SOLR characters in query string.
+
+        Args:
+            query_string: String to escape
+
+        Returns:
+            Escaped string safe for SOLR queries
+        """
+        # SOLR special characters that need escaping
+        # + - && || ! ( ) { } [ ] ^ " ~ * ? : \ /
+        special_chars = ['+', '-', '&', '|', '!', '(', ')', '{', '}', '[', ']', '^', '"', '~', '*', '?', ':', '\\', '/']
+
+        escaped = query_string
+        for char in special_chars:
+            escaped = escaped.replace(char, f'\\{char}')
+
+        return f'"{escaped}"'
+
+    # ========================================
+    # TOPIC SUPPORT METHODS (Enhanced)
     # ========================================
 
     def supports_topics(self) -> bool:
@@ -1329,11 +1638,35 @@ class SolrDocumentDatabase(DocumentDatabase):
         try:
             # Build SOLR query with confidence filtering
             solr_query = f"confidence:[{min_confidence} TO *]"
+            filter_queries = []
+
+            # Add topic filtering
+            if include_topics:
+                # Convert patterns to SOLR wildcard patterns
+                include_patterns = []
+                for pattern in include_topics:
+                    wildcard_pattern = self._convert_like_to_wildcard(pattern)
+                    include_patterns.append(f"topics:{wildcard_pattern}")
+                if include_patterns:
+                    filter_queries.append(f"({' OR '.join(include_patterns)})")
+
+            if exclude_topics:
+                # Convert patterns to SOLR wildcard patterns
+                exclude_patterns = []
+                for pattern in exclude_topics:
+                    wildcard_pattern = self._convert_like_to_wildcard(pattern)
+                    exclude_patterns.append(f"-topics:{wildcard_pattern}")
+                if exclude_patterns:
+                    filter_queries.extend(exclude_patterns)
 
             # Execute query to get all embeddings above confidence threshold
-            results = self.embeddings.search(solr_query, rows=10000)
+            params = {"rows": 10000}
+            if filter_queries:
+                params["fq"] = filter_queries
 
-            # Process results in Python with topic filtering
+            results = self.embeddings.search(solr_query, **params)
+
+            # Process results in Python
             filtered_results = []
             for doc in results.docs:
                 element_pk = int(doc["element_pk"])
@@ -1349,10 +1682,6 @@ class SolrDocumentDatabase(DocumentDatabase):
                         topics = json.loads(doc["topics_json"])
                     except:
                         topics = []
-
-                # Apply topic filtering
-                if not self._matches_topic_filters(topics, include_topics, exclude_topics):
-                    continue
 
                 result_dict = {
                     'element_pk': element_pk,
@@ -1385,35 +1714,6 @@ class SolrDocumentDatabase(DocumentDatabase):
         except Exception as e:
             logger.error(f"Error in fallback topic search: {str(e)}")
             return []
-
-    def _matches_topic_filters(self, topics: List[str],
-                               include_topics: Optional[List[str]] = None,
-                               exclude_topics: Optional[List[str]] = None) -> bool:
-        """Check if topics match the include/exclude filters using pattern matching."""
-        import fnmatch
-
-        # Check include filters - at least one must match
-        if include_topics:
-            include_match = False
-            for topic in topics:
-                for pattern in include_topics:
-                    if fnmatch.fnmatch(topic, pattern):
-                        include_match = True
-                        break
-                if include_match:
-                    break
-
-            if not include_match:
-                return False
-
-        # Check exclude filters - none should match
-        if exclude_topics:
-            for topic in topics:
-                for pattern in exclude_topics:
-                    if fnmatch.fnmatch(topic, pattern):
-                        return False
-
-        return True
 
     def get_topic_statistics(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -1511,6 +1811,134 @@ class SolrDocumentDatabase(DocumentDatabase):
         except Exception as e:
             logger.error(f"Error getting topics for element {element_pk}: {str(e)}")
             return []
+
+    # ========================================
+    # HIERARCHY METHODS
+    # ========================================
+
+    def get_results_outline(self, elements: List[Tuple[int, float]]) -> List["ElementHierarchical"]:
+        """
+        For an arbitrary list of element pk search results, finds the root node of the source, and each
+        ancestor element, to create a root -> element array of arrays like this:
+        [(<parent element>, score, [children])]
+
+        (Note score is None if the element was not in the results param)
+
+        Then each additional element is analyzed, its hierarchy materialized, and merged into
+        the final result.
+        """
+        from .element_element import ElementHierarchical
+
+        # Dictionary to store element_pk -> score mapping for quick lookup
+        element_scores = {element_pk: score for element_pk, score in elements}
+
+        # Set to track processed element_pks to avoid duplicates
+        processed_elements = set()
+
+        # Final result structure
+        result_tree: List[ElementHierarchical] = []
+
+        # Process each element from the search results
+        for element_pk, score in elements:
+            if element_pk in processed_elements:
+                continue
+
+            # Find the complete ancestry path for this element
+            ancestry_path = self._get_element_ancestry_path(element_pk)
+
+            if not ancestry_path:
+                continue
+
+            # Mark this element as processed
+            processed_elements.add(element_pk)
+
+            # Start with the root level
+            current_level = result_tree
+
+            # Process each ancestor from root to the target element
+            for i, ancestor in enumerate(ancestry_path):
+                ancestor_pk = ancestor.element_pk
+
+                # Check if this ancestor is already in the current level
+                existing_idx = None
+                for idx, existing_element in enumerate(current_level):
+                    if existing_element.element_pk == ancestor_pk:
+                        existing_idx = idx
+                        break
+
+                if existing_idx is not None:
+                    # Ancestor exists, get its children
+                    current_level = current_level[existing_idx].child_elements  # Get children list
+                else:
+                    # Ancestor doesn't exist, add it with its score (or None if not in search results)
+                    ancestor_score = element_scores.get(ancestor_pk)
+                    children = []
+                    ancestor.score = ancestor_score
+                    h_ancestor = ancestor.to_hierarchical()
+                    h_ancestor.child_elements = children
+                    current_level.append(h_ancestor)
+                    current_level = children
+
+        return result_tree
+
+    def _get_element_ancestry_path(self, element_pk: int) -> List[ElementBase]:
+        """
+        Get the complete ancestry path for an element, from root to the element itself.
+
+        Uses parent_id to find parents instead of relationships.
+        """
+        # Get the element
+        element_dict = self.get_element(element_pk)
+        if not element_dict:
+            return []
+
+        # Convert to ElementBase instance
+        element = ElementBase(**element_dict)
+
+        # Start building the ancestry path with the element itself
+        ancestry = [element]
+
+        # Track to avoid circular references
+        visited = {element_pk}
+
+        # Current element to process
+        current_pk = element_pk
+
+        # Traverse up the hierarchy using parent_id
+        while True:
+            # Get the current element
+            current_element = self.get_element(current_pk)
+            if not current_element:
+                break
+
+            # Get parent ID
+            parent_id = current_element.get('parent_id')
+            if not parent_id:
+                break
+
+            # Get the parent element
+            parent_dict = self.get_element(parent_id)
+            if not parent_dict:
+                break
+
+            # Check for circular references
+            parent_pk = parent_dict.get('id') or parent_dict.get('pk') or parent_dict.get('element_id')
+            if parent_pk in visited:
+                break
+
+            # Convert to ElementBase
+            parent = ElementBase(**parent_dict)
+
+            # Add to visited set
+            visited.add(parent_pk)
+
+            # Add parent to the beginning of the ancestry list (root first)
+            ancestry.insert(0, parent)
+
+            # Move up to the parent
+            current_pk = parent_id
+
+        return ancestry
 
     @staticmethod
     def _cosine_similarity_numpy(vec1: VectorType, vec2: VectorType) -> float:

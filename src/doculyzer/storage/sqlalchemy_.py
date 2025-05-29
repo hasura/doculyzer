@@ -35,6 +35,7 @@ else:
 
 from .base import DocumentDatabase
 from .element_relationship import ElementRelationship
+from .element_element import ElementType, ElementBase  # Import ElementType enum and ElementBase
 
 logger = logging.getLogger(__name__)
 
@@ -872,7 +873,22 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
             raise
 
     def find_documents(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
-        """Find documents matching query."""
+        """
+        Find documents matching query with support for LIKE patterns.
+
+        Args:
+            query: Query parameters. Enhanced syntax supports:
+                   - Exact matches: {"doc_type": "pdf"}
+                   - LIKE patterns: {"source_like": "%reports%"}
+                   - Case-insensitive LIKE: {"source_ilike": "%REPORTS%"} (if supported)
+                   - List matching: {"doc_type": ["pdf", "docx"]}
+                   - Metadata exact: {"metadata": {"author": "John"}}
+                   - Metadata LIKE: {"metadata_like": {"title": "%annual%"}}
+            limit: Maximum number of results
+
+        Returns:
+            List of matching documents
+        """
         if not self.session:
             raise ValueError("Database not initialized")
 
@@ -885,17 +901,67 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
         # Apply filters
         for key, value in query.items():
             if key == "metadata":
-                # Skip metadata for now, will handle below
-                continue
+                # Handle metadata exact matches
+                for meta_key, meta_value in value.items():
+                    # Use database-specific JSON extraction
+                    if self.db_uri.startswith('postgresql'):
+                        # PostgreSQL JSONB operator
+                        json_filter = text(f"metadata_->>'{meta_key}' = :meta_value")
+                        db_query = db_query.filter(json_filter.params(meta_value=str(meta_value)))
+                    elif self.db_uri.startswith('sqlite'):
+                        # SQLite JSON1 extension
+                        json_filter = text(f"json_extract(metadata_, '$.{meta_key}') = :meta_value")
+                        db_query = db_query.filter(json_filter.params(meta_value=str(meta_value)))
+                    else:
+                        # Fallback to simple text search
+                        db_query = db_query.filter(Document.metadata_.like(f'%"{meta_key}"%"{meta_value}"%'))
+            elif key == "metadata_like":
+                # Handle metadata LIKE patterns
+                for meta_key, meta_value in value.items():
+                    if self.db_uri.startswith('postgresql'):
+                        json_filter = text(f"metadata_->>'{meta_key}' LIKE :meta_value")
+                        db_query = db_query.filter(json_filter.params(meta_value=str(meta_value)))
+                    elif self.db_uri.startswith('sqlite'):
+                        json_filter = text(f"json_extract(metadata_, '$.{meta_key}') LIKE :meta_value")
+                        db_query = db_query.filter(json_filter.params(meta_value=str(meta_value)))
+                    else:
+                        # Fallback to simple text search
+                        db_query = db_query.filter(Document.metadata_.like(f'%{meta_value}%'))
+            elif key == "metadata_ilike":
+                # Handle case-insensitive metadata LIKE patterns
+                for meta_key, meta_value in value.items():
+                    if self.db_uri.startswith('postgresql'):
+                        json_filter = text(f"metadata_->>'{meta_key}' ILIKE :meta_value")
+                        db_query = db_query.filter(json_filter.params(meta_value=str(meta_value)))
+                    else:
+                        # Fallback to case-insensitive LIKE
+                        if self.db_uri.startswith('sqlite'):
+                            json_filter = text(f"json_extract(metadata_, '$.{meta_key}') LIKE :meta_value")
+                            db_query = db_query.filter(json_filter.params(meta_value=str(meta_value)))
+                        else:
+                            db_query = db_query.filter(Document.metadata_.like(f'%{meta_value}%'))
+            elif key.endswith("_like"):
+                # LIKE pattern for regular fields
+                field_name = key[:-5]  # Remove '_like' suffix
+                if hasattr(Document, field_name):
+                    db_query = db_query.filter(getattr(Document, field_name).like(value))
+            elif key.endswith("_ilike"):
+                # Case-insensitive LIKE pattern
+                field_name = key[:-6]  # Remove '_ilike' suffix
+                if hasattr(Document, field_name):
+                    if self.db_uri.startswith('postgresql'):
+                        # PostgreSQL has native ILIKE support
+                        db_query = db_query.filter(getattr(Document, field_name).op('ILIKE')(value))
+                    else:
+                        # Fallback to case-insensitive LIKE
+                        db_query = db_query.filter(func.lower(getattr(Document, field_name)).like(func.lower(value)))
             elif hasattr(Document, key):
-                db_query = db_query.filter(getattr(Document, key) == value)
-
-        # Apply metadata filters if any
-        if "metadata" in query:
-            for meta_key, meta_value in query["metadata"].items():
-                # This is a simplification - proper JSON field querying depends on the database
-                json_filter = func.json_extract(Document.metadata_, f'$.{meta_key}') == json.dumps(meta_value)
-                db_query = db_query.filter(json_filter)
+                if isinstance(value, list):
+                    # Handle list of values (IN condition)
+                    db_query = db_query.filter(getattr(Document, key).in_(value))
+                else:
+                    # Simple equality
+                    db_query = db_query.filter(getattr(Document, key) == value)
 
         # Apply limit
         db_query = db_query.limit(limit)
@@ -926,7 +992,24 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
         return result
 
     def find_elements(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
-        """Find elements matching query."""
+        """
+        Find elements matching query with support for LIKE patterns and ElementType enums.
+
+        Args:
+            query: Query parameters. Enhanced syntax supports:
+                   - Exact matches: {"element_type": "header"}
+                   - ElementType enums: {"element_type": ElementType.HEADER}
+                   - Multiple enums: {"element_type": [ElementType.HEADER, ElementType.PARAGRAPH]}
+                   - LIKE patterns: {"content_preview_like": "%summary%"}
+                   - Case-insensitive LIKE: {"content_preview_ilike": "%SUMMARY%"} (if supported)
+                   - List matching: {"doc_id": ["doc1", "doc2"]}
+                   - Metadata exact: {"metadata": {"section": "intro"}}
+                   - Metadata LIKE: {"metadata_like": {"title": "%chapter%"}}
+            limit: Maximum number of results
+
+        Returns:
+            List of matching elements
+        """
         if not self.session:
             raise ValueError("Database not initialized")
 
@@ -939,8 +1022,68 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
         # Apply filters
         for key, value in query.items():
             if key == "metadata":
-                # Skip metadata for now, will handle below
-                continue
+                # Handle metadata exact matches
+                for meta_key, meta_value in value.items():
+                    # Use database-specific JSON extraction
+                    if self.db_uri.startswith('postgresql'):
+                        # PostgreSQL JSONB operator
+                        json_filter = text(f"metadata_->>'{meta_key}' = :meta_value")
+                        db_query = db_query.filter(json_filter.params(meta_value=str(meta_value)))
+                    elif self.db_uri.startswith('sqlite'):
+                        # SQLite JSON1 extension
+                        json_filter = text(f"json_extract(metadata_, '$.{meta_key}') = :meta_value")
+                        db_query = db_query.filter(json_filter.params(meta_value=str(meta_value)))
+                    else:
+                        # Fallback to simple text search
+                        db_query = db_query.filter(Element.metadata_.like(f'%"{meta_key}"%"{meta_value}"%'))
+            elif key == "metadata_like":
+                # Handle metadata LIKE patterns
+                for meta_key, meta_value in value.items():
+                    if self.db_uri.startswith('postgresql'):
+                        json_filter = text(f"metadata_->>'{meta_key}' LIKE :meta_value")
+                        db_query = db_query.filter(json_filter.params(meta_value=str(meta_value)))
+                    elif self.db_uri.startswith('sqlite'):
+                        json_filter = text(f"json_extract(metadata_, '$.{meta_key}') LIKE :meta_value")
+                        db_query = db_query.filter(json_filter.params(meta_value=str(meta_value)))
+                    else:
+                        # Fallback to simple text search
+                        db_query = db_query.filter(Element.metadata_.like(f'%{meta_value}%'))
+            elif key == "metadata_ilike":
+                # Handle case-insensitive metadata LIKE patterns
+                for meta_key, meta_value in value.items():
+                    if self.db_uri.startswith('postgresql'):
+                        json_filter = text(f"metadata_->>'{meta_key}' ILIKE :meta_value")
+                        db_query = db_query.filter(json_filter.params(meta_value=str(meta_value)))
+                    else:
+                        # Fallback to case-insensitive LIKE
+                        if self.db_uri.startswith('sqlite'):
+                            json_filter = text(f"json_extract(metadata_, '$.{meta_key}') LIKE :meta_value")
+                            db_query = db_query.filter(json_filter.params(meta_value=str(meta_value)))
+                        else:
+                            db_query = db_query.filter(Element.metadata_.like(f'%{meta_value}%'))
+            elif key.endswith("_like"):
+                # LIKE pattern for regular fields
+                field_name = key[:-5]  # Remove '_like' suffix
+                if hasattr(Element, field_name):
+                    db_query = db_query.filter(getattr(Element, field_name).like(value))
+            elif key.endswith("_ilike"):
+                # Case-insensitive LIKE pattern
+                field_name = key[:-6]  # Remove '_ilike' suffix
+                if hasattr(Element, field_name):
+                    if self.db_uri.startswith('postgresql'):
+                        # PostgreSQL has native ILIKE support
+                        db_query = db_query.filter(getattr(Element, field_name).op('ILIKE')(value))
+                    else:
+                        # Fallback to case-insensitive LIKE
+                        db_query = db_query.filter(func.lower(getattr(Element, field_name)).like(func.lower(value)))
+            elif key == "element_type":
+                # Handle ElementType enums, strings, and lists
+                type_values = self.prepare_element_type_query(value)
+                if type_values:
+                    if len(type_values) == 1:
+                        db_query = db_query.filter(Element.element_type == type_values[0])
+                    else:
+                        db_query = db_query.filter(Element.element_type.in_(type_values))
             elif hasattr(Element, key):
                 if isinstance(value, list):
                     # Handle list of values (IN condition)
@@ -948,13 +1091,6 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
                 else:
                     # Simple equality
                     db_query = db_query.filter(getattr(Element, key) == value)
-
-        # Apply metadata filters if any
-        if "metadata" in query:
-            for meta_key, meta_value in query["metadata"].items():
-                # This is a simplification - proper JSON field querying depends on the database
-                json_filter = func.json_extract(Element.metadata_, f'$.{meta_key}') == json.dumps(meta_value)
-                db_query = db_query.filter(json_filter)
 
         # Apply limit
         db_query = db_query.limit(limit)
@@ -1427,7 +1563,192 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
             return []
 
     # ========================================
-    # NEW: TOPIC SUPPORT METHODS
+    # ENHANCED SEARCH HELPER METHODS
+    # ========================================
+
+    @staticmethod
+    def supports_like_patterns() -> bool:
+        """
+        Indicate whether this backend supports LIKE pattern matching.
+
+        Returns:
+            True - SQLAlchemy supports LIKE patterns across databases
+        """
+        return True
+
+    @staticmethod
+    def supports_case_insensitive_like() -> bool:
+        """
+        Indicate whether this backend supports case-insensitive LIKE (ILIKE).
+
+        Returns:
+            True - We can implement case-insensitive LIKE across databases
+        """
+        return True
+
+    @staticmethod
+    def supports_element_type_enums() -> bool:
+        """
+        Indicate whether this backend supports ElementType enum integration.
+
+        Returns:
+            True - SQLAlchemy implementation supports ElementType enums
+        """
+        return True
+
+    @staticmethod
+    def prepare_element_type_query(element_types: Union[
+        ElementType,
+        List[ElementType],
+        str,
+        List[str],
+        None
+    ]) -> Optional[List[str]]:
+        """
+        Prepare element type values for database queries.
+
+        Args:
+            element_types: ElementType enum(s), string(s), or None
+
+        Returns:
+            List of string values for database query, or None
+        """
+        if element_types is None:
+            return None
+
+        if isinstance(element_types, ElementType):
+            return [element_types.value]
+        elif isinstance(element_types, str):
+            return [element_types]
+        elif isinstance(element_types, list):
+            result = []
+            for et in element_types:
+                if isinstance(et, ElementType):
+                    result.append(et.value)
+                elif isinstance(et, str):
+                    result.append(et)
+            return result if result else None
+
+        return None
+
+    @staticmethod
+    def get_element_types_by_category() -> Dict[str, List[ElementType]]:
+        """
+        Get categorized lists of ElementType enums.
+
+        Returns:
+            Dictionary with categorized element types
+        """
+        return {
+            "text_elements": [
+                ElementType.HEADER,
+                ElementType.PARAGRAPH,
+                ElementType.BLOCKQUOTE,
+                ElementType.TEXT_BOX
+            ],
+
+            "structural_elements": [
+                ElementType.ROOT,
+                ElementType.PAGE,
+                ElementType.BODY,
+                ElementType.PAGE_HEADER,
+                ElementType.PAGE_FOOTER
+            ],
+
+            "list_elements": [
+                ElementType.LIST,
+                ElementType.LIST_ITEM
+            ],
+
+            "table_elements": [
+                ElementType.TABLE,
+                ElementType.TABLE_ROW,
+                ElementType.TABLE_HEADER_ROW,
+                ElementType.TABLE_CELL,
+                ElementType.TABLE_HEADER
+            ],
+
+            "media_elements": [
+                ElementType.IMAGE,
+                ElementType.CHART,
+                ElementType.SHAPE,
+                ElementType.SHAPE_GROUP
+            ],
+
+            "code_elements": [
+                ElementType.CODE_BLOCK
+            ],
+
+            "presentation_elements": [
+                ElementType.SLIDE,
+                ElementType.SLIDE_NOTES,
+                ElementType.PRESENTATION_BODY,
+                ElementType.SLIDE_MASTERS,
+                ElementType.SLIDE_TEMPLATES,
+                ElementType.SLIDE_LAYOUT,
+                ElementType.SLIDE_MASTER
+            ],
+
+            "data_elements": [
+                ElementType.JSON_OBJECT,
+                ElementType.JSON_ARRAY,
+                ElementType.JSON_FIELD,
+                ElementType.JSON_ITEM
+            ],
+
+            "xml_elements": [
+                ElementType.XML_ELEMENT,
+                ElementType.XML_TEXT,
+                ElementType.XML_LIST,
+                ElementType.XML_OBJECT
+            ]
+        }
+
+    def find_elements_by_category(self, category: str, **other_filters) -> List[Dict[str, Any]]:
+        """
+        Find elements by predefined category using ElementType enums.
+
+        Args:
+            category: Category name from get_element_types_by_category()
+            **other_filters: Additional filter criteria
+
+        Returns:
+            List of matching elements
+
+        Examples:
+            find_elements_by_category("text_elements")
+            find_elements_by_category("table_elements", content_preview_like="%data%")
+        """
+        categories = self.get_element_types_by_category()
+
+        if category not in categories:
+            available = list(categories.keys())
+            raise ValueError(f"Unknown category: {category}. Available: {available}")
+
+        element_types = categories[category]
+        query = {"element_type": element_types}
+        query.update(other_filters)
+
+        return self.find_elements(query)
+
+    def find_elements_ilike(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Find elements with case-insensitive LIKE support.
+
+        SQLAlchemy implementation supports case-insensitive LIKE across databases.
+
+        Args:
+            query: Query parameters with _ilike suffix support
+            limit: Maximum number of results
+
+        Returns:
+            List of matching elements
+        """
+        # SQLAlchemy implementation handles case-insensitive LIKE natively
+        return self.find_elements(query, limit)
+
+    # ========================================
+    # TOPIC SUPPORT METHODS
     # ========================================
 
     def supports_topics(self) -> bool:
@@ -1612,7 +1933,8 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
             logger.error(f"Error in fallback topic search: {str(e)}")
             return []
 
-    def _matches_topic_filters(self, topics: List[str],
+    @staticmethod
+    def _matches_topic_filters(topics: List[str],
                                include_topics: Optional[List[str]] = None,
                                exclude_topics: Optional[List[str]] = None) -> bool:
         """Check if topics match the include/exclude filters using pattern matching."""
@@ -1726,7 +2048,140 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
             logger.error(f"Error getting topics for element {element_pk}: {str(e)}")
             return []
 
-    def _encode_embedding(self, embedding: VectorType) -> bytes:
+    # ========================================
+    # HIERARCHY METHODS
+    # ========================================
+
+    def get_results_outline(self, elements: List[Tuple[int, float]]) -> List["ElementHierarchical"]:
+        """
+        For an arbitrary list of element pk search results, finds the root node of the source, and each
+        ancestor element, to create a root -> element array of arrays like this:
+        [(<parent element>, score, [children])]
+
+        (Note score is None if the element was not in the results param)
+
+        Then each additional element is analyzed, its hierarchy materialized, and merged into
+        the final result.
+        """
+        from .element_element import ElementHierarchical
+
+        # Dictionary to store element_pk -> score mapping for quick lookup
+        element_scores = {element_pk: score for element_pk, score in elements}
+
+        # Set to track processed element_pks to avoid duplicates
+        processed_elements = set()
+
+        # Final result structure
+        result_tree: List[ElementHierarchical] = []
+
+        # Process each element from the search results
+        for element_pk, score in elements:
+            if element_pk in processed_elements:
+                continue
+
+            # Find the complete ancestry path for this element
+            ancestry_path = self._get_element_ancestry_path(element_pk)
+
+            if not ancestry_path:
+                continue
+
+            # Mark this element as processed
+            processed_elements.add(element_pk)
+
+            # Start with the root level
+            current_level = result_tree
+
+            # Process each ancestor from root to the target element
+            for i, ancestor in enumerate(ancestry_path):
+                ancestor_pk = ancestor.element_pk
+
+                # Check if this ancestor is already in the current level
+                existing_idx = None
+                for idx, existing_element in enumerate(current_level):
+                    if existing_element.element_pk == ancestor_pk:
+                        existing_idx = idx
+                        break
+
+                if existing_idx is not None:
+                    # Ancestor exists, get its children
+                    current_level = current_level[existing_idx].child_elements  # Get children list
+                else:
+                    # Ancestor doesn't exist, add it with its score (or None if not in search results)
+                    ancestor_score = element_scores.get(ancestor_pk)
+                    children = []
+                    ancestor.score = ancestor_score
+                    h_ancestor = ancestor.to_hierarchical()
+                    h_ancestor.child_elements = children
+                    current_level.append(h_ancestor)
+                    current_level = children
+
+        return result_tree
+
+    def _get_element_ancestry_path(self, element_pk: int) -> List[ElementBase]:
+        """
+        Get the complete ancestry path for an element, from root to the element itself.
+
+        Uses parent_id to find parents instead of relationships.
+        """
+        # Get the element
+        element_dict = self.get_element(element_pk)
+        if not element_dict:
+            return []
+
+        # Convert to ElementBase instance
+        element = ElementBase(**element_dict)
+
+        # Start building the ancestry path with the element itself
+        ancestry = [element]
+
+        # Track to avoid circular references
+        visited = {element_pk}
+
+        # Current element to process
+        current_pk = element_pk
+
+        # Traverse up the hierarchy using parent_id
+        while True:
+            # Get the current element
+            current_element = self.get_element(current_pk)
+            if not current_element:
+                break
+
+            # Get parent ID
+            parent_id = current_element.get('parent_id')
+            if not parent_id:
+                break
+
+            # Get the parent element
+            parent_dict = self.get_element(parent_id)
+            if not parent_dict:
+                break
+
+            # Check for circular references
+            parent_pk = parent_dict.get('id') or parent_dict.get('pk') or parent_dict.get('element_id')
+            if parent_pk in visited:
+                break
+
+            # Convert to ElementBase
+            parent = ElementBase(**parent_dict)
+
+            # Add to visited set
+            visited.add(parent_pk)
+
+            # Add parent to the beginning of the ancestry list (root first)
+            ancestry.insert(0, parent)
+
+            # Move up to the parent
+            current_pk = parent_id
+
+        return ancestry
+
+    # ========================================
+    # UTILITY METHODS
+    # ========================================
+
+    @staticmethod
+    def _encode_embedding(embedding: VectorType) -> bytes:
         """Encode embedding as binary blob."""
         if NUMPY_AVAILABLE:
             # Use numpy for efficient encoding
@@ -1737,7 +2192,8 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
             # Pack each float into a binary string
             return b''.join(struct.pack('f', float(val)) for val in embedding)
 
-    def _decode_embedding(self, blob: bytes) -> VectorType:
+    @staticmethod
+    def _decode_embedding(blob: bytes) -> VectorType:
         """Decode embedding from binary blob."""
         if NUMPY_AVAILABLE:
             # Use numpy for efficient decoding
@@ -1750,7 +2206,8 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
             # Unpack the binary data into floats
             return list(struct.unpack(f'{float_count}f', blob))
 
-    def _cosine_similarity_numpy(self, vec1: 'np.ndarray', vec2: 'np.ndarray') -> float:
+    @staticmethod
+    def _cosine_similarity_numpy(vec1: 'np.ndarray', vec2: 'np.ndarray') -> float:
         """Calculate cosine similarity between two vectors using numpy."""
         if not NUMPY_AVAILABLE:
             raise ImportError("NumPy is required for this method but not available")
@@ -1769,7 +2226,8 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
         # Calculate cosine similarity
         return float(dot_product / (norm1 * norm2))
 
-    def _cosine_similarity_fallback(self, vec1: List[float], vec2: List[float]) -> float:
+    @staticmethod
+    def _cosine_similarity_fallback(vec1: List[float], vec2: List[float]) -> float:
         """Calculate cosine similarity between two vectors without numpy."""
         # Calculate dot product
         dot_product = sum(a * b for a, b in zip(vec1, vec2))

@@ -25,6 +25,7 @@ else:
 
 from .base import DocumentDatabase
 from .element_relationship import ElementRelationship
+from .element_element import ElementType  # Import existing enum
 
 # Setup logger
 logger = logging.getLogger(__name__)
@@ -142,7 +143,11 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                 "CREATE INDEX IF NOT EXISTS FOR (e:Element) ON (e.element_type)",
                 "CREATE INDEX IF NOT EXISTS FOR (r:RELATES_TO) ON (r.relationship_type)",
                 "CREATE INDEX IF NOT EXISTS FOR (emb:Embedding) ON (emb.confidence)",
-                "CREATE INDEX IF NOT EXISTS FOR (emb:Embedding) ON (emb.created_at)"
+                "CREATE INDEX IF NOT EXISTS FOR (emb:Embedding) ON (emb.created_at)",
+                # Enhanced search indexes
+                "CREATE INDEX IF NOT EXISTS FOR (e:Element) ON (e.content_preview)",
+                "CREATE INDEX IF NOT EXISTS FOR (d:Document) ON (d.source)",
+                "CREATE INDEX IF NOT EXISTS FOR (d:Document) ON (d.doc_type)"
             ]
 
             # Execute all constraints and indexes
@@ -644,7 +649,23 @@ class Neo4jDocumentDatabase(DocumentDatabase):
         return relationships
 
     def find_documents(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
-        """Find documents matching query."""
+        """
+        Find documents matching query with support for pattern matching.
+
+        Args:
+            query: Query parameters. Use '_like' suffix for pattern matching.
+                   Examples:
+                   - {"doc_type": "pdf"} - exact match
+                   - {"source_like": "%reports%"} - pattern match (uses CONTAINS)
+                   - {"source_starts": "annual"} - starts with pattern
+                   - {"source_ends": ".pdf"} - ends with pattern
+                   - {"metadata": {"author": "John"}} - metadata exact match
+                   - {"metadata_like": {"title": "%annual%"}} - metadata pattern match
+            limit: Maximum number of results
+
+        Returns:
+            List of matching documents
+        """
         if not self.driver:
             raise ValueError("Database not initialized")
 
@@ -652,25 +673,72 @@ class Neo4jDocumentDatabase(DocumentDatabase):
             # Start with base query
             cypher_query = "MATCH (d:Document)"
             params = {}
+            conditions = []
 
             # Apply filters if provided
             if query:
-                conditions = []
-
                 for key, value in query.items():
                     if key == "metadata":
                         # Metadata filters require special handling
                         for meta_key, meta_value in value.items():
                             # For simplicity, we'll check if the JSON contains this key/value
-                            # Note: This is a simplistic approach and may need refinement for production
-                            conditions.append(f"d.metadata CONTAINS $meta_{meta_key}")
-                            params[f"meta_{meta_key}"] = f'"{meta_key}":"{meta_value}"'
+                            conditions.append(f"d.metadata CONTAINS ${meta_key}_value")
+                            params[f"{meta_key}_value"] = f'"{meta_key}":"{meta_value}"'
+                    elif key == "metadata_like":
+                        # Metadata pattern filters
+                        for meta_key, meta_value in value.items():
+                            pattern = self._convert_like_to_neo4j_pattern(meta_value)
+                            if pattern["type"] == "contains":
+                                conditions.append(f"d.metadata CONTAINS ${meta_key}_pattern")
+                                params[f"{meta_key}_pattern"] = pattern["value"]
+                            elif pattern["type"] == "starts":
+                                conditions.append(f"d.metadata CONTAINS ${meta_key}_start")
+                                params[f"{meta_key}_start"] = f'"{meta_key}":"{pattern["value"]}'
+                            elif pattern["type"] == "ends":
+                                conditions.append(f"d.metadata CONTAINS ${meta_key}_end")
+                                params[f"{meta_key}_end"] = pattern["value"]
+                    elif key.endswith("_like"):
+                        # Pattern matching for regular fields
+                        field_name = key[:-5]  # Remove '_like' suffix
+                        pattern = self._convert_like_to_neo4j_pattern(value)
+                        if pattern["type"] == "contains":
+                            conditions.append(f"d.{field_name} CONTAINS ${field_name}_contains")
+                            params[f"{field_name}_contains"] = pattern["value"]
+                        elif pattern["type"] == "starts":
+                            conditions.append(f"d.{field_name} STARTS WITH ${field_name}_starts")
+                            params[f"{field_name}_starts"] = pattern["value"]
+                        elif pattern["type"] == "ends":
+                            conditions.append(f"d.{field_name} ENDS WITH ${field_name}_ends")
+                            params[f"{field_name}_ends"] = pattern["value"]
+                        elif pattern["type"] == "regex":
+                            conditions.append(f"d.{field_name} =~ ${field_name}_regex")
+                            params[f"{field_name}_regex"] = pattern["value"]
+                    elif key.endswith("_starts"):
+                        # Starts with pattern
+                        field_name = key[:-7]  # Remove '_starts' suffix
+                        conditions.append(f"d.{field_name} STARTS WITH ${field_name}_starts")
+                        params[f"{field_name}_starts"] = value
+                    elif key.endswith("_ends"):
+                        # Ends with pattern
+                        field_name = key[:-5]  # Remove '_ends' suffix
+                        conditions.append(f"d.{field_name} ENDS WITH ${field_name}_ends")
+                        params[f"{field_name}_ends"] = value
+                    elif key.endswith("_contains"):
+                        # Contains pattern
+                        field_name = key[:-9]  # Remove '_contains' suffix
+                        conditions.append(f"d.{field_name} CONTAINS ${field_name}_contains")
+                        params[f"{field_name}_contains"] = value
+                    elif isinstance(value, list):
+                        # Handle list fields with IN clause
+                        conditions.append(f"d.{key} IN ${key}")
+                        params[key] = value
                     else:
+                        # Exact match for regular fields
                         conditions.append(f"d.{key} = ${key}")
                         params[key] = value
 
-                if conditions:
-                    cypher_query += " WHERE " + " AND ".join(conditions)
+            if conditions:
+                cypher_query += " WHERE " + " AND ".join(conditions)
 
             # Add return and limit
             cypher_query += f" RETURN d LIMIT {limit}"
@@ -693,7 +761,28 @@ class Neo4jDocumentDatabase(DocumentDatabase):
             return documents
 
     def find_elements(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
-        """Find elements matching query."""
+        """
+        Find elements matching query with support for pattern matching and ElementType enums.
+
+        Args:
+            query: Query parameters. Use '_like' suffix for pattern matching.
+                   Examples:
+                   - {"element_type": "header"} - exact match with string
+                   - {"element_type": ElementType.HEADER} - exact match with enum
+                   - {"element_type": [ElementType.HEADER, ElementType.PARAGRAPH]} - enum list
+                   - {"element_type_like": "head%"} - pattern match
+                   - {"content_preview_like": "%important%"} - pattern match
+                   - {"content_preview_contains": "summary"} - contains pattern
+                   - {"content_preview_starts": "Introduction"} - starts with pattern
+                   - {"content_preview_ends": "conclusion"} - ends with pattern
+                   - {"doc_id": ["doc1", "doc2"]} - list for IN clause
+                   - {"metadata": {"section": "intro"}} - metadata exact match
+                   - {"metadata_like": {"title": "%summary%"}} - metadata pattern match
+            limit: Maximum number of results
+
+        Returns:
+            List of matching elements
+        """
         if not self.driver:
             raise ValueError("Database not initialized")
 
@@ -701,43 +790,81 @@ class Neo4jDocumentDatabase(DocumentDatabase):
             # Start with base query
             cypher_query = "MATCH (e:Element)"
             params = {}
+            conditions = []
 
             # Apply filters if provided
             if query:
-                conditions = []
-
                 for key, value in query.items():
                     if key == "metadata":
                         # Metadata filters require special handling
                         for meta_key, meta_value in value.items():
-                            # For simplicity, we'll check if the JSON contains this key/value
-                            conditions.append(f"e.metadata CONTAINS $meta_{meta_key}")
-                            params[f"meta_{meta_key}"] = f'"{meta_key}":"{meta_value}"'
-                    elif key == "element_type" and isinstance(value, list):
-                        # Handle list of element types
-                        type_conditions = []
-                        for i, element_type in enumerate(value):
-                            type_param = f"element_type_{i}"
-                            type_conditions.append(f"e.element_type = ${type_param}")
-                            params[type_param] = element_type
-                        if type_conditions:
-                            conditions.append("(" + " OR ".join(type_conditions) + ")")
-                    elif key == "doc_id" and isinstance(value, list):
-                        # Handle list of document IDs
-                        doc_conditions = []
-                        for i, doc_id in enumerate(value):
-                            doc_param = f"doc_id_{i}"
-                            doc_conditions.append(f"e.doc_id = ${doc_param}")
-                            params[doc_param] = doc_id
-                        if doc_conditions:
-                            conditions.append("(" + " OR ".join(doc_conditions) + ")")
+                            conditions.append(f"e.metadata CONTAINS ${meta_key}_value")
+                            params[f"{meta_key}_value"] = f'"{meta_key}":"{meta_value}"'
+                    elif key == "metadata_like":
+                        # Metadata pattern filters
+                        for meta_key, meta_value in value.items():
+                            pattern = self._convert_like_to_neo4j_pattern(meta_value)
+                            if pattern["type"] == "contains":
+                                conditions.append(f"e.metadata CONTAINS ${meta_key}_pattern")
+                                params[f"{meta_key}_pattern"] = pattern["value"]
+                            elif pattern["type"] == "starts":
+                                conditions.append(f"e.metadata CONTAINS ${meta_key}_start")
+                                params[f"{meta_key}_start"] = f'"{meta_key}":"{pattern["value"]}'
+                            elif pattern["type"] == "ends":
+                                conditions.append(f"e.metadata CONTAINS ${meta_key}_end")
+                                params[f"{meta_key}_end"] = pattern["value"]
+                    elif key.endswith("_like"):
+                        # Pattern matching for regular fields
+                        field_name = key[:-5]  # Remove '_like' suffix
+                        pattern = self._convert_like_to_neo4j_pattern(value)
+                        if pattern["type"] == "contains":
+                            conditions.append(f"e.{field_name} CONTAINS ${field_name}_contains")
+                            params[f"{field_name}_contains"] = pattern["value"]
+                        elif pattern["type"] == "starts":
+                            conditions.append(f"e.{field_name} STARTS WITH ${field_name}_starts")
+                            params[f"{field_name}_starts"] = pattern["value"]
+                        elif pattern["type"] == "ends":
+                            conditions.append(f"e.{field_name} ENDS WITH ${field_name}_ends")
+                            params[f"{field_name}_ends"] = pattern["value"]
+                        elif pattern["type"] == "regex":
+                            conditions.append(f"e.{field_name} =~ ${field_name}_regex")
+                            params[f"{field_name}_regex"] = pattern["value"]
+                    elif key.endswith("_starts"):
+                        # Starts with pattern
+                        field_name = key[:-7]  # Remove '_starts' suffix
+                        conditions.append(f"e.{field_name} STARTS WITH ${field_name}_starts")
+                        params[f"{field_name}_starts"] = value
+                    elif key.endswith("_ends"):
+                        # Ends with pattern
+                        field_name = key[:-5]  # Remove '_ends' suffix
+                        conditions.append(f"e.{field_name} ENDS WITH ${field_name}_ends")
+                        params[f"{field_name}_ends"] = value
+                    elif key.endswith("_contains"):
+                        # Contains pattern
+                        field_name = key[:-9]  # Remove '_contains' suffix
+                        conditions.append(f"e.{field_name} CONTAINS ${field_name}_contains")
+                        params[f"{field_name}_contains"] = value
+                    elif key == "element_type":
+                        # Handle ElementType enums, strings, and lists
+                        type_values = self._prepare_element_type_query(value)
+                        if type_values:
+                            if len(type_values) == 1:
+                                conditions.append("e.element_type = $element_type")
+                                params["element_type"] = type_values[0]
+                            else:
+                                conditions.append("e.element_type IN $element_types")
+                                params["element_types"] = type_values
+                    elif isinstance(value, list):
+                        # Handle other list fields with IN clause
+                        conditions.append(f"e.{key} IN ${key}")
+                        params[key] = value
                     else:
-                        # Simple equality filter
+                        # Exact match for regular fields
                         conditions.append(f"e.{key} = ${key}")
                         params[key] = value
 
-                if conditions:
-                    cypher_query += " WHERE " + " AND ".join(conditions)
+            if conditions:
+                cypher_query += " WHERE " + " AND ".join(conditions)
 
             # Add return and limit
             cypher_query += f" RETURN e, id(e) AS element_pk LIMIT {limit}"
@@ -911,6 +1038,214 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                 )
 
     # ========================================
+    # ENHANCED SEARCH HELPER METHODS
+    # ========================================
+
+    def _prepare_element_type_query(self, element_types: Union[
+        ElementType,
+        List[ElementType],
+        str,
+        List[str],
+        None
+    ]) -> Optional[List[str]]:
+        """
+        Prepare element type values for database queries using existing ElementType enum.
+
+        Args:
+            element_types: ElementType enum(s), string(s), or None
+
+        Returns:
+            List of string values for database query, or None
+        """
+        if element_types is None:
+            return None
+
+        if isinstance(element_types, ElementType):
+            return [element_types.value]
+        elif isinstance(element_types, str):
+            return [element_types]
+        elif isinstance(element_types, list):
+            result = []
+            for et in element_types:
+                if isinstance(et, ElementType):
+                    result.append(et.value)
+                elif isinstance(et, str):
+                    result.append(et)
+            return result if result else None
+
+        return None
+
+    def _convert_like_to_neo4j_pattern(self, like_pattern: str) -> Dict[str, str]:
+        """
+        Convert SQL LIKE pattern to Neo4j pattern matching.
+
+        Args:
+            like_pattern: SQL LIKE pattern (e.g., "%text%", "text%", "%text")
+
+        Returns:
+            Dictionary with pattern type and value
+        """
+        if like_pattern.startswith('%') and like_pattern.endswith('%'):
+            # %text% -> CONTAINS
+            return {"type": "contains", "value": like_pattern[1:-1]}
+        elif like_pattern.endswith('%'):
+            # text% -> STARTS WITH
+            return {"type": "starts", "value": like_pattern[:-1]}
+        elif like_pattern.startswith('%'):
+            # %text -> ENDS WITH
+            return {"type": "ends", "value": like_pattern[1:]}
+        else:
+            # No wildcards - treat as exact match or convert to regex for more complex patterns
+            if '_' in like_pattern:
+                # Convert _ to . for regex
+                regex_pattern = like_pattern.replace('_', '.')
+                return {"type": "regex", "value": f".*{regex_pattern}.*"}
+            else:
+                return {"type": "contains", "value": like_pattern}
+
+    def get_element_types_by_category(self):
+        """
+        Get categorized lists of ElementType enums from your existing enum.
+
+        Returns:
+            Dictionary with categorized element types
+        """
+        return {
+            "text_elements": [
+                ElementType.HEADER,
+                ElementType.PARAGRAPH,
+                ElementType.BLOCKQUOTE,
+                ElementType.TEXT_BOX
+            ],
+
+            "structural_elements": [
+                ElementType.ROOT,
+                ElementType.PAGE,
+                ElementType.BODY,
+                ElementType.PAGE_HEADER,
+                ElementType.PAGE_FOOTER
+            ],
+
+            "list_elements": [
+                ElementType.LIST,
+                ElementType.LIST_ITEM
+            ],
+
+            "table_elements": [
+                ElementType.TABLE,
+                ElementType.TABLE_ROW,
+                ElementType.TABLE_HEADER_ROW,
+                ElementType.TABLE_CELL,
+                ElementType.TABLE_HEADER
+            ],
+
+            "media_elements": [
+                ElementType.IMAGE,
+                ElementType.CHART,
+                ElementType.SHAPE,
+                ElementType.SHAPE_GROUP
+            ],
+
+            "code_elements": [
+                ElementType.CODE_BLOCK
+            ],
+
+            "presentation_elements": [
+                ElementType.SLIDE,
+                ElementType.SLIDE_NOTES,
+                ElementType.PRESENTATION_BODY,
+                ElementType.SLIDE_MASTERS,
+                ElementType.SLIDE_TEMPLATES,
+                ElementType.SLIDE_LAYOUT,
+                ElementType.SLIDE_MASTER
+            ],
+
+            "data_elements": [
+                ElementType.JSON_OBJECT,
+                ElementType.JSON_ARRAY,
+                ElementType.JSON_FIELD,
+                ElementType.JSON_ITEM
+            ],
+
+            "xml_elements": [
+                ElementType.XML_ELEMENT,
+                ElementType.XML_TEXT,
+                ElementType.XML_LIST,
+                ElementType.XML_OBJECT
+            ]
+        }
+
+    def find_elements_by_category(self, category: str, **other_filters) -> List[Dict[str, Any]]:
+        """
+        Find elements by predefined category using your existing ElementType enum.
+
+        Args:
+            category: Category name from get_element_types_by_category()
+            **other_filters: Additional filter criteria
+
+        Returns:
+            List of matching elements
+
+        Examples:
+            find_elements_by_category("text_elements")
+            find_elements_by_category("table_elements", content_preview_like="%data%")
+        """
+        categories = self.get_element_types_by_category()
+
+        if category not in categories:
+            raise ValueError(f"Unknown category: {category}. Available: {list(categories.keys())}")
+
+        element_types = categories[category]
+        query = {"element_type": element_types}
+        query.update(other_filters)
+
+        return self.find_elements(query)
+
+    def supports_like_patterns(self) -> bool:
+        """Neo4j supports pattern matching through CONTAINS, STARTS WITH, ENDS WITH."""
+        return True
+
+    def supports_case_insensitive_like(self) -> bool:
+        """Neo4j pattern matching is case-sensitive by default."""
+        return False
+
+    def supports_element_type_enums(self) -> bool:
+        """Neo4j supports ElementType enum integration."""
+        return True
+
+    def create_search_indexes(self):
+        """
+        Create additional indexes to optimize pattern matching searches.
+        Call this after database initialization for better performance.
+        """
+        if not self.driver:
+            raise ValueError("Database not initialized")
+
+        with self.driver.session(database=self.database) as session:
+            try:
+                # Text indexes for better pattern matching performance
+                additional_indexes = [
+                    "CREATE TEXT INDEX IF NOT EXISTS FOR (e:Element) ON (e.content_preview)",
+                    "CREATE TEXT INDEX IF NOT EXISTS FOR (e:Element) ON (e.element_type)",
+                    "CREATE TEXT INDEX IF NOT EXISTS FOR (d:Document) ON (d.source)",
+                    "CREATE TEXT INDEX IF NOT EXISTS FOR (d:Document) ON (d.doc_type)",
+                    # Composite indexes for common query patterns
+                    "CREATE INDEX IF NOT EXISTS FOR (e:Element) ON (e.doc_id, e.element_type)",
+                    "CREATE INDEX IF NOT EXISTS FOR (e:Element) ON (e.element_type, e.content_preview)"
+                ]
+
+                for index_query in additional_indexes:
+                    try:
+                        session.run(index_query)
+                    except Exception as e:
+                        logger.debug(f"Could not create index: {str(e)}")
+
+                logger.info("Created additional search optimization indexes for Neo4j")
+
+            except Exception as e:
+                logger.warning(f"Could not create search optimization indexes: {str(e)}")
+
+    # ========================================
     # ENHANCED EMBEDDING FUNCTIONS
     # ========================================
 
@@ -1043,22 +1378,26 @@ class Neo4jDocumentDatabase(DocumentDatabase):
 
             # Add filter criteria if provided
             if filter_criteria:
+                conditions = []
                 for key, value in filter_criteria.items():
                     if key == "element_type" and isinstance(value, list):
-                        cypher_query += " AND e.element_type IN $element_types"
+                        conditions.append("e.element_type IN $element_types")
                         params["element_types"] = value
                     elif key == "doc_id" and isinstance(value, list):
-                        cypher_query += " AND e.doc_id IN $doc_ids"
+                        conditions.append("e.doc_id IN $doc_ids")
                         params["doc_ids"] = value
                     elif key == "exclude_doc_id" and isinstance(value, list):
-                        cypher_query += " AND NOT e.doc_id IN $exclude_doc_ids"
+                        conditions.append("NOT e.doc_id IN $exclude_doc_ids")
                         params["exclude_doc_ids"] = value
                     elif key == "exclude_doc_source" and isinstance(value, list):
-                        cypher_query += " AND NOT d.source IN $exclude_sources"
+                        conditions.append("NOT d.source IN $exclude_sources")
                         params["exclude_sources"] = value
                     else:
-                        cypher_query += f" AND e.{key} = ${key}"
+                        conditions.append(f"e.{key} = ${key}")
                         params[key] = value
+
+                if conditions:
+                    cypher_query += " AND " + " AND ".join(conditions)
 
             # Complete the query
             cypher_query += """
@@ -1105,22 +1444,26 @@ class Neo4jDocumentDatabase(DocumentDatabase):
 
             # Add filter criteria if provided
             if filter_criteria:
+                conditions = []
                 for key, value in filter_criteria.items():
                     if key == "element_type" and isinstance(value, list):
-                        cypher_query += " AND e.element_type IN $element_types"
+                        conditions.append("e.element_type IN $element_types")
                         params["element_types"] = value
                     elif key == "doc_id" and isinstance(value, list):
-                        cypher_query += " AND e.doc_id IN $doc_ids"
+                        conditions.append("e.doc_id IN $doc_ids")
                         params["doc_ids"] = value
                     elif key == "exclude_doc_id" and isinstance(value, list):
-                        cypher_query += " AND NOT e.doc_id IN $exclude_doc_ids"
+                        conditions.append("NOT e.doc_id IN $exclude_doc_ids")
                         params["exclude_doc_ids"] = value
                     elif key == "exclude_doc_source" and isinstance(value, list):
-                        cypher_query += " AND NOT d.source IN $exclude_sources"
+                        conditions.append("NOT d.source IN $exclude_sources")
                         params["exclude_sources"] = value
                     else:
-                        cypher_query += f" AND e.{key} = ${key}"
+                        conditions.append(f"e.{key} = ${key}")
                         params[key] = value
+
+                if conditions:
+                    cypher_query += " AND " + " AND ".join(conditions)
 
             # Complete the query
             cypher_query += """
@@ -1379,7 +1722,8 @@ class Neo4jDocumentDatabase(DocumentDatabase):
 
             return results[:limit]
 
-    def _matches_topic_filters(self, topics: List[str],
+    @staticmethod
+    def _matches_topic_filters(topics: List[str],
                                include_topics: Optional[List[str]] = None,
                                exclude_topics: Optional[List[str]] = None) -> bool:
         """Check if topics match the include/exclude filters using pattern matching."""
@@ -1583,3 +1927,133 @@ class Neo4jDocumentDatabase(DocumentDatabase):
 
         # Calculate cosine similarity
         return float(dot_product / (magnitude1 * magnitude2))
+
+    # ========================================
+    # EXISTING HIERARCHY METHODS (adapted for Neo4j)
+    # ========================================
+
+    def get_results_outline(self, elements: List[Tuple[int, float]]) -> List["ElementHierarchical"]:
+        """
+        For an arbitrary list of element pk search results, finds the root node of the source, and each
+        ancestor element, to create a root -> element array of arrays like this:
+        [(<parent element>, score, [children])]
+
+        (Note score is None if the element was not in the results param)
+
+        Then each additional element is analyzed, its hierarchy materialized, and merged into
+        the final result.
+        """
+        from .element_element import ElementBase, ElementHierarchical
+
+        # Dictionary to store element_pk -> score mapping for quick lookup
+        element_scores = {element_pk: score for element_pk, score in elements}
+
+        # Set to track processed element_pks to avoid duplicates
+        processed_elements = set()
+
+        # Final result structure
+        result_tree: List[ElementHierarchical] = []
+
+        # Process each element from the search results
+        for element_pk, score in elements:
+            if element_pk in processed_elements:
+                continue
+
+            # Find the complete ancestry path for this element
+            ancestry_path = self._get_element_ancestry_path(element_pk)
+
+            if not ancestry_path:
+                continue
+
+            # Mark this element as processed
+            processed_elements.add(element_pk)
+
+            # Start with the root level
+            current_level = result_tree
+
+            # Process each ancestor from root to the target element
+            for i, ancestor in enumerate(ancestry_path):
+                ancestor_pk = ancestor.element_pk
+
+                # Check if this ancestor is already in the current level
+                existing_idx = None
+                for idx, existing_element in enumerate(current_level):
+                    if existing_element.element_pk == ancestor_pk:
+                        existing_idx = idx
+                        break
+
+                if existing_idx is not None:
+                    # Ancestor exists, get its children
+                    current_level = current_level[existing_idx].child_elements  # Get children list
+                else:
+                    # Ancestor doesn't exist, add it with its score (or None if not in search results)
+                    ancestor_score = element_scores.get(ancestor_pk)
+                    children = []
+                    ancestor.score = ancestor_score
+                    h_ancestor = ancestor.to_hierarchical()
+                    h_ancestor.child_elements = children
+                    current_level.append(h_ancestor)
+                    current_level = children
+
+        return result_tree
+
+    def _get_element_ancestry_path(self, element_pk: int) -> List["ElementBase"]:
+        """
+        Get the complete ancestry path for an element, from root to the element itself.
+
+        Uses parent_id to find parents instead of relationships.
+        """
+        from .element_element import ElementBase
+
+        # Get the element
+        element_dict = self.get_element(element_pk)
+        if not element_dict:
+            return []
+
+        # Convert to ElementElement instance
+        element = ElementBase(**element_dict)
+
+        # Start building the ancestry path with the element itself
+        ancestry = [element]
+
+        # Track to avoid circular references
+        visited = {element_pk}
+
+        # Current element to process
+        current_pk = element_pk
+
+        # Traverse up the hierarchy using parent_id
+        while True:
+            # Get the current element
+            current_element = self.get_element(current_pk)
+            if not current_element:
+                break
+
+            # Get parent ID
+            parent_id = current_element.get('parent_id')
+            if not parent_id:
+                break
+
+            # Get the parent element
+            parent_dict = self.get_element(parent_id)
+            if not parent_dict:
+                break
+
+            # Check for circular references
+            parent_pk = parent_dict.get('id') or parent_dict.get('pk') or parent_dict.get('element_id')
+            if parent_pk in visited:
+                break
+
+            # Convert to ElementElement
+            parent = ElementBase(**parent_dict)
+
+            # Add to visited set
+            visited.add(parent_pk)
+
+            # Add parent to the beginning of the ancestry list (root first)
+            ancestry.insert(0, parent)
+
+            # Move up to the parent
+            current_pk = parent_id
+
+        return ancestry

@@ -116,6 +116,14 @@ async def search_document_detail(
         min_score: Optional[float] = Field(
             default=None,
             description="Semantic similarity threshold (-1 to 1). Higher values ensure closer conceptual matches: 0.7+ for exact concepts, 0.5+ for closely related, 0.3+ for broadly related, 0.1+ for exploratory searches. Defaults to 0."
+        ),
+        include_topics: Optional[List[str]] = Field(
+        default=None,
+        description="A list of topics to include in the search. Includes ANY document that matches ANY topic. Uses a LIKE syntax where % matches any text. For example if the document topics included the source you might look for wikipedia articles setting this to: [\"%wikipedia%\"]"
+        ),
+        exclude_topics: Optional[List[str]] = Field(
+        default=None,
+        description="A list of topics to include in the search. Excludes ANY document that matches ANY topic"
         )
 ) -> List[ElementFlat]:
 
@@ -136,6 +144,8 @@ async def search_document_detail(
     - Matching technical documentation to user questions
 
     Parameters:
+    :param include_topics: a list of topics to include in the search. Includes ANY document that matches ANY topic. Uses a LIKE syntax where % matches any text. For example if the document topics included the source you might look for wikipedia articles setting this to: ["%wikipedia%"]
+    :param exclude_topics: a list of topics to exclude from the search. Excludes ANY document that matches ANY topic.
     :param resolve_text: This will provide the complete textual version of the matching element.
     :param resolve_content: This will provide the complete content (meaning any structural decorators or tags like formatting) of the matching element.
     :param search_for: Natural language text to search with. Can be a question ("How do I dispute a charge?"),
@@ -168,7 +178,7 @@ async def search_document_detail(
     - Related: Paragraph about international transfer costs (score: 0.65)
     - Broader: Table of all service fees (score: 0.45)
     """
-    async def work(_search_for, _limit, _min_score, _include_parents, _resolve_text, _resolve_content, _just_documents) -> List[ElementFlat]:
+    async def work(_search_for, _limit, _min_score, _include_parents, _resolve_text, _resolve_content, _just_documents, _include_topics, _exclude_topics) -> List[ElementFlat]:
         _span = get_current_span()
 
         # Set defaults
@@ -190,6 +200,11 @@ async def search_document_detail(
         if not isinstance(_just_documents, bool):
             _just_documents = False
 
+        if not isinstance(_include_topics, list):
+            _include_topics = []
+        if not isinstance(_exclude_topics, list):
+            _exclude_topics = []
+
         # Prepare request headers
         headers = {
             'Content-Type': 'application/json'
@@ -208,7 +223,9 @@ async def search_document_detail(
             'min_score': _min_score,
             'text': _resolve_text,
             'content': _resolve_content,
-            'flat': True
+            'flat': True,
+            'include_topics': _include_topics,
+            'exclude_topics': _exclude_topics,
         }
 
         try:
@@ -251,6 +268,7 @@ async def search_document_detail(
                 search_tree = top_elements
 
             _span.set_attribute("result_count", len(search_tree))
+            _span.set_attributes(payload)
             return search_tree
 
         except Exception as e:
@@ -261,7 +279,11 @@ async def search_document_detail(
     return await with_active_span(
         tracer,
         "Search Documents",
-        lambda span: work(search_for, limit, min_score, include_parents, resolve_text, resolve_content, just_documents),
+        lambda span: work(
+            _search_for=search_for, _limit=limit, _min_score=min_score,
+            _include_parents=include_parents, _resolve_text=resolve_text,
+            _resolve_content=resolve_content, _just_documents=just_documents,
+            _include_topics=include_topics, _exclude_topics=exclude_topics),
         {
             "search_for": search_for,
             "limit": str(limit),
@@ -290,6 +312,14 @@ async def search_top_document_matches(
         min_score: Optional[float] = Field(
             default=None,
             description="Semantic similarity threshold (-1 to 1). Higher values ensure closer conceptual matches: 0.7+ for exact concepts, 0.5+ for closely related, 0.3+ for broadly related, 0.1+ for exploratory searches. Defaults to 0."
+        ),
+        include_topics: Optional[List[str]] = Field(
+        default=None,
+        description="A list of topics to include in the search. Includes ANY document that matches ANY topic. Uses a LIKE syntax where % matches any text. For example if the document topics included the source you might look for wikipedia articles setting this to: [\"%wikipedia%\"]"
+        ),
+        exclude_topics: Optional[List[str]] = Field(
+        default=None,
+        description="A list of topics to include in the search. Excludes ANY document that matches ANY topic"
         )
 ) -> List[ElementFlat]:
     """
@@ -318,8 +348,15 @@ async def search_top_document_matches(
         resolve_content=resolve_content,
         resolve_text=resolve_text if resolve_text is not None else True,  # Default to True if None
         limit=limit,
-        min_score=min_score
+        min_score=min_score,
+        include_topics=include_topics,
+        exclude_topics=exclude_topics,
     )
+
+@connector.register_query
+async def search_top_document_matches_with_defaults(search_for: str,) -> List[ElementFlat]:
+    return await search_top_document_matches(search_for=search_for, resolve_content=True, resolve_text=True, limit=10, min_score=0.3)
+
 
 if __name__ == "__main__":
     start(connector)

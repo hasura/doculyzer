@@ -25,6 +25,7 @@ else:
     SQLiteCursorType = Any  # Generic type for SQLite cursor
 
 from .element_relationship import ElementRelationship
+from .element_element import ElementType  # Import existing enum
 
 logger = logging.getLogger(__name__)
 
@@ -682,7 +683,22 @@ class SQLiteDocumentDatabase(DocumentDatabase):
         return relationships
 
     def find_documents(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
-        """Find documents matching query."""
+        """
+        Find documents matching query with support for LIKE patterns.
+
+        Args:
+            query: Query parameters. Use '_like' suffix for LIKE patterns.
+                   Examples:
+                   - {"doc_type": "pdf"} - exact match
+                   - {"source_like": "%reports%"} - LIKE pattern
+                   - {"source_ilike": "%REPORTS%"} - case-insensitive LIKE (if supported)
+                   - {"metadata": {"author": "John"}} - metadata exact match
+                   - {"metadata_like": {"title": "%annual%"}} - metadata LIKE pattern
+            limit: Maximum number of results
+
+        Returns:
+            List of matching documents
+        """
         if not self.conn:
             raise ValueError("Database not initialized")
 
@@ -696,12 +712,37 @@ class SQLiteDocumentDatabase(DocumentDatabase):
 
             for key, value in query.items():
                 if key == "metadata":
-                    # Metadata filters require special handling
+                    # Metadata filters require special handling with JSON_EXTRACT (exact match)
                     for meta_key, meta_value in value.items():
-                        # Use JSON_EXTRACT to query JSON metadata
                         conditions.append(f"JSON_EXTRACT(metadata, '$.{meta_key}') = ?")
                         params.append(json.dumps(meta_value))
+                elif key == "metadata_like":
+                    # Metadata LIKE filters using JSON_EXTRACT
+                    for meta_key, meta_value in value.items():
+                        conditions.append(f"JSON_EXTRACT(metadata, '$.{meta_key}') LIKE ?")
+                        params.append(str(meta_value))
+                elif key == "metadata_ilike":
+                    # Case-insensitive metadata LIKE filters (SQLite doesn't have native ILIKE)
+                    for meta_key, meta_value in value.items():
+                        conditions.append(f"UPPER(JSON_EXTRACT(metadata, '$.{meta_key}')) LIKE UPPER(?)")
+                        params.append(str(meta_value))
+                elif key.endswith("_ilike"):
+                    # Case-insensitive LIKE pattern (emulated with UPPER)
+                    field_name = key[:-6]  # Remove '_ilike' suffix
+                    conditions.append(f"UPPER({field_name}) LIKE UPPER(?)")
+                    params.append(value)
+                elif key.endswith("_like"):
+                    # LIKE pattern for regular fields
+                    field_name = key[:-5]  # Remove '_like' suffix
+                    conditions.append(f"{field_name} LIKE ?")
+                    params.append(value)
+                elif isinstance(value, list):
+                    # Handle list fields with IN clause
+                    placeholders = ', '.join(['?'] * len(value))
+                    conditions.append(f"{key} IN ({placeholders})")
+                    params.extend(value)
                 else:
+                    # Exact match for regular fields
                     conditions.append(f"{key} = ?")
                     params.append(value)
 
@@ -729,7 +770,26 @@ class SQLiteDocumentDatabase(DocumentDatabase):
         return documents
 
     def find_elements(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
-        """Find elements matching query."""
+        """
+        Find elements matching query with support for LIKE patterns and ElementType enums.
+
+        Args:
+            query: Query parameters. Use '_like' suffix for LIKE patterns.
+                   Examples:
+                   - {"element_type": "header"} - exact match with string
+                   - {"element_type": ElementType.HEADER} - exact match with enum
+                   - {"element_type": [ElementType.HEADER, ElementType.PARAGRAPH]} - enum list
+                   - {"element_type_like": "head%"} - LIKE pattern
+                   - {"element_type_ilike": "HEAD%"} - case-insensitive LIKE
+                   - {"content_preview_like": "%important%"} - LIKE pattern
+                   - {"doc_id": ["doc1", "doc2"]} - list for IN clause
+                   - {"metadata": {"section": "intro"}} - metadata exact match
+                   - {"metadata_like": {"title": "%summary%"}} - metadata LIKE pattern
+            limit: Maximum number of results
+
+        Returns:
+            List of matching elements
+        """
         if not self.conn:
             raise ValueError("Database not initialized")
 
@@ -743,22 +803,49 @@ class SQLiteDocumentDatabase(DocumentDatabase):
 
             for key, value in query.items():
                 if key == "metadata":
-                    # Metadata filters require special handling
+                    # Metadata filters require special handling with JSON_EXTRACT (exact match)
                     for meta_key, meta_value in value.items():
-                        # Use JSON_EXTRACT to query JSON metadata
                         conditions.append(f"JSON_EXTRACT(metadata, '$.{meta_key}') = ?")
                         params.append(json.dumps(meta_value))
-                elif key == "element_type" and isinstance(value, list):
-                    # Handle list of element types
+                elif key == "metadata_like":
+                    # Metadata LIKE filters using JSON_EXTRACT
+                    for meta_key, meta_value in value.items():
+                        conditions.append(f"JSON_EXTRACT(metadata, '$.{meta_key}') LIKE ?")
+                        params.append(str(meta_value))
+                elif key == "metadata_ilike":
+                    # Case-insensitive metadata LIKE filters
+                    for meta_key, meta_value in value.items():
+                        conditions.append(f"UPPER(JSON_EXTRACT(metadata, '$.{meta_key}')) LIKE UPPER(?)")
+                        params.append(str(meta_value))
+                elif key.endswith("_ilike"):
+                    # Case-insensitive LIKE pattern (emulated with UPPER)
+                    field_name = key[:-6]  # Remove '_ilike' suffix
+                    conditions.append(f"UPPER({field_name}) LIKE UPPER(?)")
+                    params.append(value)
+                elif key.endswith("_like"):
+                    # LIKE pattern for regular fields
+                    field_name = key[:-5]  # Remove '_like' suffix
+                    conditions.append(f"{field_name} LIKE ?")
+                    params.append(value)
+                elif key == "element_type":
+                    # Handle ElementType enums, strings, and lists
+                    type_values = self._prepare_element_type_query(value)
+                    if type_values:
+                        if len(type_values) == 1:
+                            conditions.append("element_type = ?")
+                            params.append(type_values[0])
+                        else:
+                            placeholders = ', '.join(['?'] * len(type_values))
+                            conditions.append(f"element_type IN ({placeholders})")
+                            params.extend(type_values)
+                elif isinstance(value, list):
+                    # Handle other list fields with IN clause
+                    field_name = key
                     placeholders = ', '.join(['?'] * len(value))
-                    conditions.append(f"element_type IN ({placeholders})")
-                    params.extend(value)
-                elif key == "doc_id" and isinstance(value, list):
-                    # Handle list of document IDs
-                    placeholders = ', '.join(['?'] * len(value))
-                    conditions.append(f"doc_id IN ({placeholders})")
+                    conditions.append(f"{field_name} IN ({placeholders})")
                     params.extend(value)
                 else:
+                    # Exact match for regular fields
                     conditions.append(f"{key} = ?")
                     params.append(value)
 
@@ -1185,7 +1272,8 @@ class SQLiteDocumentDatabase(DocumentDatabase):
         # Register function
         self.conn.create_function("cosine_similarity", 2, cosine_similarity)
 
-    def _encode_embedding(self, embedding: VectorType) -> bytes:
+    @staticmethod
+    def _encode_embedding(embedding: VectorType) -> bytes:
         """
         Encode embedding as binary blob.
 
@@ -1204,7 +1292,8 @@ class SQLiteDocumentDatabase(DocumentDatabase):
             # Pack each float into a binary string
             return b''.join(struct.pack('f', float(val)) for val in embedding)
 
-    def _decode_embedding(self, blob: bytes) -> VectorType:
+    @staticmethod
+    def _decode_embedding(blob: bytes) -> VectorType:
         """
         Decode embedding from binary blob.
 
@@ -1553,7 +1642,8 @@ class SQLiteDocumentDatabase(DocumentDatabase):
         except Exception as e:
             logger.error(f"Error creating vector tables: {str(e)}")
 
-    def _get_embedding_dimensions(self) -> int:
+    @staticmethod
+    def _get_embedding_dimensions() -> int:
         """Get embedding dimensions from config or use default."""
         return config.config.get('embedding', {}).get('dimensions', 384) if config else 384
 
@@ -1626,6 +1716,261 @@ class SQLiteDocumentDatabase(DocumentDatabase):
 
         except Exception as e:
             logger.error(f"Error getting embeddings for vector tables: {str(e)}")
+
+    # ========================================
+    # NEW: ENHANCED SEARCH HELPER METHODS
+    # ========================================
+
+    @staticmethod
+    def _prepare_element_type_query(element_types: Union[
+        ElementType,
+        List[ElementType],
+        str,
+        List[str],
+        None
+    ]) -> Optional[List[str]]:
+        """
+        Prepare element type values for database queries using existing ElementType enum.
+
+        Args:
+            element_types: ElementType enum(s), string(s), or None
+
+        Returns:
+            List of string values for database query, or None
+        """
+        if element_types is None:
+            return None
+
+        if isinstance(element_types, ElementType):
+            return [element_types.value]
+        elif isinstance(element_types, str):
+            return [element_types]
+        elif isinstance(element_types, list):
+            result = []
+            for et in element_types:
+                if isinstance(et, ElementType):
+                    result.append(et.value)
+                elif isinstance(et, str):
+                    result.append(et)
+            return result if result else None
+
+        return None
+
+    def get_element_types_by_category(self):
+        """
+        Get categorized lists of ElementType enums from your existing enum.
+
+        Returns:
+            Dictionary with categorized element types
+        """
+        return {
+            "text_elements": [
+                ElementType.HEADER,
+                ElementType.PARAGRAPH,
+                ElementType.BLOCKQUOTE,
+                ElementType.TEXT_BOX
+            ],
+
+            "structural_elements": [
+                ElementType.ROOT,
+                ElementType.PAGE,
+                ElementType.BODY,
+                ElementType.PAGE_HEADER,
+                ElementType.PAGE_FOOTER
+            ],
+
+            "list_elements": [
+                ElementType.LIST,
+                ElementType.LIST_ITEM
+            ],
+
+            "table_elements": [
+                ElementType.TABLE,
+                ElementType.TABLE_ROW,
+                ElementType.TABLE_HEADER_ROW,
+                ElementType.TABLE_CELL,
+                ElementType.TABLE_HEADER
+            ],
+
+            "media_elements": [
+                ElementType.IMAGE,
+                ElementType.CHART,
+                ElementType.SHAPE,
+                ElementType.SHAPE_GROUP
+            ],
+
+            "code_elements": [
+                ElementType.CODE_BLOCK
+            ],
+
+            "presentation_elements": [
+                ElementType.SLIDE,
+                ElementType.SLIDE_NOTES,
+                ElementType.PRESENTATION_BODY,
+                ElementType.SLIDE_MASTERS,
+                ElementType.SLIDE_TEMPLATES,
+                ElementType.SLIDE_LAYOUT,
+                ElementType.SLIDE_MASTER
+            ],
+
+            "data_elements": [
+                ElementType.JSON_OBJECT,
+                ElementType.JSON_ARRAY,
+                ElementType.JSON_FIELD,
+                ElementType.JSON_ITEM
+            ],
+
+            "xml_elements": [
+                ElementType.XML_ELEMENT,
+                ElementType.XML_TEXT,
+                ElementType.XML_LIST,
+                ElementType.XML_OBJECT
+            ]
+        }
+
+    def find_elements_by_category(self, category: str, **other_filters) -> List[Dict[str, Any]]:
+        """
+        Find elements by predefined category using your existing ElementType enum.
+
+        Args:
+            category: Category name from get_element_types_by_category()
+            **other_filters: Additional filter criteria
+
+        Returns:
+            List of matching elements
+
+        Examples:
+            find_elements_by_category("text_elements")
+            find_elements_by_category("table_elements", content_preview_like="%data%")
+        """
+        categories = self.get_element_types_by_category()
+
+        if category not in categories:
+            raise ValueError(f"Unknown category: {category}. Available: {list(categories.keys())}")
+
+        element_types = categories[category]
+        query = {"element_type": element_types}
+        query.update(other_filters)
+
+        return self.find_elements(query)
+
+    def find_elements_ilike(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Enhanced find_elements with explicit case-insensitive LIKE support.
+
+        Note: SQLite doesn't have native ILIKE, so this emulates it using UPPER() functions.
+
+        Args:
+            query: Query parameters. Automatically treats LIKE patterns as case-insensitive.
+            limit: Maximum number of results
+
+        Returns:
+            List of matching elements
+        """
+        if not self.conn:
+            raise ValueError("Database not initialized")
+
+        # Convert all _like patterns to _ilike patterns for case-insensitive search
+        if query:
+            converted_query = {}
+            for key, value in query.items():
+                if key.endswith("_like") and not key.endswith("_ilike"):
+                    # Convert _like to _ilike for case-insensitive search
+                    new_key = key[:-5] + "_ilike"
+                    converted_query[new_key] = value
+                else:
+                    converted_query[key] = value
+            query = converted_query
+
+        return self.find_elements(query, limit)
+
+    def supports_like_patterns(self) -> bool:
+        """SQLite supports LIKE patterns."""
+        return True
+
+    def supports_case_insensitive_like(self) -> bool:
+        """SQLite emulates ILIKE using UPPER() functions."""
+        return True
+
+    def supports_element_type_enums(self) -> bool:
+        """SQLite supports ElementType enum integration."""
+        return True
+
+    def create_search_indexes(self):
+        """
+        Create additional indexes to optimize LIKE and enum searches.
+        Call this after database initialization for better performance.
+        """
+        if not self.conn:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Index for content preview LIKE searches
+            self.conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_elements_content_preview_upper 
+            ON elements (UPPER(content_preview))
+            """)
+
+            # Index for element type searches
+            self.conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_elements_type_upper 
+            ON elements (UPPER(element_type))
+            """)
+
+            # Index for document source LIKE searches
+            self.conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_documents_source_upper 
+            ON documents (UPPER(source))
+            """)
+
+            self.conn.commit()
+            logger.info("Created additional search optimization indexes for SQLite")
+
+        except Exception as e:
+            logger.warning(f"Could not create search optimization indexes: {str(e)}")
+
+    def find_elements_with_json_path(self, json_path: str, value: Any,
+                                     operator: str = "=", limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Find elements using SQLite JSON path expressions.
+
+        Args:
+            json_path: JSON path expression (e.g., "$.section", "$.tags[0]")
+            value: Value to search for
+            operator: Comparison operator ("=", "LIKE", "!=", etc.)
+            limit: Maximum number of results
+
+        Returns:
+            List of matching elements
+
+        Examples:
+            find_elements_with_json_path("$.author", "John", "=")
+            find_elements_with_json_path("$.title", "%report%", "LIKE")
+        """
+        if not self.conn:
+            raise ValueError("Database not initialized")
+
+        # Build the query
+        sql = f"""
+        SELECT * FROM elements 
+        WHERE JSON_EXTRACT(metadata, ?) {operator} ?
+        LIMIT ?
+        """
+
+        params = [json_path, value if operator.upper() != "LIKE" else str(value), limit]
+
+        cursor = self.conn.execute(sql, params)
+
+        elements = []
+        for row in cursor:
+            element = dict(row)
+            try:
+                element["metadata"] = json.loads(element["metadata"])
+            except (json.JSONDecodeError, TypeError):
+                element["metadata"] = {}
+            elements.append(element)
+
+        return elements
 
     # ========================================
     # NEW: TOPIC SUPPORT METHODS
@@ -1888,7 +2233,8 @@ class SQLiteDocumentDatabase(DocumentDatabase):
 
         return results[:limit]
 
-    def _add_topic_filters_sqlite(self, sql: str, params: List,
+    @staticmethod
+    def _add_topic_filters_sqlite(sql: str, params: List,
                                   include_topics: Optional[List[str]] = None,
                                   exclude_topics: Optional[List[str]] = None) -> tuple[str, List]:
         """Add topic filtering conditions to SQLite query using JSON functions."""
