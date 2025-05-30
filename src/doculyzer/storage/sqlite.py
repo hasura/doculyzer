@@ -11,10 +11,8 @@ import datetime
 import json
 import logging
 import os
-from typing import Optional, Dict, Any, List, Tuple, Union, TYPE_CHECKING
-from datetime import date, datetime, timedelta
-
-import time
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
 # Import types for type checking only - these won't be imported at runtime
 if TYPE_CHECKING:
@@ -34,15 +32,12 @@ else:
     SQLiteConnectionType = Any  # Generic type for SQLite connection
     SQLiteCursorType = Any  # Generic type for SQLite cursor
 
-from .element_relationship import ElementRelationship
-from .element_element import ElementType  # Import existing enum
-
 # Import structured search components
 from .structured_search import (
     StructuredSearchQuery, SearchCriteriaGroup, BackendCapabilities, SearchCapability,
     UnsupportedSearchError, TextSearchCriteria, EmbeddingSearchCriteria, DateSearchCriteria,
     TopicSearchCriteria, MetadataSearchCriteria, ElementSearchCriteria,
-    LogicalOperator, DateRangeOperator, SimilarityOperator, validate_query_capabilities
+    LogicalOperator, DateRangeOperator, SimilarityOperator
 )
 
 logger = logging.getLogger(__name__)

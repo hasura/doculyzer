@@ -10,8 +10,8 @@ multi-valued fields to provide comprehensive search functionality.
 import json
 import logging
 import os
+from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple, Union, TYPE_CHECKING
-from datetime import date, datetime, timedelta
 
 import time
 
@@ -35,7 +35,7 @@ from .structured_search import (
     StructuredSearchQuery, SearchCriteriaGroup, BackendCapabilities, SearchCapability,
     UnsupportedSearchError, TextSearchCriteria, EmbeddingSearchCriteria, DateSearchCriteria,
     TopicSearchCriteria, MetadataSearchCriteria, ElementSearchCriteria,
-    LogicalOperator, DateRangeOperator, SimilarityOperator, validate_query_capabilities
+    LogicalOperator, DateRangeOperator, SimilarityOperator
 )
 
 logger = logging.getLogger(__name__)

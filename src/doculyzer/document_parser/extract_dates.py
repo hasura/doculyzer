@@ -8,8 +8,8 @@ for storage with embeddings.
 
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime
-from dataclasses import dataclass, asdict
 from typing import List, Dict, Any, Optional
 
 try:

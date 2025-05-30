@@ -2647,7 +2647,7 @@ class Neo4jDocumentDatabase(DocumentDatabase):
         Then each additional element is analyzed, its hierarchy materialized, and merged into
         the final result.
         """
-        from .element_element import ElementBase, ElementHierarchical
+        from .element_element import ElementHierarchical
 
         # Dictionary to store element_pk -> score mapping for quick lookup
         element_scores = {element_pk: score for element_pk, score in elements}

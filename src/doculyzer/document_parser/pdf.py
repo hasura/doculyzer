@@ -25,7 +25,7 @@ except ImportError:
     logging.warning("PyMuPDF not available. Install with 'pip install pymupdf' to use PDF parser")
 
 from .base import DocumentParser
-from .extract_dates import DateExtractor, extract_dates_as_dicts
+from .extract_dates import DateExtractor
 
 logger = logging.getLogger(__name__)
 

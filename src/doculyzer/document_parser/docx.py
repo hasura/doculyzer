@@ -34,7 +34,7 @@ except ImportError:
 from bs4 import BeautifulSoup
 
 from .base import DocumentParser
-from .extract_dates import DateExtractor, extract_dates_as_dicts
+from .extract_dates import DateExtractor
 
 logger = logging.getLogger(__name__)
 

@@ -22,7 +22,7 @@ except ImportError:
     logging.warning("openpyxl not available. Install with 'pip install openpyxl' to use XLSX parser")
 
 from .base import DocumentParser
-from .extract_dates import DateExtractor, extract_dates_as_dicts
+from .extract_dates import DateExtractor
 
 logger = logging.getLogger(__name__)
 

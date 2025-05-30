@@ -9,10 +9,8 @@ including JSONB, pgvector, and complex SQL queries to provide comprehensive sear
 import json
 import logging
 import os
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple, Union, TYPE_CHECKING
-
-import time
 
 # Import types for type checking only
 if TYPE_CHECKING:
@@ -34,8 +32,6 @@ else:
     PostgresCursorType = Any
 
 from .base import DocumentDatabase
-from .element_relationship import ElementRelationship
-from .element_element import ElementType
 
 # Import structured search components
 from .structured_search import (

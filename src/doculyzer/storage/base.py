@@ -14,15 +14,14 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple, Union
 
-# Import the structured search components
-from .structured_search import (
-    StructuredSearchQuery, BackendCapabilities, SearchCapability,
-    UnsupportedSearchError, validate_query_capabilities
-)
-
 # Import existing element types
 from .element_element import ElementBase, ElementType, ElementHierarchical
 from .element_relationship import ElementRelationship
+# Import the structured search components
+from .structured_search import (
+    StructuredSearchQuery, BackendCapabilities, SearchCapability,
+    validate_query_capabilities
+)
 
 
 class DocumentDatabase(ABC):

@@ -34,7 +34,7 @@ except ImportError:
     logging.warning("python-pptx not available. Install with 'pip install python-pptx' to use PPTX parser")
 
 from .base import DocumentParser
-from .extract_dates import DateExtractor, extract_dates_as_dicts
+from .extract_dates import DateExtractor
 
 logger = logging.getLogger(__name__)
 

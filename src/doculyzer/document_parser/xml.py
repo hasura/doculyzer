@@ -17,9 +17,9 @@ import time
 from lxml import etree
 
 from .base import DocumentParser
+from .extract_dates import DateExtractor
 from .lru_cache import LRUCache, ttl_cache
 from .temporal_semantics import detect_temporal_type, TemporalType, create_semantic_temporal_expression
-from .extract_dates import DateExtractor, extract_dates_as_dicts
 from ..relationships import RelationshipType
 from ..storage import ElementType
 

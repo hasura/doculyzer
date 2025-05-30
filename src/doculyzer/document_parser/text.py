@@ -12,8 +12,8 @@ import re
 from typing import Dict, Any, List, Optional, Union
 
 from .base import DocumentParser
+from .extract_dates import DateExtractor
 from ..storage import ElementType
-from .extract_dates import DateExtractor, extract_dates_as_dicts
 
 logger = logging.getLogger(__name__)
 
