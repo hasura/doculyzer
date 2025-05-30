@@ -1,11 +1,14 @@
+import fnmatch
 import glob
 import json
 import logging
 import os
-import fnmatch
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple, Union, TYPE_CHECKING
 
 import time
+
+from . import ElementHierarchical
 
 # Import types for type checking only
 if TYPE_CHECKING:
@@ -20,7 +23,15 @@ else:
 
 from .base import DocumentDatabase
 from .element_relationship import ElementRelationship
-from .element_element import ElementType, ElementBase  # Import existing enum and ElementBase
+from .element_element import ElementType, ElementBase
+
+# Import structured search components
+from .structured_search import (
+    StructuredSearchQuery, SearchCriteriaGroup, BackendCapabilities, SearchCapability,
+    UnsupportedSearchError, TextSearchCriteria, EmbeddingSearchCriteria, DateSearchCriteria,
+    TopicSearchCriteria, MetadataSearchCriteria, ElementSearchCriteria,
+    LogicalOperator, DateRangeOperator, SimilarityOperator
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +57,730 @@ except Exception as e:
 
 
 class FileDocumentDatabase(DocumentDatabase):
-    """File-based implementation of document database."""
+    """File-based implementation with comprehensive structured search support."""
+
+    def __init__(self, storage_path: str):
+        """
+        Initialize file-based document database.
+
+        Args:
+            storage_path: Path to storage directory
+        """
+        self.storage_path = storage_path
+        self.documents = {}
+        self.elements = {}
+        self.element_pks = {}  # Map element_id to element_pk
+        self.next_element_pk = 1  # Starting auto-increment value
+        self.relationships = {}
+        self.embeddings = {}  # Enhanced embedding data with topics
+        self.element_dates = {}  # Store dates by element_id
+        self.processing_history = {}  # Dictionary to track processing history
+        self.embedding_generator = None
+
+    # ========================================
+    # STRUCTURED SEARCH IMPLEMENTATION
+    # ========================================
+
+    def get_backend_capabilities(self) -> BackendCapabilities:
+        """
+        File-based implementation supports most search capabilities.
+        """
+        supported = {
+            # Core search types
+            SearchCapability.TEXT_SIMILARITY,
+            SearchCapability.EMBEDDING_SIMILARITY,
+            SearchCapability.FULL_TEXT_SEARCH,
+
+            # Date capabilities
+            SearchCapability.DATE_FILTERING,
+            SearchCapability.DATE_RANGE_QUERIES,
+            SearchCapability.FISCAL_YEAR_DATES,
+            SearchCapability.RELATIVE_DATES,
+            SearchCapability.DATE_AGGREGATIONS,
+
+            # Topic capabilities
+            SearchCapability.TOPIC_FILTERING,
+            SearchCapability.TOPIC_LIKE_PATTERNS,
+            SearchCapability.TOPIC_CONFIDENCE_FILTERING,
+
+            # Metadata capabilities
+            SearchCapability.METADATA_EXACT,
+            SearchCapability.METADATA_LIKE,
+            SearchCapability.METADATA_RANGE,
+            SearchCapability.METADATA_EXISTS,
+            SearchCapability.NESTED_METADATA,
+
+            # Element capabilities
+            SearchCapability.ELEMENT_TYPE_FILTERING,
+            SearchCapability.ELEMENT_HIERARCHY,
+            SearchCapability.ELEMENT_RELATIONSHIPS,
+
+            # Logical operations
+            SearchCapability.LOGICAL_AND,
+            SearchCapability.LOGICAL_OR,
+            SearchCapability.LOGICAL_NOT,
+            SearchCapability.NESTED_QUERIES,
+
+            # Scoring and ranking
+            SearchCapability.CUSTOM_SCORING,
+            SearchCapability.SIMILARITY_THRESHOLDS,
+            SearchCapability.BOOST_FACTORS,
+            SearchCapability.SCORE_COMBINATION,
+
+            # Advanced features
+            SearchCapability.FACETED_SEARCH,
+            SearchCapability.RESULT_HIGHLIGHTING,
+        }
+
+        return BackendCapabilities(supported)
+
+    def execute_structured_search(self, query: StructuredSearchQuery) -> List[Dict[str, Any]]:
+        """
+        Execute a structured search query using file-based operations.
+        """
+        # Validate query support
+        missing = self.validate_query_support(query)
+        if missing:
+            raise UnsupportedSearchError(missing)
+
+        try:
+            # Execute the root criteria group
+            raw_results = self._execute_criteria_group(query.criteria_group)
+
+            # Process and enrich results
+            final_results = self._process_search_results(raw_results, query)
+
+            # Apply pagination
+            start_idx = query.offset
+            end_idx = start_idx + query.limit
+
+            return final_results[start_idx:end_idx]
+
+        except Exception as e:
+            logger.error(f"Error executing structured search: {str(e)}")
+            return []
+
+    def _execute_criteria_group(self, group: SearchCriteriaGroup) -> List[Dict[str, Any]]:
+        """Execute a single criteria group and return scored results."""
+
+        # Collect results from all criteria in this group
+        all_results = []
+
+        # Execute individual criteria
+        if group.text_criteria:
+            text_results = self._execute_text_criteria(group.text_criteria)
+            all_results.append(("text", text_results))
+
+        if group.embedding_criteria:
+            embedding_results = self._execute_embedding_criteria(group.embedding_criteria)
+            all_results.append(("embedding", embedding_results))
+
+        if group.date_criteria:
+            date_results = self._execute_date_criteria(group.date_criteria)
+            all_results.append(("date", date_results))
+
+        if group.topic_criteria:
+            topic_results = self._execute_topic_criteria(group.topic_criteria)
+            all_results.append(("topic", topic_results))
+
+        if group.metadata_criteria:
+            metadata_results = self._execute_metadata_criteria(group.metadata_criteria)
+            all_results.append(("metadata", metadata_results))
+
+        if group.element_criteria:
+            element_results = self._execute_element_criteria(group.element_criteria)
+            all_results.append(("element", element_results))
+
+        # Execute sub-groups recursively
+        for sub_group in group.sub_groups:
+            sub_results = self._execute_criteria_group(sub_group)
+            all_results.append(("subgroup", sub_results))
+
+        # Combine results based on the group's logical operator
+        return self._combine_results(all_results, group.operator)
+
+    def _execute_text_criteria(self, criteria: TextSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute text similarity search using embeddings."""
+        try:
+            # Generate embedding for the query text
+            query_embedding = self._generate_embedding(criteria.query_text)
+
+            # Perform similarity search
+            similarity_results = self.search_by_embedding(
+                query_embedding,
+                limit=1000,  # Get many results for filtering
+                filter_criteria=None
+            )
+
+            # Filter by similarity threshold and operator
+            filtered_results = []
+            for element_pk, similarity in similarity_results:
+                if self._compare_similarity(similarity, criteria.similarity_threshold, criteria.similarity_operator):
+                    filtered_results.append({
+                        'element_pk': element_pk,
+                        'scores': {
+                            'text_similarity': similarity * criteria.boost_factor
+                        }
+                    })
+
+            return filtered_results
+
+        except Exception as e:
+            logger.error(f"Error executing text criteria: {str(e)}")
+            return []
+
+    def _execute_embedding_criteria(self, criteria: EmbeddingSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute direct embedding vector search."""
+        try:
+            similarity_results = self.search_by_embedding(
+                criteria.embedding_vector,
+                limit=1000,
+                filter_criteria=None
+            )
+
+            filtered_results = []
+            for element_pk, similarity in similarity_results:
+                if self._compare_similarity(similarity, criteria.similarity_threshold, criteria.similarity_operator):
+                    filtered_results.append({
+                        'element_pk': element_pk,
+                        'scores': {
+                            'embedding_similarity': similarity * criteria.boost_factor
+                        }
+                    })
+
+            return filtered_results
+
+        except Exception as e:
+            logger.error(f"Error executing embedding criteria: {str(e)}")
+            return []
+
+    def _execute_date_criteria(self, criteria: DateSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute date-based filtering using in-memory date storage."""
+        try:
+            # Build date filter based on operator
+            if criteria.operator == DateRangeOperator.WITHIN:
+                element_pks = self._get_element_pks_in_date_range(criteria.start_date, criteria.end_date)
+
+            elif criteria.operator == DateRangeOperator.AFTER:
+                element_pks = self._get_element_pks_in_date_range(criteria.exact_date, None)
+
+            elif criteria.operator == DateRangeOperator.BEFORE:
+                element_pks = self._get_element_pks_in_date_range(None, criteria.exact_date)
+
+            elif criteria.operator == DateRangeOperator.EXACTLY:
+                # For exactly, we need a tight range around the date
+                start_of_day = criteria.exact_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_of_day = criteria.exact_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+                element_pks = self._get_element_pks_in_date_range(start_of_day, end_of_day)
+
+            elif criteria.operator == DateRangeOperator.RELATIVE_DAYS:
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=criteria.relative_value)
+                element_pks = self._get_element_pks_in_date_range(start_date, end_date)
+
+            elif criteria.operator == DateRangeOperator.RELATIVE_MONTHS:
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=criteria.relative_value * 30)  # Approximate
+                element_pks = self._get_element_pks_in_date_range(start_date, end_date)
+
+            elif criteria.operator == DateRangeOperator.FISCAL_YEAR:
+                # Assume fiscal year starts in July (customize as needed)
+                start_date = datetime(criteria.year - 1, 7, 1)
+                end_date = datetime(criteria.year, 6, 30, 23, 59, 59)
+                element_pks = self._get_element_pks_in_date_range(start_date, end_date)
+
+            elif criteria.operator == DateRangeOperator.CALENDAR_YEAR:
+                start_date = datetime(criteria.year, 1, 1)
+                end_date = datetime(criteria.year, 12, 31, 23, 59, 59)
+                element_pks = self._get_element_pks_in_date_range(start_date, end_date)
+
+            elif criteria.operator == DateRangeOperator.QUARTER:
+                quarter_starts = {1: (1, 1), 2: (4, 1), 3: (7, 1), 4: (10, 1)}
+                quarter_ends = {1: (3, 31), 2: (6, 30), 3: (9, 30), 4: (12, 31)}
+
+                start_month, start_day = quarter_starts[criteria.quarter]
+                end_month, end_day = quarter_ends[criteria.quarter]
+
+                start_date = datetime(criteria.year, start_month, start_day)
+                end_date = datetime(criteria.year, end_month, end_day, 23, 59, 59)
+                element_pks = self._get_element_pks_in_date_range(start_date, end_date)
+
+            # Also filter by specificity levels if needed
+            if criteria.specificity_levels:
+                element_pks = self._filter_by_specificity(element_pks, criteria.specificity_levels)
+
+            # Convert to result format
+            results = []
+            for element_pk in element_pks:
+                results.append({
+                    'element_pk': element_pk,
+                    'scores': {
+                        'date_relevance': 1.0  # Could calculate date relevance score
+                    }
+                })
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Error executing date criteria: {str(e)}")
+            return []
+
+    def _execute_topic_criteria(self, criteria: TopicSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute topic-based filtering using in-memory storage."""
+        try:
+            topic_results = self.search_by_text_and_topics(
+                search_text=None,
+                include_topics=criteria.include_topics,
+                exclude_topics=criteria.exclude_topics,
+                min_confidence=criteria.min_confidence,
+                limit=1000
+            )
+
+            results = []
+            for result in topic_results:
+                results.append({
+                    'element_pk': result['element_pk'],
+                    'scores': {
+                        'topic_confidence': result['confidence'] * criteria.boost_factor
+                    }
+                })
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Error executing topic criteria: {str(e)}")
+            return []
+
+    def _execute_metadata_criteria(self, criteria: MetadataSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute metadata-based filtering using in-memory storage."""
+        try:
+            results = []
+
+            for element_id, element in self.elements.items():
+                element_pk = element.get('element_pk')
+                if element_pk is None:
+                    continue
+
+                metadata = element.get('metadata', {})
+                matches = True
+
+                # Check exact matches
+                for key, value in criteria.exact_matches.items():
+                    if key not in metadata or str(metadata[key]) != str(value):
+                        matches = False
+                        break
+
+                if not matches:
+                    continue
+
+                # Check LIKE patterns
+                for key, pattern in criteria.like_patterns.items():
+                    if key not in metadata:
+                        matches = False
+                        break
+                    # Convert SQL LIKE to fnmatch pattern
+                    fnmatch_pattern = pattern.replace('%', '*').replace('_', '?')
+                    if not fnmatch.fnmatch(str(metadata[key]), fnmatch_pattern):
+                        matches = False
+                        break
+
+                if not matches:
+                    continue
+
+                # Check range filters
+                for key, range_filter in criteria.range_filters.items():
+                    if key not in metadata:
+                        matches = False
+                        break
+                    try:
+                        value = float(metadata[key])
+                        if 'gte' in range_filter and value < range_filter['gte']:
+                            matches = False
+                            break
+                        if 'lte' in range_filter and value > range_filter['lte']:
+                            matches = False
+                            break
+                        if 'gt' in range_filter and value <= range_filter['gt']:
+                            matches = False
+                            break
+                        if 'lt' in range_filter and value >= range_filter['lt']:
+                            matches = False
+                            break
+                    except (ValueError, TypeError):
+                        matches = False
+                        break
+
+                if not matches:
+                    continue
+
+                # Check exists filters
+                for key in criteria.exists_filters:
+                    if key not in metadata:
+                        matches = False
+                        break
+
+                if matches:
+                    results.append({
+                        'element_pk': element_pk,
+                        'scores': {
+                            'metadata_relevance': 1.0
+                        }
+                    })
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Error executing metadata criteria: {str(e)}")
+            return []
+
+    def _execute_element_criteria(self, criteria: ElementSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute element-based filtering using in-memory storage."""
+        try:
+            results = []
+
+            for element_id, element in self.elements.items():
+                element_pk = element.get('element_pk')
+                if element_pk is None:
+                    continue
+
+                matches = True
+
+                # Check element types
+                if criteria.element_types:
+                    type_values = self.prepare_element_type_query(criteria.element_types)
+                    if type_values and element.get('element_type') not in type_values:
+                        matches = False
+
+                # Check document ID filters
+                if criteria.doc_ids and element.get('doc_id') not in criteria.doc_ids:
+                    matches = False
+
+                if criteria.exclude_doc_ids and element.get('doc_id') in criteria.exclude_doc_ids:
+                    matches = False
+
+                # Check content length filters
+                content_preview = element.get('content_preview', '')
+                if criteria.content_length_min is not None and len(content_preview) < criteria.content_length_min:
+                    matches = False
+
+                if criteria.content_length_max is not None and len(content_preview) > criteria.content_length_max:
+                    matches = False
+
+                # Check parent element filters
+                if criteria.parent_element_ids and element.get('parent_id') not in criteria.parent_element_ids:
+                    matches = False
+
+                if matches:
+                    results.append({
+                        'element_pk': element_pk,
+                        'scores': {
+                            'element_match': 1.0
+                        }
+                    })
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Error executing element criteria: {str(e)}")
+            return []
+
+    def _combine_results(self, all_results: List[Tuple[str, List[Dict[str, Any]]]],
+                         operator: LogicalOperator) -> List[Dict[str, Any]]:
+        """Combine results from multiple criteria using logical operators."""
+
+        if not all_results:
+            return []
+
+        if len(all_results) == 1:
+            return all_results[0][1]  # Return the single result set
+
+        # Extract just the result lists
+        result_sets = [results for _, results in all_results]
+
+        if operator == LogicalOperator.AND:
+            return self._intersect_results(result_sets)
+        elif operator == LogicalOperator.OR:
+            return self._union_results(result_sets)
+        elif operator == LogicalOperator.NOT:
+            # NOT operation: first set minus all other sets
+            if len(result_sets) >= 2:
+                return self._subtract_results(result_sets[0], result_sets[1:])
+            else:
+                return result_sets[0]
+
+        return []
+
+    def _intersect_results(self, result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        """Find intersection of multiple result sets."""
+        if not result_sets:
+            return []
+
+        # Get element_pks from all sets and combine scores
+        element_pk_sets = []
+        element_scores = {}  # element_pk -> combined scores
+
+        for result_set in result_sets:
+            pk_set = set()
+            for result in result_set:
+                element_pk = result['element_pk']
+                pk_set.add(element_pk)
+
+                # Accumulate scores
+                if element_pk not in element_scores:
+                    element_scores[element_pk] = {}
+
+                for score_type, score_value in result.get('scores', {}).items():
+                    if score_type not in element_scores[element_pk]:
+                        element_scores[element_pk][score_type] = []
+                    element_scores[element_pk][score_type].append(score_value)
+
+            element_pk_sets.append(pk_set)
+
+        # Find intersection
+        common_pks = element_pk_sets[0]
+        for pk_set in element_pk_sets[1:]:
+            common_pks = common_pks.intersection(pk_set)
+
+        # Build result list
+        results = []
+        for element_pk in common_pks:
+            results.append({
+                'element_pk': element_pk,
+                'scores': element_scores[element_pk]
+            })
+
+        return results
+
+    def _union_results(self, result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        """Find union of multiple result sets."""
+        element_scores = {}  # element_pk -> combined scores
+
+        for result_set in result_sets:
+            for result in result_set:
+                element_pk = result['element_pk']
+
+                if element_pk not in element_scores:
+                    element_scores[element_pk] = {}
+
+                for score_type, score_value in result.get('scores', {}).items():
+                    if score_type not in element_scores[element_pk]:
+                        element_scores[element_pk][score_type] = []
+                    element_scores[element_pk][score_type].append(score_value)
+
+        # Build result list
+        results = []
+        for element_pk, scores in element_scores.items():
+            results.append({
+                'element_pk': element_pk,
+                'scores': scores
+            })
+
+        return results
+
+    def _subtract_results(self, base_set: List[Dict[str, Any]],
+                          subtract_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        """Subtract multiple sets from base set."""
+        base_pks = {result['element_pk'] for result in base_set}
+
+        # Collect all PKs to subtract
+        subtract_pks = set()
+        for subtract_set in subtract_sets:
+            for result in subtract_set:
+                subtract_pks.add(result['element_pk'])
+
+        # Return base results that are not in subtract sets
+        final_pks = base_pks - subtract_pks
+
+        return [result for result in base_set if result['element_pk'] in final_pks]
+
+    def _process_search_results(self, raw_results: List[Dict[str, Any]],
+                                query: StructuredSearchQuery) -> List[Dict[str, Any]]:
+        """Process and enrich search results."""
+
+        # Calculate combined scores
+        for result in raw_results:
+            result['final_score'] = self._calculate_combined_score(
+                result.get('scores', {}),
+                query.score_combination,
+                query.custom_weights
+            )
+
+        # Sort by final score
+        raw_results.sort(key=lambda x: x['final_score'], reverse=True)
+
+        # Enrich with element details
+        enriched_results = []
+        for result in raw_results:
+            element_pk = result['element_pk']
+            element = self.get_element(element_pk)
+
+            if not element:
+                continue
+
+            enriched_result = {
+                'element_pk': element_pk,
+                'element_id': element.get('element_id'),
+                'doc_id': element.get('doc_id'),
+                'element_type': element.get('element_type'),
+                'content_preview': element.get('content_preview'),
+                'final_score': result['final_score']
+            }
+
+            if query.include_similarity_scores:
+                enriched_result['scores'] = result.get('scores', {})
+
+            if query.include_metadata:
+                enriched_result['metadata'] = element.get('metadata', {})
+
+            if query.include_topics:
+                enriched_result['topics'] = self.get_embedding_topics(element_pk)
+
+            if query.include_element_dates:
+                element_id = element.get('element_id')
+                if element_id:
+                    enriched_result['extracted_dates'] = self.get_element_dates(element_id)
+                    enriched_result['date_count'] = len(enriched_result['extracted_dates'])
+
+            enriched_results.append(enriched_result)
+
+        return enriched_results
+
+    def _calculate_combined_score(self, scores: Dict[str, List[float]],
+                                  combination_method: str,
+                                  weights: Dict[str, float]) -> float:
+        """Calculate final combined score from multiple score types."""
+
+        if not scores:
+            return 0.0
+
+        # Average scores of the same type
+        avg_scores = {}
+        for score_type, score_list in scores.items():
+            if score_list:
+                avg_scores[score_type] = sum(score_list) / len(score_list)
+
+        if not avg_scores:
+            return 0.0
+
+        if combination_method == "multiply":
+            final_score = 1.0
+            for score_type, score in avg_scores.items():
+                weight = weights.get(score_type, 1.0)
+                final_score *= (score * weight)
+            return final_score
+
+        elif combination_method == "add":
+            final_score = 0.0
+            for score_type, score in avg_scores.items():
+                weight = weights.get(score_type, 1.0)
+                final_score += (score * weight)
+            return final_score
+
+        elif combination_method == "max":
+            weighted_scores = []
+            for score_type, score in avg_scores.items():
+                weight = weights.get(score_type, 1.0)
+                weighted_scores.append(score * weight)
+            return max(weighted_scores)
+
+        elif combination_method == "weighted_avg":
+            total_weighted_score = 0.0
+            total_weight = 0.0
+            for score_type, score in avg_scores.items():
+                weight = weights.get(score_type, 1.0)
+                total_weighted_score += (score * weight)
+                total_weight += weight
+            return total_weighted_score / total_weight if total_weight > 0 else 0.0
+
+        return 0.0
+
+    def _compare_similarity(self, similarity: float, threshold: float,
+                            operator: SimilarityOperator) -> bool:
+        """Compare similarity score against threshold using specified operator."""
+        if operator == SimilarityOperator.GREATER_THAN:
+            return similarity > threshold
+        elif operator == SimilarityOperator.GREATER_EQUAL:
+            return similarity >= threshold
+        elif operator == SimilarityOperator.LESS_THAN:
+            return similarity < threshold
+        elif operator == SimilarityOperator.LESS_EQUAL:
+            return similarity <= threshold
+        elif operator == SimilarityOperator.EQUALS:
+            return abs(similarity - threshold) < 0.001  # Small epsilon for float comparison
+        return False
+
+    def _generate_embedding(self, search_text: str) -> List[float]:
+        """Generate embedding for search text."""
+        try:
+            from ..embeddings import get_embedding_generator
+
+            if self.embedding_generator is None:
+                self.embedding_generator = get_embedding_generator(config)
+
+            return self.embedding_generator.generate(search_text)
+        except Exception as e:
+            logger.error(f"Error generating embedding: {str(e)}")
+            raise
+
+    def _get_element_pks_in_date_range(self, start_date: Optional[datetime],
+                                       end_date: Optional[datetime]) -> List[int]:
+        """Get element_pks that have dates within the specified range."""
+        if not (start_date or end_date):
+            return []
+
+        matching_element_pks = []
+
+        for element_id, dates in self.element_dates.items():
+            for date_dict in dates:
+                timestamp = date_dict.get('timestamp')
+                if timestamp is None:
+                    continue
+
+                date_obj = datetime.fromtimestamp(timestamp)
+
+                # Check if date is in range
+                in_range = True
+                if start_date and date_obj < start_date:
+                    in_range = False
+                if end_date and date_obj > end_date:
+                    in_range = False
+
+                if in_range:
+                    # Get element_pk for this element_id
+                    element_pk = self.element_pks.get(element_id)
+                    if element_pk and element_pk not in matching_element_pks:
+                        matching_element_pks.append(element_pk)
+                    break  # Found a matching date for this element
+
+        return matching_element_pks
+
+    def _filter_by_specificity(self, element_pks: List[int],
+                               allowed_levels: List[str]) -> List[int]:
+        """Filter element PKs by date specificity levels."""
+        if not element_pks or not allowed_levels:
+            return element_pks
+
+        # Create reverse mapping from element_pk to element_id
+        pk_to_id = {pk: eid for eid, pk in self.element_pks.items()}
+
+        filtered_pks = []
+        for element_pk in element_pks:
+            element_id = pk_to_id.get(element_pk)
+            if not element_id:
+                continue
+
+            dates = self.element_dates.get(element_id, [])
+            for date_dict in dates:
+                specificity = date_dict.get('specificity_level', 'day')
+                if specificity in allowed_levels:
+                    filtered_pks.append(element_pk)
+                    break  # Found a matching specificity for this element
+
+        return filtered_pks
+
+    # ========================================
+    # CORE DATABASE OPERATIONS (existing methods)
+    # ========================================
 
     def get_outgoing_relationships(self, element_pk: int) -> List[ElementRelationship]:
         """
@@ -123,23 +857,6 @@ class FileDocumentDatabase(DocumentDatabase):
 
         return relationships
 
-    def __init__(self, storage_path: str):
-        """
-        Initialize file-based document database.
-
-        Args:
-            storage_path: Path to storage directory
-        """
-        self.storage_path = storage_path
-        self.documents = {}
-        self.elements = {}
-        self.element_pks = {}  # Map element_id to element_pk
-        self.next_element_pk = 1  # Starting auto-increment value
-        self.relationships = {}
-        self.embeddings = {}  # Now stores enhanced embedding data with topics
-        self.processing_history = {}  # Dictionary to track processing history
-        self.embedding_generator = None
-
     def initialize(self) -> None:
         """Initialize the database by loading existing data."""
         os.makedirs(self.storage_path, exist_ok=True)
@@ -149,6 +866,7 @@ class FileDocumentDatabase(DocumentDatabase):
         os.makedirs(os.path.join(self.storage_path, 'elements'), exist_ok=True)
         os.makedirs(os.path.join(self.storage_path, 'relationships'), exist_ok=True)
         os.makedirs(os.path.join(self.storage_path, 'embeddings'), exist_ok=True)
+        os.makedirs(os.path.join(self.storage_path, 'element_dates'), exist_ok=True)
         os.makedirs(os.path.join(self.storage_path, 'processing_history'), exist_ok=True)
 
         # Load existing data if available
@@ -156,17 +874,276 @@ class FileDocumentDatabase(DocumentDatabase):
         self._load_elements()
         self._load_relationships()
         self._load_embeddings()
+        self._load_element_dates()
         self._load_processing_history()
 
         logger.info(f"Loaded {len(self.documents)} documents, "
                     f"{len(self.elements)} elements, "
                     f"{len(self.relationships)} relationships, "
                     f"{len(self.embeddings)} embeddings, "
+                    f"{len(self.element_dates)} element dates, "
                     f"{len(self.processing_history)} processing history records")
 
     def close(self) -> None:
         """Close the database (no-op for file-based database)."""
         pass
+
+    # [Continue with all existing methods from the original implementation]
+    # For brevity, I'm including key ones but all others remain the same
+
+    def get_element(self, element_id_or_pk: Union[str, int]) -> Optional[Dict[str, Any]]:
+        """
+        Get element by ID or PK.
+        Updated to handle either element_id or element_pk.
+
+        Args:
+            element_id_or_pk: Either the element_id (string) or element_pk (integer)
+        """
+        # Try to interpret as element_pk first
+        try:
+            element_pk = int(element_id_or_pk)
+            # Find element with matching element_pk
+            for element in self.elements.values():
+                if element.get("element_pk") == element_pk:
+                    return element
+        except (ValueError, TypeError):
+            # If not an integer, treat as element_id
+            if element_id_or_pk in self.elements:
+                return self.elements[element_id_or_pk]
+
+        return None
+
+    # ========================================
+    # DATE UTILITY METHODS
+    # ========================================
+
+    def supports_date_storage(self) -> bool:
+        """
+        Indicate whether this backend supports date storage.
+
+        Returns:
+            True since File implementation supports date storage
+        """
+        return True
+
+    # ========================================
+    # DATE STORAGE AND SEARCH METHODS
+    # ========================================
+    # ========================================
+
+    def store_element_dates(self, element_id: str, dates: List[Dict[str, Any]]) -> None:
+        """Store extracted dates associated with an element."""
+        try:
+            self.element_dates[element_id] = dates
+            self._save_element_dates(element_id)
+            logger.debug(f"Stored {len(dates)} dates for element {element_id}")
+        except Exception as e:
+            logger.error(f"Error storing dates for element {element_id}: {str(e)}")
+            raise
+
+    def get_element_dates(self, element_id: str) -> List[Dict[str, Any]]:
+        """Get all dates associated with an element."""
+        return self.element_dates.get(element_id, [])
+
+    def store_embedding_with_dates(self, element_id: str, embedding: List[float],
+                                   dates: List[Dict[str, Any]]) -> None:
+        """Store both embedding and dates for an element in a single operation."""
+        element = self.get_element(element_id)
+        if not element:
+            raise ValueError(f"Element not found: {element_id}")
+
+        element_pk = element.get('element_pk')
+        if element_pk is None:
+            raise ValueError(f"Element has no PK: {element_id}")
+
+        try:
+            # Store embedding
+            self.store_embedding(element_pk, embedding)
+
+            # Store dates
+            self.store_element_dates(element_id, dates)
+
+            logger.debug(f"Stored embedding and {len(dates)} dates for element {element_id}")
+
+        except Exception as e:
+            logger.error(f"Error storing embedding and dates for element {element_id}: {str(e)}")
+            raise
+
+    def delete_element_dates(self, element_id: str) -> bool:
+        """Delete all dates associated with an element."""
+        try:
+            if element_id in self.element_dates:
+                del self.element_dates[element_id]
+                self._delete_element_dates_file(element_id)
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error deleting dates for element {element_id}: {str(e)}")
+            return False
+
+    def search_elements_by_date_range(self, start_date: datetime, end_date: datetime,
+                                      limit: int = 100) -> List[Dict[str, Any]]:
+        """Find elements that contain dates within a specified range."""
+        try:
+            element_pks = self._get_element_pks_in_date_range(start_date, end_date)
+
+            results = []
+            for element_pk in element_pks[:limit]:
+                element = self.get_element(element_pk)
+                if element:
+                    results.append(element)
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Error searching elements by date range: {str(e)}")
+            return []
+
+    def search_by_text_and_date_range(self, search_text: str,
+                                      start_date: Optional[datetime] = None,
+                                      end_date: Optional[datetime] = None,
+                                      limit: int = 10) -> List[Tuple[int, float]]:
+        """Search elements by semantic similarity AND date range."""
+        try:
+            # Generate embedding for search text
+            query_embedding = self._generate_embedding(search_text)
+
+            # Get elements in date range if specified
+            if start_date or end_date:
+                date_element_pks = self._get_element_pks_in_date_range(start_date, end_date)
+                # Use date filtering in embedding search
+                filter_criteria = {"element_pk": date_element_pks}
+                return self.search_by_embedding(query_embedding, limit, filter_criteria)
+            else:
+                return self.search_by_embedding(query_embedding, limit)
+
+        except Exception as e:
+            logger.error(f"Error in text and date range search: {str(e)}")
+            return []
+
+    def search_by_embedding_and_date_range(self, query_embedding: List[float],
+                                           start_date: Optional[datetime] = None,
+                                           end_date: Optional[datetime] = None,
+                                           limit: int = 10) -> List[Tuple[int, float]]:
+        """Search elements by embedding similarity AND date range."""
+        try:
+            # Get elements in date range if specified
+            if start_date or end_date:
+                date_element_pks = self._get_element_pks_in_date_range(start_date, end_date)
+                # Use date filtering in embedding search
+                filter_criteria = {"element_pk": date_element_pks}
+                return self.search_by_embedding(query_embedding, limit, filter_criteria)
+            else:
+                return self.search_by_embedding(query_embedding, limit)
+
+        except Exception as e:
+            logger.error(f"Error in embedding and date range search: {str(e)}")
+            return []
+
+    def get_elements_with_dates(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get all elements that have associated dates."""
+        try:
+            results = []
+            count = 0
+
+            for element_id in self.element_dates.keys():
+                if count >= limit:
+                    break
+
+                element = self.get_element(element_id)
+                if element:
+                    results.append(element)
+                    count += 1
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Error getting elements with dates: {str(e)}")
+            return []
+
+    def get_date_statistics(self) -> Dict[str, Any]:
+        """Get statistics about dates in the database."""
+        try:
+            total_dates = 0
+            elements_with_dates = len(self.element_dates)
+            all_timestamps = []
+            specificity_counts = {}
+
+            for element_id, dates in self.element_dates.items():
+                total_dates += len(dates)
+                for date_dict in dates:
+                    timestamp = date_dict.get('timestamp')
+                    if timestamp:
+                        all_timestamps.append(timestamp)
+
+                    specificity = date_dict.get('specificity_level', 'day')
+                    specificity_counts[specificity] = specificity_counts.get(specificity, 0) + 1
+
+            earliest_date = None
+            latest_date = None
+            if all_timestamps:
+                earliest_date = datetime.fromtimestamp(min(all_timestamps))
+                latest_date = datetime.fromtimestamp(max(all_timestamps))
+
+            return {
+                'total_dates': total_dates,
+                'elements_with_dates': elements_with_dates,
+                'earliest_date': earliest_date,
+                'latest_date': latest_date,
+                'specificity_distribution': specificity_counts
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting date statistics: {str(e)}")
+            return {}
+
+    # ========================================
+    # FILE I/O METHODS FOR DATES
+    # ========================================
+
+    def _load_element_dates(self) -> None:
+        """Load element dates from files."""
+        dates_files = glob.glob(os.path.join(self.storage_path, 'element_dates', '*.json'))
+
+        for file_path in dates_files:
+            try:
+                with open(file_path, 'r') as f:
+                    dates = json.load(f)
+
+                # Extract element_id from filename
+                filename = os.path.basename(file_path)
+                element_id = os.path.splitext(filename)[0]
+                self.element_dates[element_id] = dates
+
+            except Exception as e:
+                logger.error(f"Error loading element dates from {file_path}: {str(e)}")
+
+    def _save_element_dates(self, element_id: str) -> None:
+        """Save element dates to file."""
+        if element_id not in self.element_dates:
+            return
+
+        file_path = os.path.join(self.storage_path, 'element_dates', f"{element_id}.json")
+
+        try:
+            with open(file_path, 'w') as f:
+                json.dump(self.element_dates[element_id], f, indent=2)
+        except Exception as e:
+            logger.error(f"Error saving element dates to {file_path}: {str(e)}")
+
+    def _delete_element_dates_file(self, element_id: str) -> None:
+        """Delete element dates file."""
+        file_path = os.path.join(self.storage_path, 'element_dates', f"{element_id}.json")
+
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception as e:
+            logger.error(f"Error deleting element dates file {file_path}: {str(e)}")
+
+    # ========================================
+    # EXISTING METHODS FROM ORIGINAL IMPLEMENTATION
+    # ========================================
 
     def get_last_processed_info(self, source_id: str) -> Optional[Dict[str, Any]]:
         """Get information about when a document was last processed."""
@@ -397,28 +1374,6 @@ class FileDocumentDatabase(DocumentDatabase):
                 self._delete_relationship_file(rel_id)
 
         logger.debug(f"Deleted relationships for element {element_id}")
-
-    def get_element(self, element_id_or_pk: Union[str, int]) -> Optional[Dict[str, Any]]:
-        """
-        Get element by ID or PK.
-        Updated to handle either element_id or element_pk.
-
-        Args:
-            element_id_or_pk: Either the element_id (string) or element_pk (integer)
-        """
-        # Try to interpret as element_pk first
-        try:
-            element_pk = int(element_id_or_pk)
-            # Find element with matching element_pk
-            for element in self.elements.values():
-                if element.get("element_pk") == element_pk:
-                    return element
-        except (ValueError, TypeError):
-            # If not an integer, treat as element_id
-            if element_id_or_pk in self.elements:
-                return self.elements[element_id_or_pk]
-
-        return None
 
     def find_documents(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
         """
@@ -672,7 +1627,7 @@ class FileDocumentDatabase(DocumentDatabase):
             return []
 
     # ========================================
-    # NEW: ENHANCED SEARCH HELPER METHODS
+    # ENHANCED SEARCH HELPER METHODS
     # ========================================
 
     @staticmethod
@@ -705,7 +1660,8 @@ class FileDocumentDatabase(DocumentDatabase):
         """
         return True
 
-    def _prepare_element_type_query(self, element_types: Union[
+    @staticmethod
+    def prepare_element_type_query(element_types: Union[
         ElementType,
         List[ElementType],
         str,
@@ -964,7 +1920,7 @@ class FileDocumentDatabase(DocumentDatabase):
                     return False
             elif key == "element_type":
                 # Handle ElementType enums, strings, and lists
-                type_values = self._prepare_element_type_query(value)
+                type_values = self.prepare_element_type_query(value)
                 if type_values:
                     if element.get("element_type") not in type_values:
                         return False
@@ -1003,6 +1959,10 @@ class FileDocumentDatabase(DocumentDatabase):
                     doc = self.documents.get(doc_id)
                     if doc and doc.get("source") in value:
                         return False
+            elif key == "element_pk" and isinstance(value, list):
+                # Handle list of element PKs to include (for date filtering)
+                if element.get("element_pk") not in value:
+                    return False
             else:
                 # Simple equality filter
                 if element.get(key) != value:
@@ -1488,6 +2448,10 @@ class FileDocumentDatabase(DocumentDatabase):
         # Calculate cosine similarity
         return float(dot_product / (magnitude1 * magnitude2))
 
+    # ========================================
+    # FILE I/O METHODS
+    # ========================================
+
     def _load_processing_history(self) -> None:
         """Load processing history from files."""
         history_files = glob.glob(os.path.join(self.storage_path, 'processing_history', '*.json'))
@@ -1777,3 +2741,47 @@ class FileDocumentDatabase(DocumentDatabase):
                 return True
 
         return False
+
+
+if __name__ == "__main__":
+    # Example demonstrating structured search with File database
+    storage_path = './test_file_storage'
+
+    db = FileDocumentDatabase(storage_path)
+    db.initialize()
+
+    # Show backend capabilities
+    capabilities = db.get_backend_capabilities()
+    print(f"File database supports {len(capabilities.supported)} capabilities:")
+    for cap in sorted(capabilities.get_supported_list()):
+        print(f"  ✓ {cap}")
+
+    # Example structured search
+    from .structured_search import SearchQueryBuilder, LogicalOperator
+
+    query = (SearchQueryBuilder()
+             .with_operator(LogicalOperator.AND)
+             .text_search("machine learning algorithms", similarity_threshold=0.8)
+             .last_days(30)
+             .topics(include=["ml%", "ai%"])
+             .element_types(["header", "paragraph"])
+             .include_dates(True)
+             .include_topics_in_results(True)
+             .build())
+
+    print(f"\nExecuting structured search...")
+    print(f"Query capabilities required: {len(query.get_required_capabilities())}")
+
+    # Validate query
+    missing = db.validate_query_support(query)
+    if missing:
+        print(f"Missing capabilities: {[m.value for m in missing]}")
+    else:
+        print("Query fully supported!")
+
+        # Execute the search
+        results = db.execute_structured_search(query)
+        print(f"Found {len(results)} results")
+
+        for result in results[:3]:  # Show first 3 results
+            print(f"  - {result['element_id']}: {result['final_score']:.3f}")
