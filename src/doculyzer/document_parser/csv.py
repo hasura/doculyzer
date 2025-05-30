@@ -1,7 +1,7 @@
 """
 CSV document parser module for the document pointer system.
 
-This module parses CSV documents into structured elements with temporal semantics support.
+This module parses CSV documents into structured elements with temporal semantics support and comprehensive date extraction.
 """
 
 import csv
@@ -14,6 +14,7 @@ from typing import Dict, Any, Optional, List, Union, Tuple
 
 from .base import DocumentParser
 from .temporal_semantics import detect_temporal_type, TemporalType, create_semantic_temporal_expression
+from .extract_dates import DateExtractor, extract_dates_as_dicts
 from ..relationships import RelationshipType
 from ..storage import ElementType
 
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class CsvParser(DocumentParser):
-    """Parser for CSV documents with temporal semantics support."""
+    """Parser for CSV documents with temporal semantics support and enhanced date extraction."""
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """Initialize the CSV parser."""
@@ -38,6 +39,30 @@ class CsvParser(DocumentParser):
         self.detect_dialect = self.config.get("detect_dialect", True)
         self.strip_whitespace = self.config.get("strip_whitespace", True)
         self.enable_temporal_detection = self.config.get("enable_temporal_detection", True)
+
+        # Date extraction configuration
+        self.extract_dates = self.config.get("extract_dates", True)
+        self.date_context_chars = self.config.get("date_context_chars", 50)  # Small context window
+        self.min_year = self.config.get("min_year", 1900)
+        self.max_year = self.config.get("max_year", 2100)
+        self.fiscal_year_start_month = self.config.get("fiscal_year_start_month", 10)
+        self.default_locale = self.config.get("default_locale", "US")
+
+        # Initialize date extractor if enabled
+        self.date_extractor = None
+        if self.extract_dates:
+            try:
+                self.date_extractor = DateExtractor(
+                    context_chars=self.date_context_chars,
+                    min_year=self.min_year,
+                    max_year=self.max_year,
+                    fiscal_year_start_month=self.fiscal_year_start_month,
+                    default_locale=self.default_locale
+                )
+                logger.debug("Date extraction enabled with comprehensive temporal analysis")
+            except ImportError as e:
+                logger.warning(f"Date extraction disabled: {e}")
+                self.extract_dates = False
 
     @staticmethod
     def _is_identity_column(column_name: str) -> bool:
@@ -77,7 +102,7 @@ class CsvParser(DocumentParser):
         else:
             return any(identity in column_lower and identity != column_lower for identity in common_identities)
 
-    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]]) -> str:
+    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]] = None) -> str:
         """
         Resolve the plain text representation of a CSV element with temporal semantics.
 
@@ -230,7 +255,7 @@ class CsvParser(DocumentParser):
             return self._resolve_element_content(location_data, source_content)
 
     def parse(self, doc_content: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse a CSV document into structured elements with temporal semantics."""
+        """Parse a CSV document into structured elements with temporal semantics and comprehensive date extraction."""
         content = doc_content["content"]
         source_id = doc_content["id"]  # Should already be a fully qualified path
         metadata = doc_content.get("metadata", {}).copy()  # Make a copy to avoid modifying original
@@ -546,13 +571,168 @@ class CsvParser(DocumentParser):
         column_relationships = self._extract_column_relationships(csv_data, header_row, elements, doc_id)
         relationships.extend(column_relationships)
 
-        # Return the parsed document
-        return {
+        # Extract dates from CSV with comprehensive temporal analysis
+        element_dates = {}
+        if self.extract_dates and self.date_extractor:
+            try:
+                # Extract text content from the entire CSV for date extraction
+                full_text = self._extract_full_text_from_csv(csv_data, header_row)
+
+                # Extract dates from the full CSV
+                if full_text.strip():
+                    document_dates = self.date_extractor.extract_dates_as_dicts(full_text)
+                    if document_dates:
+                        element_dates[root_id] = document_dates
+                        logger.debug(f"Extracted {len(document_dates)} dates from CSV document")
+
+                # Extract dates from individual cells that contain text
+                for element in elements:
+                    if element["element_type"] == ElementType.TABLE_CELL.value:
+                        cell_text = self._get_cell_text_for_dates(element, csv_data, header_row)
+
+                        if cell_text and cell_text.strip():
+                            cell_dates = self.date_extractor.extract_dates_as_dicts(cell_text)
+                            if cell_dates:
+                                element_dates[element["element_id"]] = cell_dates
+                                logger.debug(f"Extracted {len(cell_dates)} dates from cell")
+
+                    elif element["element_type"] == ElementType.TABLE_ROW.value:
+                        row_text = self._get_row_text_for_dates(element, csv_data, header_row)
+
+                        if row_text and row_text.strip():
+                            row_dates = self.date_extractor.extract_dates_as_dicts(row_text)
+                            if row_dates:
+                                element_dates[element["element_id"]] = row_dates
+                                logger.debug(f"Extracted {len(row_dates)} dates from row")
+
+            except Exception as e:
+                logger.warning(f"Error during date extraction: {e}")
+
+        # Add date statistics to document metadata
+        if element_dates:
+            total_dates = sum(len(dates) for dates in element_dates.values())
+            document["metadata"]["date_extraction"] = {
+                "total_dates_found": total_dates,
+                "elements_with_dates": len(element_dates),
+                "extraction_enabled": True
+            }
+        else:
+            document["metadata"]["date_extraction"] = {
+                "total_dates_found": 0,
+                "elements_with_dates": 0,
+                "extraction_enabled": self.extract_dates
+            }
+
+        # Return the parsed document with comprehensive date information
+        result = {
             "document": document,
             "elements": elements,
             "links": self._extract_links(content, root_id),
             "relationships": relationships
         }
+
+        # Add dates if any were extracted
+        if element_dates:
+            result["element_dates"] = element_dates
+
+        return result
+
+    def _extract_full_text_from_csv(self, csv_data: List[List[str]], header_row: Optional[List[str]]) -> str:
+        """
+        Extract all text content from the CSV for date extraction.
+
+        Args:
+            csv_data: Parsed CSV data
+            header_row: Header row if available
+
+        Returns:
+            Full text content of the CSV
+        """
+        text_parts = []
+
+        # Extract text from all cells
+        for row_idx, row in enumerate(csv_data):
+            for col_idx, cell_value in enumerate(row):
+                cell_str = str(cell_value).strip()
+                if cell_str:
+                    # Include context information for better date extraction
+                    if header_row and row_idx > 0 and col_idx < len(header_row):
+                        # For data cells, include column context
+                        column_name = header_row[col_idx]
+                        text_parts.append(f"{column_name}: {cell_str}")
+                    else:
+                        # For header cells or when no header available
+                        text_parts.append(cell_str)
+
+        return "\n".join(text_parts)
+
+    def _get_cell_text_for_dates(self, element: Dict[str, Any], csv_data: List[List[str]], header_row: Optional[List[str]]) -> str:
+        """
+        Get the text content of a specific cell for date extraction.
+
+        Args:
+            element: Cell element dictionary
+            csv_data: Parsed CSV data
+            header_row: Header row if available
+
+        Returns:
+            Text content of the cell with context
+        """
+        try:
+            metadata = element.get("metadata", {})
+            row = metadata.get("row")
+            col = metadata.get("col")
+
+            if row is not None and col is not None and row < len(csv_data) and col < len(csv_data[row]):
+                cell_value = str(csv_data[row][col]).strip()
+
+                if cell_value:
+                    # Include column context if available
+                    if header_row and row > 0 and col < len(header_row):
+                        column_name = header_row[col]
+                        return f"{column_name}: {cell_value}"
+                    else:
+                        return cell_value
+        except Exception as e:
+            logger.warning(f"Error getting cell text for dates: {e}")
+
+        return ""
+
+    def _get_row_text_for_dates(self, element: Dict[str, Any], csv_data: List[List[str]], header_row: Optional[List[str]]) -> str:
+        """
+        Get the text content of a specific row for date extraction.
+
+        Args:
+            element: Row element dictionary
+            csv_data: Parsed CSV data
+            header_row: Header row if available
+
+        Returns:
+            Text content of the row
+        """
+        try:
+            metadata = element.get("metadata", {})
+            row = metadata.get("row")
+
+            if row is not None and row < len(csv_data):
+                row_data = csv_data[row]
+                text_parts = []
+
+                for col_idx, cell_value in enumerate(row_data):
+                    cell_str = str(cell_value).strip()
+                    if cell_str:
+                        # Include column context if available
+                        if header_row and row > 0 and col_idx < len(header_row):
+                            column_name = header_row[col_idx]
+                            text_parts.append(f"{column_name}: {cell_str}")
+                        else:
+                            text_parts.append(cell_str)
+
+                return ", ".join(text_parts)
+        except Exception as e:
+            logger.warning(f"Error getting row text for dates: {e}")
+
+        return ""
 
     def _parse_csv_content(self, content: Union[str, bytes]) -> Tuple[List[List[str]], csv.Dialect]:
         """

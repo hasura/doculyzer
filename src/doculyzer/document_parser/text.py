@@ -1,7 +1,8 @@
 """
 Plain text document parser module for the document pointer system.
 
-This module parses plain text documents into structured paragraph elements.
+This module parses plain text documents into structured paragraph elements
+with comprehensive date extraction and temporal analysis.
 """
 
 import json
@@ -12,12 +13,13 @@ from typing import Dict, Any, List, Optional, Union
 
 from .base import DocumentParser
 from ..storage import ElementType
+from .extract_dates import DateExtractor, extract_dates_as_dicts
 
 logger = logging.getLogger(__name__)
 
 
 class TextParser(DocumentParser):
-    """Parser for plain text documents."""
+    """Parser for plain text documents with enhanced date extraction."""
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """Initialize the text parser."""
@@ -33,7 +35,31 @@ class TextParser(DocumentParser):
         self.normalize_whitespace = self.config.get("normalize_whitespace", True)
         self.temp_dir = self.config.get("temp_dir", os.path.join(os.path.dirname(__file__), 'temp'))
 
-    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]]) -> str:
+        # Date extraction configuration
+        self.extract_dates = self.config.get("extract_dates", True)
+        self.date_context_chars = self.config.get("date_context_chars", 50)  # Small context window
+        self.min_year = self.config.get("min_year", 1900)
+        self.max_year = self.config.get("max_year", 2100)
+        self.fiscal_year_start_month = self.config.get("fiscal_year_start_month", 10)
+        self.default_locale = self.config.get("default_locale", "US")
+
+        # Initialize date extractor if enabled
+        self.date_extractor = None
+        if self.extract_dates:
+            try:
+                self.date_extractor = DateExtractor(
+                    context_chars=self.date_context_chars,
+                    min_year=self.min_year,
+                    max_year=self.max_year,
+                    fiscal_year_start_month=self.fiscal_year_start_month,
+                    default_locale=self.default_locale
+                )
+                logger.debug("Date extraction enabled with comprehensive temporal analysis")
+            except ImportError as e:
+                logger.warning(f"Date extraction disabled: {e}")
+                self.extract_dates = False
+
+    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]] = None) -> str:
         """
         Resolve the plain text representation of a text document element.
 
@@ -227,13 +253,13 @@ class TextParser(DocumentParser):
 
     def parse(self, doc_content: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Parse a text document into structured elements.
+        Parse a text document into structured elements with comprehensive date extraction.
 
         Args:
             doc_content: Document content and metadata
 
         Returns:
-            Dictionary with document metadata, elements, relationships, and extracted links
+            Dictionary with document metadata, elements, relationships, extracted links, and dates
         """
         # Extract metadata from doc_content
         source_id = doc_content["id"]
@@ -282,18 +308,67 @@ class TextParser(DocumentParser):
 
         # Parse document content into paragraphs
         paragraphs = self._split_into_paragraphs(content)
-        elements.extend(self._create_paragraph_elements(paragraphs, doc_id, root_id, source_id))
+        paragraph_elements = self._create_paragraph_elements(paragraphs, doc_id, root_id, source_id)
+        elements.extend(paragraph_elements)
 
         # Extract links from content
         links = self._extract_links(content, root_id)
 
-        # Return the parsed document
-        return {
+        # Extract dates from content with comprehensive temporal analysis
+        element_dates = {}
+        if self.extract_dates and self.date_extractor:
+            try:
+                # Extract dates from the full document
+                document_dates = self.date_extractor.extract_dates_as_dicts(content)
+                if document_dates:
+                    element_dates[root_id] = document_dates
+                    logger.debug(f"Extracted {len(document_dates)} dates from document")
+
+                # Extract dates from individual paragraphs
+                for i, paragraph in enumerate(paragraphs):
+                    if paragraph.strip():  # Skip empty paragraphs
+                        para_dates = self.date_extractor.extract_dates_as_dicts(paragraph)
+                        if para_dates:
+                            # Find the corresponding paragraph element
+                            para_element = next(
+                                (elem for elem in paragraph_elements if elem["metadata"]["index"] == i),
+                                None
+                            )
+                            if para_element:
+                                element_dates[para_element["element_id"]] = para_dates
+                                logger.debug(f"Extracted {len(para_dates)} dates from paragraph {i}")
+
+            except Exception as e:
+                logger.warning(f"Error during date extraction: {e}")
+
+        # Add date statistics to document metadata
+        if element_dates:
+            total_dates = sum(len(dates) for dates in element_dates.values())
+            document["metadata"]["date_extraction"] = {
+                "total_dates_found": total_dates,
+                "elements_with_dates": len(element_dates),
+                "extraction_enabled": True
+            }
+        else:
+            document["metadata"]["date_extraction"] = {
+                "total_dates_found": 0,
+                "elements_with_dates": 0,
+                "extraction_enabled": self.extract_dates
+            }
+
+        # Return the parsed document with comprehensive date information
+        result = {
             "document": document,
             "elements": elements,
             "links": links,
             "relationships": []
         }
+
+        # Add dates if any were extracted
+        if element_dates:
+            result["element_dates"] = element_dates
+
+        return result
 
     def _extract_document_metadata(self, content: str, base_metadata: Dict[str, Any]) -> Dict[str, Any]:
         """

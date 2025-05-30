@@ -1,18 +1,21 @@
 """
-HTML document parser module with caching strategies for the document pointer system.
+HTML document parser module with caching strategies and date extraction for the document pointer system.
 
-This module parses HTML documents into structured elements with improved performance.
+This module parses HTML documents into structured elements with improved performance
+and comprehensive date extraction and temporal analysis.
 """
 
 import hashlib
 import json
 import logging
 import os
+import time
 from typing import Dict, Any, Optional, List, Union, Tuple
 
 from bs4 import BeautifulSoup
 
 from .base import DocumentParser
+from .extract_dates import DateExtractor, extract_dates_as_dicts
 from .lru_cache import LRUCache, ttl_cache
 from ..relationships import RelationshipType
 from ..storage import ElementType
@@ -21,10 +24,10 @@ logger = logging.getLogger(__name__)
 
 
 class HtmlParser(DocumentParser):
-    """Parser for HTML documents with caching for improved performance."""
+    """Parser for HTML documents with caching and comprehensive date extraction."""
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        """Initialize the HTML parser with caching capabilities."""
+        """Initialize the HTML parser with caching capabilities and date extraction."""
         super().__init__(config)
         # Define HTML-specific link patterns
         self.link_patterns = [
@@ -37,12 +40,56 @@ class HtmlParser(DocumentParser):
         self.max_cache_size = self.config.get("max_cache_size", 128)  # Default max cache size
         self.enable_caching = self.config.get("enable_caching", True)
 
+        # Date extraction configuration
+        self.extract_dates = self.config.get("extract_dates", True)
+        self.date_context_chars = self.config.get("date_context_chars", 50)  # Small context window
+        self.min_year = self.config.get("min_year", 1900)
+        self.max_year = self.config.get("max_year", 2100)
+        self.fiscal_year_start_month = self.config.get("fiscal_year_start_month", 10)
+        self.default_locale = self.config.get("default_locale", "US")
+
+        # Initialize date extractor if enabled
+        self.date_extractor = None
+        if self.extract_dates:
+            try:
+                self.date_extractor = DateExtractor(
+                    context_chars=self.date_context_chars,
+                    min_year=self.min_year,
+                    max_year=self.max_year,
+                    fiscal_year_start_month=self.fiscal_year_start_month,
+                    default_locale=self.default_locale
+                )
+                logger.debug("Date extraction enabled with comprehensive temporal analysis")
+            except ImportError as e:
+                logger.warning(f"Date extraction disabled: {e}")
+                self.extract_dates = False
+
         # Initialize caches
         if self.enable_caching:
             self.document_cache = LRUCache(max_size=self.max_cache_size, ttl=self.cache_ttl)
             self.soup_cache = LRUCache(max_size=self.max_cache_size, ttl=self.cache_ttl)
             self.content_cache = LRUCache(max_size=self.max_cache_size * 2, ttl=self.cache_ttl)
             self.selector_cache = LRUCache(max_size=self.max_cache_size * 2, ttl=self.cache_ttl)
+
+    def _extract_dates_from_text(self, text: str, element_id: str, element_dates: Dict[str, List[Dict[str, Any]]]):
+        """
+        Extract dates from text content and add to element_dates.
+
+        Args:
+            text: Text content to extract dates from
+            element_id: ID of the element containing the text
+            element_dates: Dictionary to store extracted dates
+        """
+        if not self.extract_dates or not self.date_extractor or not text.strip():
+            return
+
+        try:
+            dates = self.date_extractor.extract_dates_as_dicts(text)
+            if dates:
+                element_dates[element_id] = dates
+                logger.debug(f"Extracted {len(dates)} dates from element {element_id}")
+        except Exception as e:
+            logger.warning(f"Error extracting dates from element {element_id}: {e}")
 
     def clear_caches(self):
         """Clear all caches."""
@@ -220,7 +267,7 @@ class HtmlParser(DocumentParser):
             if hasattr(child, 'name') and child.name:
                 self._add_selectors(child, selector)
 
-    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]]) -> str:
+    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]] = None) -> str:
         """
         Resolve the plain text representation of an HTML element with caching.
 
@@ -538,7 +585,7 @@ class HtmlParser(DocumentParser):
         return result
 
     def parse(self, doc_content: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse an HTML document into structured elements with caching."""
+        """Parse an HTML document into structured elements with caching and comprehensive date extraction."""
         content = doc_content["content"]
         source_id = doc_content["id"]  # Should already be a fully qualified path
         metadata = doc_content.get("metadata", {}).copy()  # Make a copy to avoid modifying original
@@ -570,8 +617,22 @@ class HtmlParser(DocumentParser):
         elements: List = [self._create_root_element(doc_id, source_id)]
         root_id = elements[0]["element_id"]
 
-        # Initialize relationships list
+        # Initialize relationships list and element_dates dictionary
         relationships = []
+        element_dates = {}
+
+        # Extract dates from full document content first
+        if self.extract_dates and self.date_extractor:
+            try:
+                # Get plain text from HTML for date extraction
+                soup = self._get_or_create_soup(content)
+                document_text = soup.get_text()
+                document_dates = self.date_extractor.extract_dates_as_dicts(document_text)
+                if document_dates:
+                    element_dates[root_id] = document_dates
+                    logger.debug(f"Extracted {len(document_dates)} dates from document")
+            except Exception as e:
+                logger.warning(f"Error during document date extraction: {e}")
 
         # Parse HTML with caching
         soup = self._get_or_create_soup(content)
@@ -589,14 +650,29 @@ class HtmlParser(DocumentParser):
                 "link_type": "html"
             })
 
-        # Parse HTML elements with relationships
-        parsed_elements, element_links, element_relationships = self._parse_document(soup, doc_id, root_id, source_id)
+        # Parse HTML elements with relationships and date extraction
+        parsed_elements, element_links, element_relationships = self._parse_document(soup, doc_id, root_id, source_id, element_dates)
         elements.extend(parsed_elements)
         relationships.extend(element_relationships)
 
         # Update link source_ids with the correct element IDs
         self._update_link_sources(extracted_links, parsed_elements)
         extracted_links.extend(element_links)
+
+        # Add date statistics to document metadata
+        if element_dates:
+            total_dates = sum(len(dates) for dates in element_dates.values())
+            document["metadata"]["date_extraction"] = {
+                "total_dates_found": total_dates,
+                "elements_with_dates": len(element_dates),
+                "extraction_enabled": True
+            }
+        else:
+            document["metadata"]["date_extraction"] = {
+                "total_dates_found": 0,
+                "elements_with_dates": 0,
+                "extraction_enabled": self.extract_dates
+            }
 
         # Create the final result
         result = {
@@ -606,13 +682,17 @@ class HtmlParser(DocumentParser):
             "relationships": relationships
         }
 
+        # Add dates if any were extracted
+        if element_dates:
+            result["element_dates"] = element_dates
+
         # Cache the result if enabled
         if self.enable_caching:
             self.document_cache.set(doc_cache_key, result)
 
         return result
 
-    def _parse_document(self, soup, doc_id, parent_id, source_id):
+    def _parse_document(self, soup, doc_id, parent_id, source_id, element_dates):
         """Parse the entire document in a unified way and create relationships."""
         elements = []
         links = []
@@ -624,7 +704,7 @@ class HtmlParser(DocumentParser):
         # Start with the body if it exists
         if soup.body:
             # Process the body element first
-            body_element = self._create_element_for_tag(soup.body, doc_id, parent_id, source_id)
+            body_element = self._create_element_for_tag(soup.body, doc_id, parent_id, source_id, element_dates)
             if body_element:
                 elements.append(body_element)
                 element_id_map[soup.body] = body_element["element_id"]
@@ -658,7 +738,7 @@ class HtmlParser(DocumentParser):
 
             # Use a breadth-first approach to process children
             child_elements, child_links, child_relationships = self._process_tag_children(
-                soup.body, doc_id, body_id, source_id, element_id_map)
+                soup.body, doc_id, body_id, source_id, element_id_map, element_dates)
 
             elements.extend(child_elements)
             links.extend(child_links)
@@ -666,7 +746,7 @@ class HtmlParser(DocumentParser):
 
         return elements, links, relationships
 
-    def _process_tag_children(self, parent_tag, doc_id, parent_id, source_id, element_id_map):
+    def _process_tag_children(self, parent_tag, doc_id, parent_id, source_id, element_id_map, element_dates):
         """Process all children of a tag and create relationships."""
         elements = []
         links = []
@@ -684,7 +764,7 @@ class HtmlParser(DocumentParser):
                               'article', 'section', 'nav', 'aside', 'figure']:
 
                 # Create an element
-                element = self._create_element_for_tag(child, doc_id, parent_id, source_id)
+                element = self._create_element_for_tag(child, doc_id, parent_id, source_id, element_dates)
 
                 if element:
                     elements.append(element)
@@ -732,41 +812,41 @@ class HtmlParser(DocumentParser):
                     # Special handling for specific element types
                     if child.name == 'table':
                         table_elements, table_links, table_relationships = self._process_table(
-                            child, doc_id, element_id, source_id)
+                            child, doc_id, element_id, source_id, element_dates)
                         elements.extend(table_elements)
                         links.extend(table_links)
                         relationships.extend(table_relationships)
                     elif child.name in ['ul', 'ol']:
                         list_elements, list_links, list_relationships = self._process_list(
-                            child, doc_id, element_id, source_id)
+                            child, doc_id, element_id, source_id, element_dates)
                         elements.extend(list_elements)
                         links.extend(list_links)
                         relationships.extend(list_relationships)
 
                     # Process this tag's children recursively
                     child_elements, child_links, child_relationships = self._process_tag_children(
-                        child, doc_id, element_id, source_id, element_id_map)
+                        child, doc_id, element_id, source_id, element_id_map, element_dates)
                     elements.extend(child_elements)
                     links.extend(child_links)
                     relationships.extend(child_relationships)
                 else:
                     # If no element was created, still process children with parent_id
                     child_elements, child_links, child_relationships = self._process_tag_children(
-                        child, doc_id, parent_id, source_id, element_id_map)
+                        child, doc_id, parent_id, source_id, element_id_map, element_dates)
                     elements.extend(child_elements)
                     links.extend(child_links)
                     relationships.extend(child_relationships)
             else:
                 # For non-content tags, just process their children with the same parent_id
                 child_elements, child_links, child_relationships = self._process_tag_children(
-                    child, doc_id, parent_id, source_id, element_id_map)
+                    child, doc_id, parent_id, source_id, element_id_map, element_dates)
                 elements.extend(child_elements)
                 links.extend(child_links)
                 relationships.extend(child_relationships)
 
         return elements, links, relationships
 
-    def _create_element_for_tag(self, tag, doc_id, parent_id, source_id):
+    def _create_element_for_tag(self, tag, doc_id, parent_id, source_id, element_dates):
         """Create an appropriate element based on tag type."""
         element_type = self._get_element_type(tag.name)
         content_text = tag.get_text().strip()
@@ -776,6 +856,9 @@ class HtmlParser(DocumentParser):
             return None
 
         element_id = self._generate_id(f"{element_type}_")
+
+        # Extract dates from content text
+        self._extract_dates_from_text(content_text, element_id, element_dates)
 
         # Create content preview
         if len(content_text) > self.max_content_preview:
@@ -815,17 +898,21 @@ class HtmlParser(DocumentParser):
                 "text": content_text[:50] if len(content_text) > 50 else content_text
             })
         elif tag.name == 'img':
+            alt_text = tag.get('alt', '')
             element["metadata"]["src"] = tag.get('src', '')
-            element["metadata"]["alt"] = tag.get('alt', '')
+            element["metadata"]["alt"] = alt_text
             element["metadata"]["width"] = tag.get('width', '')
             element["metadata"]["height"] = tag.get('height', '')
-            element["content_preview"] = tag.get('alt', 'Image')
+            element["content_preview"] = alt_text or 'Image'
             element["content_location"] = json.dumps({
                 "source": source_id,
                 "type": element_type,
                 "selector": tag.get('_selector', ''),
                 "src": tag.get('src', '')
             })
+            # Extract dates from alt text
+            if alt_text:
+                self._extract_dates_from_text(alt_text, element_id, element_dates)
         elif tag.name == 'pre' or tag.name == 'code':
             language = ""
             if tag.name == 'code' and tag.has_attr('class'):
@@ -853,7 +940,7 @@ class HtmlParser(DocumentParser):
         # For now, we'll keep it simple and leave links assigned to the root
         pass
 
-    def _process_list(self, tag, doc_id, parent_id, source_id):
+    def _process_list(self, tag, doc_id, parent_id, source_id, element_dates):
         """Process a list element and create relationships."""
         elements = []
         links = []
@@ -861,6 +948,10 @@ class HtmlParser(DocumentParser):
 
         list_type = 'ordered' if tag.name == 'ol' else 'unordered'
         list_id = self._generate_id("list_")
+        list_text = tag.get_text().strip()
+
+        # Extract dates from list text
+        self._extract_dates_from_text(list_text, list_id, element_dates)
 
         list_element = {
             "element_id": list_id,
@@ -874,7 +965,7 @@ class HtmlParser(DocumentParser):
                 "list_type": list_type,
                 "selector": tag.get('_selector', '')
             }),
-            "content_hash": self._generate_hash(tag.get_text()),
+            "content_hash": self._generate_hash(list_text),
             "metadata": {
                 "list_type": list_type,
                 "class": tag.get('class', ''),
@@ -917,6 +1008,9 @@ class HtmlParser(DocumentParser):
                 continue
 
             item_id = self._generate_id("item_")
+
+            # Extract dates from item text
+            self._extract_dates_from_text(item_text, item_id, element_dates)
 
             item_element = {
                 "element_id": item_id,
@@ -978,7 +1072,7 @@ class HtmlParser(DocumentParser):
 
         return elements, links, relationships
 
-    def _process_table(self, tag, doc_id, parent_id, source_id):
+    def _process_table(self, tag, doc_id, parent_id, source_id, element_dates):
         """Process a table element and create relationships."""
         elements = []
         links = []
@@ -986,6 +1080,10 @@ class HtmlParser(DocumentParser):
 
         table_id = self._generate_id("table_")
         table_html = str(tag)
+        table_text = tag.get_text().strip()
+
+        # Extract dates from table text
+        self._extract_dates_from_text(table_text, table_id, element_dates)
 
         table_element = {
             "element_id": table_id,
@@ -1045,6 +1143,9 @@ class HtmlParser(DocumentParser):
                     continue
 
                 cell_id = self._generate_id("th_")
+
+                # Extract dates from header cell text
+                self._extract_dates_from_text(cell_text, cell_id, element_dates)
 
                 cell_element = {
                     "element_id": cell_id,
@@ -1106,6 +1207,10 @@ class HtmlParser(DocumentParser):
         tbody = tag.find('tbody') or tag
         for i, row in enumerate(tbody.find_all('tr')):
             row_id = self._generate_id("tr_")
+            row_text = row.get_text().strip()
+
+            # Extract dates from row text
+            self._extract_dates_from_text(row_text, row_id, element_dates)
 
             row_element = {
                 "element_id": row_id,
@@ -1161,6 +1266,9 @@ class HtmlParser(DocumentParser):
 
                 cell_id = self._generate_id("td_")
                 cell_type = "table_header" if cell.name == 'th' else "table_cell"
+
+                # Extract dates from cell text
+                self._extract_dates_from_text(cell_text, cell_id, element_dates)
 
                 cell_element = {
                     "element_id": cell_id,

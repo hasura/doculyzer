@@ -1,8 +1,8 @@
 """
-XML document parser module with caching strategies for the document pointer system.
+XML document parser module with caching strategies and date extraction for the document pointer system.
 
 This module parses XML documents into structured elements and provides
-semantic textual representations of the data with improved performance.
+semantic textual representations of the data with improved performance and comprehensive date extraction.
 """
 
 import functools
@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import uuid
-from typing import Dict, Any, Optional, Union, Tuple
+from typing import Dict, Any, Optional, Union, Tuple, List
 
 import time
 from lxml import etree
@@ -19,6 +19,7 @@ from lxml import etree
 from .base import DocumentParser
 from .lru_cache import LRUCache, ttl_cache
 from .temporal_semantics import detect_temporal_type, TemporalType, create_semantic_temporal_expression
+from .extract_dates import DateExtractor, extract_dates_as_dicts
 from ..relationships import RelationshipType
 from ..storage import ElementType
 
@@ -26,10 +27,10 @@ logger = logging.getLogger(__name__)
 
 
 class XmlParser(DocumentParser):
-    """Parser for XML documents with caching for improved performance using lxml."""
+    """Parser for XML documents with caching for improved performance using lxml and comprehensive date extraction."""
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        """Initialize the XML parser with caching capabilities."""
+        """Initialize the XML parser with caching capabilities and date extraction."""
         super().__init__(config)
         # Configuration options
         self.config = config or {}
@@ -57,6 +58,30 @@ class XmlParser(DocumentParser):
             "total_link_extraction_time": 0.0,
             "method_times": {}
         }
+
+        # Date extraction configuration
+        self.extract_dates = self.config.get("extract_dates", True)
+        self.date_context_chars = self.config.get("date_context_chars", 50)  # Small context window
+        self.min_year = self.config.get("min_year", 1900)
+        self.max_year = self.config.get("max_year", 2100)
+        self.fiscal_year_start_month = self.config.get("fiscal_year_start_month", 10)
+        self.default_locale = self.config.get("default_locale", "US")
+
+        # Initialize date extractor if enabled
+        self.date_extractor = None
+        if self.extract_dates:
+            try:
+                self.date_extractor = DateExtractor(
+                    context_chars=self.date_context_chars,
+                    min_year=self.min_year,
+                    max_year=self.max_year,
+                    fiscal_year_start_month=self.fiscal_year_start_month,
+                    default_locale=self.default_locale
+                )
+                logger.debug("Date extraction enabled with comprehensive temporal analysis for XML")
+            except ImportError as e:
+                logger.warning(f"Date extraction disabled: {e}")
+                self.extract_dates = False
 
         # Initialize caches
         self.document_cache = LRUCache(max_size=self.max_cache_size, ttl=self.cache_ttl)
@@ -148,6 +173,87 @@ class XmlParser(DocumentParser):
             self.tree_cache.set(tree_cache_key, root)
 
         return root
+
+    def _extract_xml_text(self, content: Union[str, bytes]) -> str:
+        """
+        Extract all text content from XML for document-level date extraction.
+
+        Args:
+            content: XML content as string or bytes
+
+        Returns:
+            Combined text from all XML elements
+        """
+        all_text = []
+
+        try:
+            # Get or create lxml root
+            root = self._get_or_create_lxml_root(content)
+
+            # Extract text from all elements
+            for element in root.iter():
+                # Extract element text
+                if element.text and element.text.strip():
+                    all_text.append(element.text.strip())
+
+                # Extract attribute values that might contain dates
+                if element.attrib:
+                    for attr_name, attr_value in element.attrib.items():
+                        if attr_value and isinstance(attr_value, str) and attr_value.strip():
+                            # Include attributes that commonly contain dates
+                            attr_lower = attr_name.lower()
+                            if any(date_word in attr_lower for date_word in
+                                  ['date', 'time', 'created', 'modified', 'updated', 'timestamp']):
+                                all_text.append(attr_value.strip())
+                            elif len(attr_value.strip()) > 5:  # Include longer attribute values
+                                all_text.append(attr_value.strip())
+
+                # Extract tail text
+                if element.tail and element.tail.strip():
+                    all_text.append(element.tail.strip())
+
+        except Exception as e:
+            logger.debug(f"Error extracting XML text for date analysis: {e}")
+
+        return " ".join(all_text)
+
+    def _extract_dates_from_elements(self, elements: List[Dict[str, Any]], element_dates: Dict[str, List[Dict[str, Any]]]):
+        """
+        Extract dates from individual XML elements.
+
+        Args:
+            elements: List of document elements
+            element_dates: Dictionary to store extracted dates by element ID
+        """
+        if not self.date_extractor:
+            return
+
+        for element in elements:
+            element_id = element.get("element_id")
+            element_type = element.get("element_type", "")
+
+            # Only extract dates from text-containing elements
+            if element_type in ["xml_element", "xml_text", "xml_list", "xml_object"]:
+
+                try:
+                    # Get the text content of this element
+                    content_location = element.get("content_location", "{}")
+                    location_data = json.loads(content_location)
+
+                    # Extract text from the element
+                    text_content = self._resolve_element_text(location_data, None)
+
+                    if text_content and text_content.strip():
+                        # Extract dates from this element's text
+                        element_date_list = self.date_extractor.extract_dates_as_dicts(text_content)
+
+                        if element_date_list:
+                            element_dates[element_id] = element_date_list
+                            logger.debug(f"Extracted {len(element_date_list)} dates from {element_type} element")
+
+                except Exception as e:
+                    logger.debug(f"Error extracting dates from element {element_id}: {e}")
+                    continue
 
     @staticmethod
     def _prepare_namespace_dict(namespaces: Optional[Dict[str, str]]) -> Dict[str, str]:
@@ -271,7 +377,7 @@ class XmlParser(DocumentParser):
         """
         return f"{prefix}{uuid.uuid4()}"
 
-    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]]) -> str:
+    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]] = None) -> str:
         """
         Resolve the plain text representation of an XML element using lxml's native XPath.
         Includes natural language representation of attributes.
@@ -1219,7 +1325,7 @@ class XmlParser(DocumentParser):
         return metadata
 
     def parse(self, doc_content: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse an XML document into structured elements with direct lxml support."""
+        """Parse an XML document into structured elements with direct lxml support and comprehensive date extraction."""
         content = doc_content["content"]
         source_id = doc_content["id"]  # Should already be a fully qualified path
         metadata = doc_content.get("metadata", {}).copy()  # Make a copy to avoid modifying original
@@ -1273,6 +1379,39 @@ class XmlParser(DocumentParser):
         # Extract links from the document
         links = self._extract_xml_links_direct(lxml_root, elements, namespaces)
 
+        # Extract dates from XML content with comprehensive temporal analysis
+        element_dates = {}
+        if self.extract_dates and self.date_extractor:
+            try:
+                # Extract dates from the entire XML document
+                full_text = self._extract_xml_text(content)
+                if full_text.strip():
+                    document_dates = self.date_extractor.extract_dates_as_dicts(full_text)
+                    if document_dates:
+                        element_dates[root_id] = document_dates
+                        logger.debug(f"Extracted {len(document_dates)} dates from XML document")
+
+                # Extract dates from individual elements
+                self._extract_dates_from_elements(elements, element_dates)
+
+            except Exception as e:
+                logger.warning(f"Error during XML date extraction: {e}")
+
+        # Add date statistics to document metadata
+        if element_dates:
+            total_dates = sum(len(dates) for dates in element_dates.values())
+            document["metadata"]["date_extraction"] = {
+                "total_dates_found": total_dates,
+                "elements_with_dates": len(element_dates),
+                "extraction_enabled": True
+            }
+        else:
+            document["metadata"]["date_extraction"] = {
+                "total_dates_found": 0,
+                "elements_with_dates": 0,
+                "extraction_enabled": self.extract_dates
+            }
+
         # Create result
         result = {
             "document": document,
@@ -1280,6 +1419,10 @@ class XmlParser(DocumentParser):
             "links": links,
             "relationships": relationships
         }
+
+        # Add dates if any were extracted
+        if element_dates:
+            result["element_dates"] = element_dates
 
         # Add performance metrics if enabled
         if self.enable_performance_monitoring:

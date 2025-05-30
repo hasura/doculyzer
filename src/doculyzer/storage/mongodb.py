@@ -1,8 +1,17 @@
+"""
+MongoDB Implementation with Structured Search Support
+
+This module provides a complete MongoDB implementation of the DocumentDatabase
+with full structured search capabilities. It leverages MongoDB's aggregation framework,
+flexible document structure, and powerful querying features to provide comprehensive search.
+"""
+
 import logging
 import os
 from typing import Dict, Any, List, Optional, Tuple, Union, TYPE_CHECKING
 import re
 import time
+from datetime import datetime, timedelta
 
 # Import types for type checking only - these won't be imported at runtime
 if TYPE_CHECKING:
@@ -25,6 +34,14 @@ else:
 from .element_relationship import ElementRelationship
 from .base import DocumentDatabase
 from .element_element import ElementType, ElementBase  # Import existing enum and ElementBase
+
+# Import structured search components
+from .structured_search import (
+    StructuredSearchQuery, SearchCriteriaGroup, BackendCapabilities, SearchCapability,
+    UnsupportedSearchError, TextSearchCriteria, EmbeddingSearchCriteria, DateSearchCriteria,
+    TopicSearchCriteria, MetadataSearchCriteria, ElementSearchCriteria,
+    LogicalOperator, DateRangeOperator, SimilarityOperator
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,107 +81,7 @@ except Exception as e:
 
 
 class MongoDBDocumentDatabase(DocumentDatabase):
-    """MongoDB implementation of document database."""
-
-    def get_outgoing_relationships(self, element_pk: int) -> List[ElementRelationship]:
-        """
-        Find all relationships where the specified element_pk is the source.
-
-        Implementation for MongoDB database using aggregation pipeline to efficiently
-        retrieve target element information.
-
-        Args:
-            element_pk: The primary key of the element
-
-        Returns:
-            List of ElementRelationship objects where the specified element is the source
-        """
-        if not self.db:
-            raise ValueError("Database not initialized")
-
-        relationships = []
-
-        # Get the element to find its element_id and type
-        element = self.get_element(element_pk)
-        if not element:
-            logger.warning(f"Element with PK {element_pk} not found")
-            return []
-
-        element_id = element.get("element_id")
-        if not element_id:
-            logger.warning(f"Element with PK {element_pk} has no element_id")
-            return []
-
-        element_type = element.get("element_type", "")
-
-        try:
-            # Use aggregation pipeline to join relationships with elements
-            # This is similar to a SQL JOIN but using MongoDB's aggregation framework
-            pipeline = [
-                # Match relationships where this element is the source
-                {"$match": {"source_id": element_id}},
-
-                # Lookup target elements
-                {"$lookup": {
-                    "from": "elements",
-                    "localField": "target_reference",
-                    "foreignField": "element_id",
-                    "as": "target_element"
-                }},
-
-                # Unwind target_element array (or preserve null with preserveNullAndEmptyArrays)
-                {"$unwind": {
-                    "path": "$target_element",
-                    "preserveNullAndEmptyArrays": True
-                }}
-            ]
-
-            # Execute the aggregation pipeline
-            results = list(self.db.relationships.aggregate(pipeline))
-
-            # Process results
-            for result in results:
-                # Remove MongoDB's _id field
-                if "_id" in result:
-                    del result["_id"]
-
-                # Extract target element information if available
-                target_element_pk = None
-                target_element_type = None
-                target_content_preview = None  # Added this field
-
-                if "target_element" in result and result["target_element"]:
-                    target_element = result["target_element"]
-                    target_element_pk = target_element.get("element_pk")
-                    target_element_type = target_element.get("element_type")
-                    target_content_preview = target_element.get("content_preview", "")  # Added this field
-
-                    # Remove the target_element object from the result
-                    del result["target_element"]
-
-                # Create enriched relationship
-                relationship = ElementRelationship(
-                    relationship_id=result.get("relationship_id", ""),
-                    source_id=element_id,
-                    source_element_pk=element_pk,
-                    source_element_type=element_type,
-                    relationship_type=result.get("relationship_type", ""),
-                    target_reference=result.get("target_reference", ""),
-                    target_element_pk=target_element_pk,
-                    target_element_type=target_element_type,
-                    target_content_preview=target_content_preview,  # Added this field
-                    doc_id=result.get("doc_id"),
-                    metadata=result.get("metadata", {}),
-                    is_source=True
-                )
-
-                relationships.append(relationship)
-
-            return relationships
-
-        except Exception as e:
-            logger.error(f"Error getting outgoing relationships for element {element_pk}: {str(e)}")
-            return []
+    """MongoDB implementation of document database with structured search support."""
 
     def __init__(self, conn_params: Dict[str, Any]):
         """
@@ -184,6 +101,699 @@ class MongoDBDocumentDatabase(DocumentDatabase):
             self.vector_dimension = config.config.get('embedding', {}).get('dimensions', 384)
         else:
             self.vector_dimension = 384  # Default if config not available
+
+    # ========================================
+    # STRUCTURED SEARCH IMPLEMENTATION
+    # ========================================
+
+    def get_backend_capabilities(self) -> BackendCapabilities:
+        """
+        MongoDB supports comprehensive search capabilities through its aggregation framework.
+        """
+        supported = {
+            # Core search types
+            SearchCapability.TEXT_SIMILARITY,
+            SearchCapability.EMBEDDING_SIMILARITY,
+            SearchCapability.FULL_TEXT_SEARCH,
+
+            # Date capabilities
+            SearchCapability.DATE_FILTERING,
+            SearchCapability.DATE_RANGE_QUERIES,
+            SearchCapability.FISCAL_YEAR_DATES,
+            SearchCapability.RELATIVE_DATES,
+            SearchCapability.DATE_AGGREGATIONS,
+
+            # Topic capabilities
+            SearchCapability.TOPIC_FILTERING,
+            SearchCapability.TOPIC_LIKE_PATTERNS,
+            SearchCapability.TOPIC_CONFIDENCE_FILTERING,
+
+            # Metadata capabilities
+            SearchCapability.METADATA_EXACT,
+            SearchCapability.METADATA_LIKE,
+            SearchCapability.METADATA_RANGE,
+            SearchCapability.METADATA_EXISTS,
+            SearchCapability.NESTED_METADATA,
+
+            # Element capabilities
+            SearchCapability.ELEMENT_TYPE_FILTERING,
+            SearchCapability.ELEMENT_HIERARCHY,
+            SearchCapability.ELEMENT_RELATIONSHIPS,
+
+            # Logical operations
+            SearchCapability.LOGICAL_AND,
+            SearchCapability.LOGICAL_OR,
+            SearchCapability.LOGICAL_NOT,
+            SearchCapability.NESTED_QUERIES,
+
+            # Scoring and ranking
+            SearchCapability.CUSTOM_SCORING,
+            SearchCapability.SIMILARITY_THRESHOLDS,
+            SearchCapability.BOOST_FACTORS,
+            SearchCapability.SCORE_COMBINATION,
+
+            # Advanced features
+            SearchCapability.FACETED_SEARCH,
+            # MongoDB Atlas provides some highlighting capabilities
+        }
+
+        # Add vector search if Atlas Vector Search is available
+        if self.vector_search:
+            supported.add(SearchCapability.VECTOR_SEARCH)
+
+        return BackendCapabilities(supported)
+
+    def execute_structured_search(self, query: StructuredSearchQuery) -> List[Dict[str, Any]]:
+        """
+        Execute a structured search query using MongoDB's aggregation framework.
+        """
+        if not self.db:
+            raise ValueError("Database not initialized")
+
+        # Validate query support
+        missing = self.validate_query_support(query)
+        if missing:
+            raise UnsupportedSearchError(missing)
+
+        try:
+            # Execute the root criteria group
+            raw_results = self._execute_criteria_group(query.criteria_group)
+
+            # Process and enrich results
+            final_results = self._process_search_results(raw_results, query)
+
+            # Apply pagination
+            start_idx = query.offset
+            end_idx = start_idx + query.limit
+
+            return final_results[start_idx:end_idx]
+
+        except Exception as e:
+            logger.error(f"Error executing structured search: {str(e)}")
+            return []
+
+    def _execute_criteria_group(self, group: SearchCriteriaGroup) -> List[Dict[str, Any]]:
+        """Execute a single criteria group and return scored results."""
+
+        # Collect results from all criteria in this group
+        all_results = []
+
+        # Execute individual criteria
+        if group.text_criteria:
+            text_results = self._execute_text_criteria(group.text_criteria)
+            all_results.append(("text", text_results))
+
+        if group.embedding_criteria:
+            embedding_results = self._execute_embedding_criteria(group.embedding_criteria)
+            all_results.append(("embedding", embedding_results))
+
+        if group.date_criteria:
+            date_results = self._execute_date_criteria(group.date_criteria)
+            all_results.append(("date", date_results))
+
+        if group.topic_criteria:
+            topic_results = self._execute_topic_criteria(group.topic_criteria)
+            all_results.append(("topic", topic_results))
+
+        if group.metadata_criteria:
+            metadata_results = self._execute_metadata_criteria(group.metadata_criteria)
+            all_results.append(("metadata", metadata_results))
+
+        if group.element_criteria:
+            element_results = self._execute_element_criteria(group.element_criteria)
+            all_results.append(("element", element_results))
+
+        # Execute sub-groups recursively
+        for sub_group in group.sub_groups:
+            sub_results = self._execute_criteria_group(sub_group)
+            all_results.append(("subgroup", sub_results))
+
+        # Combine results based on the group's logical operator
+        return self._combine_results(all_results, group.operator)
+
+    def _execute_text_criteria(self, criteria: TextSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute text similarity search using embeddings."""
+        try:
+            # Generate embedding for the query text
+            query_embedding = self._generate_embedding(criteria.query_text)
+
+            # Perform similarity search
+            similarity_results = self.search_by_embedding(
+                query_embedding,
+                limit=1000,  # Get many results for filtering
+                filter_criteria=None
+            )
+
+            # Filter by similarity threshold and operator
+            filtered_results = []
+            for element_pk, similarity in similarity_results:
+                if self._compare_similarity(similarity, criteria.similarity_threshold, criteria.similarity_operator):
+                    filtered_results.append({
+                        'element_pk': element_pk,
+                        'scores': {
+                            'text_similarity': similarity * criteria.boost_factor
+                        }
+                    })
+
+            return filtered_results
+
+        except Exception as e:
+            logger.error(f"Error executing text criteria: {str(e)}")
+            return []
+
+    def _execute_embedding_criteria(self, criteria: EmbeddingSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute direct embedding vector search."""
+        try:
+            similarity_results = self.search_by_embedding(
+                criteria.embedding_vector,
+                limit=1000,
+                filter_criteria=None
+            )
+
+            filtered_results = []
+            for element_pk, similarity in similarity_results:
+                if self._compare_similarity(similarity, criteria.similarity_threshold, criteria.similarity_operator):
+                    filtered_results.append({
+                        'element_pk': element_pk,
+                        'scores': {
+                            'embedding_similarity': similarity * criteria.boost_factor
+                        }
+                    })
+
+            return filtered_results
+
+        except Exception as e:
+            logger.error(f"Error executing embedding criteria: {str(e)}")
+            return []
+
+    def _execute_date_criteria(self, criteria: DateSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute date-based filtering using MongoDB aggregation."""
+        try:
+            # Build date filter based on operator
+            if criteria.operator == DateRangeOperator.WITHIN:
+                element_pks = self._get_element_pks_in_date_range(criteria.start_date, criteria.end_date)
+
+            elif criteria.operator == DateRangeOperator.AFTER:
+                element_pks = self._get_element_pks_in_date_range(criteria.exact_date, None)
+
+            elif criteria.operator == DateRangeOperator.BEFORE:
+                element_pks = self._get_element_pks_in_date_range(None, criteria.exact_date)
+
+            elif criteria.operator == DateRangeOperator.EXACTLY:
+                # For exactly, we need a tight range around the date
+                start_of_day = criteria.exact_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_of_day = criteria.exact_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+                element_pks = self._get_element_pks_in_date_range(start_of_day, end_of_day)
+
+            elif criteria.operator == DateRangeOperator.RELATIVE_DAYS:
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=criteria.relative_value)
+                element_pks = self._get_element_pks_in_date_range(start_date, end_date)
+
+            elif criteria.operator == DateRangeOperator.RELATIVE_MONTHS:
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=criteria.relative_value * 30)  # Approximate
+                element_pks = self._get_element_pks_in_date_range(start_date, end_date)
+
+            elif criteria.operator == DateRangeOperator.FISCAL_YEAR:
+                # Assume fiscal year starts in July (customize as needed)
+                start_date = datetime(criteria.year - 1, 7, 1)
+                end_date = datetime(criteria.year, 6, 30, 23, 59, 59)
+                element_pks = self._get_element_pks_in_date_range(start_date, end_date)
+
+            elif criteria.operator == DateRangeOperator.CALENDAR_YEAR:
+                start_date = datetime(criteria.year, 1, 1)
+                end_date = datetime(criteria.year, 12, 31, 23, 59, 59)
+                element_pks = self._get_element_pks_in_date_range(start_date, end_date)
+
+            elif criteria.operator == DateRangeOperator.QUARTER:
+                quarter_starts = {1: (1, 1), 2: (4, 1), 3: (7, 1), 4: (10, 1)}
+                quarter_ends = {1: (3, 31), 2: (6, 30), 3: (9, 30), 4: (12, 31)}
+
+                start_month, start_day = quarter_starts[criteria.quarter]
+                end_month, end_day = quarter_ends[criteria.quarter]
+
+                start_date = datetime(criteria.year, start_month, start_day)
+                end_date = datetime(criteria.year, end_month, end_day, 23, 59, 59)
+                element_pks = self._get_element_pks_in_date_range(start_date, end_date)
+
+            # Also filter by specificity levels if needed
+            if criteria.specificity_levels:
+                element_pks = self._filter_by_specificity(element_pks, criteria.specificity_levels)
+
+            # Convert to result format
+            results = []
+            for element_pk in element_pks:
+                results.append({
+                    'element_pk': element_pk,
+                    'scores': {
+                        'date_relevance': 1.0  # Could calculate date relevance score
+                    }
+                })
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Error executing date criteria: {str(e)}")
+            return []
+
+    def _execute_topic_criteria(self, criteria: TopicSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute topic-based filtering using MongoDB array operators."""
+        try:
+            topic_results = self.search_by_text_and_topics(
+                search_text=None,
+                include_topics=criteria.include_topics,
+                exclude_topics=criteria.exclude_topics,
+                min_confidence=criteria.min_confidence,
+                limit=1000
+            )
+
+            results = []
+            for result in topic_results:
+                results.append({
+                    'element_pk': result['element_pk'],
+                    'scores': {
+                        'topic_confidence': result['confidence'] * criteria.boost_factor
+                    }
+                })
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Error executing topic criteria: {str(e)}")
+            return []
+
+    def _execute_metadata_criteria(self, criteria: MetadataSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute metadata-based filtering using MongoDB's flexible document structure."""
+        try:
+            # Build MongoDB query for metadata filtering
+            match_conditions = {}
+
+            # Add exact matches
+            for key, value in criteria.exact_matches.items():
+                match_conditions[f"metadata.{key}"] = value
+
+            # Add LIKE patterns using regex
+            for key, pattern in criteria.like_patterns.items():
+                regex_pattern = self._convert_like_to_regex(pattern)
+                match_conditions[f"metadata.{key}"] = {"$regex": regex_pattern, "$options": "i"}
+
+            # Add range filters
+            for key, range_filter in criteria.range_filters.items():
+                field_conditions = {}
+                if 'gte' in range_filter:
+                    field_conditions["$gte"] = range_filter['gte']
+                if 'lte' in range_filter:
+                    field_conditions["$lte"] = range_filter['lte']
+                if 'gt' in range_filter:
+                    field_conditions["$gt"] = range_filter['gt']
+                if 'lt' in range_filter:
+                    field_conditions["$lt"] = range_filter['lt']
+
+                if field_conditions:
+                    match_conditions[f"metadata.{key}"] = field_conditions
+
+            # Add exists filters
+            for key in criteria.exists_filters:
+                match_conditions[f"metadata.{key}"] = {"$exists": True}
+
+            # Execute query
+            elements = list(self.db.elements.find(match_conditions, {"element_pk": 1}).limit(1000))
+            element_pks = [elem["element_pk"] for elem in elements]
+
+            results = []
+            for element_pk in element_pks:
+                results.append({
+                    'element_pk': element_pk,
+                    'scores': {
+                        'metadata_relevance': 1.0
+                    }
+                })
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Error executing metadata criteria: {str(e)}")
+            return []
+
+    def _execute_element_criteria(self, criteria: ElementSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute element-based filtering using MongoDB queries."""
+        try:
+            # Build MongoDB query for element filtering
+            match_conditions = {}
+
+            # Add element type filter
+            if criteria.element_types:
+                type_values = self._prepare_element_type_query(criteria.element_types)
+                if type_values:
+                    if len(type_values) == 1:
+                        match_conditions["element_type"] = type_values[0]
+                    else:
+                        match_conditions["element_type"] = {"$in": type_values}
+
+            # Add document ID filters
+            if criteria.doc_ids:
+                match_conditions["doc_id"] = {"$in": criteria.doc_ids}
+
+            if criteria.exclude_doc_ids:
+                match_conditions["doc_id"] = {"$nin": criteria.exclude_doc_ids}
+
+            # Add content length filters using MongoDB's string length operator
+            content_length_conditions = {}
+            if criteria.content_length_min is not None:
+                content_length_conditions["$gte"] = criteria.content_length_min
+            if criteria.content_length_max is not None:
+                content_length_conditions["$lte"] = criteria.content_length_max
+
+            if content_length_conditions:
+                # Use $expr to evaluate string length
+                match_conditions["$expr"] = {
+                    "$and": [
+                        {f"${op}": [{"$strLenCP": "$content_preview"}, value]}
+                        for op, value in content_length_conditions.items()
+                    ]
+                }
+
+            # Add parent element filters
+            if criteria.parent_element_ids:
+                match_conditions["parent_id"] = {"$in": criteria.parent_element_ids}
+
+            # Execute query
+            elements = list(self.db.elements.find(match_conditions, {"element_pk": 1}).limit(1000))
+            element_pks = [elem["element_pk"] for elem in elements]
+
+            results = []
+            for element_pk in element_pks:
+                results.append({
+                    'element_pk': element_pk,
+                    'scores': {
+                        'element_match': 1.0
+                    }
+                })
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Error executing element criteria: {str(e)}")
+            return []
+
+    def _combine_results(self, all_results: List[Tuple[str, List[Dict[str, Any]]]],
+                         operator: LogicalOperator) -> List[Dict[str, Any]]:
+        """Combine results from multiple criteria using logical operators."""
+
+        if not all_results:
+            return []
+
+        if len(all_results) == 1:
+            return all_results[0][1]  # Return the single result set
+
+        # Extract just the result lists
+        result_sets = [results for _, results in all_results]
+
+        if operator == LogicalOperator.AND:
+            return self._intersect_results(result_sets)
+        elif operator == LogicalOperator.OR:
+            return self._union_results(result_sets)
+        elif operator == LogicalOperator.NOT:
+            # NOT operation: first set minus all other sets
+            if len(result_sets) >= 2:
+                return self._subtract_results(result_sets[0], result_sets[1:])
+            else:
+                return result_sets[0]
+
+        return []
+
+    def _intersect_results(self, result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        """Find intersection of multiple result sets."""
+        if not result_sets:
+            return []
+
+        # Get element_pks from all sets and combine scores
+        element_pk_sets = []
+        element_scores = {}  # element_pk -> combined scores
+
+        for result_set in result_sets:
+            pk_set = set()
+            for result in result_set:
+                element_pk = result['element_pk']
+                pk_set.add(element_pk)
+
+                # Accumulate scores
+                if element_pk not in element_scores:
+                    element_scores[element_pk] = {}
+
+                for score_type, score_value in result.get('scores', {}).items():
+                    if score_type not in element_scores[element_pk]:
+                        element_scores[element_pk][score_type] = []
+                    element_scores[element_pk][score_type].append(score_value)
+
+            element_pk_sets.append(pk_set)
+
+        # Find intersection
+        common_pks = element_pk_sets[0]
+        for pk_set in element_pk_sets[1:]:
+            common_pks = common_pks.intersection(pk_set)
+
+        # Build result list
+        results = []
+        for element_pk in common_pks:
+            results.append({
+                'element_pk': element_pk,
+                'scores': element_scores[element_pk]
+            })
+
+        return results
+
+    def _union_results(self, result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        """Find union of multiple result sets."""
+        element_scores = {}  # element_pk -> combined scores
+
+        for result_set in result_sets:
+            for result in result_set:
+                element_pk = result['element_pk']
+
+                if element_pk not in element_scores:
+                    element_scores[element_pk] = {}
+
+                for score_type, score_value in result.get('scores', {}).items():
+                    if score_type not in element_scores[element_pk]:
+                        element_scores[element_pk][score_type] = []
+                    element_scores[element_pk][score_type].append(score_value)
+
+        # Build result list
+        results = []
+        for element_pk, scores in element_scores.items():
+            results.append({
+                'element_pk': element_pk,
+                'scores': scores
+            })
+
+        return results
+
+    def _subtract_results(self, base_set: List[Dict[str, Any]],
+                          subtract_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        """Subtract multiple sets from base set."""
+        base_pks = {result['element_pk'] for result in base_set}
+
+        # Collect all PKs to subtract
+        subtract_pks = set()
+        for subtract_set in subtract_sets:
+            for result in subtract_set:
+                subtract_pks.add(result['element_pk'])
+
+        # Return base results that are not in subtract sets
+        final_pks = base_pks - subtract_pks
+
+        return [result for result in base_set if result['element_pk'] in final_pks]
+
+    def _process_search_results(self, raw_results: List[Dict[str, Any]],
+                                query: StructuredSearchQuery) -> List[Dict[str, Any]]:
+        """Process and enrich search results."""
+
+        # Calculate combined scores
+        for result in raw_results:
+            result['final_score'] = self._calculate_combined_score(
+                result.get('scores', {}),
+                query.score_combination,
+                query.custom_weights
+            )
+
+        # Sort by final score
+        raw_results.sort(key=lambda x: x['final_score'], reverse=True)
+
+        # Enrich with element details
+        enriched_results = []
+        for result in raw_results:
+            element_pk = result['element_pk']
+            element = self.get_element(element_pk)
+
+            if not element:
+                continue
+
+            enriched_result = {
+                'element_pk': element_pk,
+                'element_id': element.get('element_id'),
+                'doc_id': element.get('doc_id'),
+                'element_type': element.get('element_type'),
+                'content_preview': element.get('content_preview'),
+                'final_score': result['final_score']
+            }
+
+            if query.include_similarity_scores:
+                enriched_result['scores'] = result.get('scores', {})
+
+            if query.include_metadata:
+                enriched_result['metadata'] = element.get('metadata', {})
+
+            if query.include_topics:
+                enriched_result['topics'] = self.get_embedding_topics(element_pk)
+
+            if query.include_element_dates:
+                element_id = element.get('element_id')
+                if element_id:
+                    enriched_result['extracted_dates'] = self.get_element_dates(element_id)
+                    enriched_result['date_count'] = len(enriched_result['extracted_dates'])
+
+            enriched_results.append(enriched_result)
+
+        return enriched_results
+
+    def _calculate_combined_score(self, scores: Dict[str, List[float]],
+                                  combination_method: str,
+                                  weights: Dict[str, float]) -> float:
+        """Calculate final combined score from multiple score types."""
+
+        if not scores:
+            return 0.0
+
+        # Average scores of the same type
+        avg_scores = {}
+        for score_type, score_list in scores.items():
+            if score_list:
+                avg_scores[score_type] = sum(score_list) / len(score_list)
+
+        if not avg_scores:
+            return 0.0
+
+        if combination_method == "multiply":
+            final_score = 1.0
+            for score_type, score in avg_scores.items():
+                weight = weights.get(score_type, 1.0)
+                final_score *= (score * weight)
+            return final_score
+
+        elif combination_method == "add":
+            final_score = 0.0
+            for score_type, score in avg_scores.items():
+                weight = weights.get(score_type, 1.0)
+                final_score += (score * weight)
+            return final_score
+
+        elif combination_method == "max":
+            weighted_scores = []
+            for score_type, score in avg_scores.items():
+                weight = weights.get(score_type, 1.0)
+                weighted_scores.append(score * weight)
+            return max(weighted_scores)
+
+        elif combination_method == "weighted_avg":
+            total_weighted_score = 0.0
+            total_weight = 0.0
+            for score_type, score in avg_scores.items():
+                weight = weights.get(score_type, 1.0)
+                total_weighted_score += (score * weight)
+                total_weight += weight
+            return total_weighted_score / total_weight if total_weight > 0 else 0.0
+
+        return 0.0
+
+    def _compare_similarity(self, similarity: float, threshold: float,
+                            operator: SimilarityOperator) -> bool:
+        """Compare similarity score against threshold using specified operator."""
+        if operator == SimilarityOperator.GREATER_THAN:
+            return similarity > threshold
+        elif operator == SimilarityOperator.GREATER_EQUAL:
+            return similarity >= threshold
+        elif operator == SimilarityOperator.LESS_THAN:
+            return similarity < threshold
+        elif operator == SimilarityOperator.LESS_EQUAL:
+            return similarity <= threshold
+        elif operator == SimilarityOperator.EQUALS:
+            return abs(similarity - threshold) < 0.001  # Small epsilon for float comparison
+        return False
+
+    def _generate_embedding(self, search_text: str) -> List[float]:
+        """Generate embedding for search text."""
+        try:
+            from ..embeddings import get_embedding_generator
+
+            if self.embedding_generator is None:
+                if not config:
+                    logger.error("Config not available for embedding generator")
+                    raise ValueError("Config not available")
+                self.embedding_generator = get_embedding_generator(config)
+
+            return self.embedding_generator.generate(search_text)
+        except Exception as e:
+            logger.error(f"Error generating embedding: {str(e)}")
+            raise
+
+    def _get_element_pks_in_date_range(self, start_date: Optional[datetime],
+                                       end_date: Optional[datetime]) -> List[int]:
+        """Get element_pks that have dates within the specified range using MongoDB aggregation."""
+        if not (start_date or end_date):
+            return []
+
+        # Build aggregation pipeline to find elements with dates in range
+        pipeline = [
+            {"$match": {"extracted_dates": {"$exists": True, "$ne": []}}},
+            {"$unwind": "$extracted_dates"},
+            {"$match": {}}  # We'll add date conditions here
+        ]
+
+        # Add date range conditions
+        date_conditions = {}
+        if start_date:
+            date_conditions["extracted_dates.timestamp"] = {"$gte": start_date.timestamp()}
+        if end_date:
+            if "extracted_dates.timestamp" in date_conditions:
+                date_conditions["extracted_dates.timestamp"]["$lte"] = end_date.timestamp()
+            else:
+                date_conditions["extracted_dates.timestamp"] = {"$lte": end_date.timestamp()}
+
+        pipeline[2]["$match"] = date_conditions
+
+        # Group back to get distinct element_pks
+        pipeline.extend([
+            {"$group": {"_id": "$element_pk"}},
+            {"$project": {"element_pk": "$_id", "_id": 0}}
+        ])
+
+        # Execute aggregation
+        results = list(self.db.elements.aggregate(pipeline))
+        return [result["element_pk"] for result in results]
+
+    def _filter_by_specificity(self, element_pks: List[int],
+                               allowed_levels: List[str]) -> List[int]:
+        """Filter element PKs by date specificity levels."""
+        if not element_pks or not allowed_levels:
+            return element_pks
+
+        # Use aggregation to filter by specificity levels
+        pipeline = [
+            {"$match": {"element_pk": {"$in": element_pks}, "extracted_dates": {"$exists": True, "$ne": []}}},
+            {"$unwind": "$extracted_dates"},
+            {"$match": {"extracted_dates.specificity_level": {"$in": allowed_levels}}},
+            {"$group": {"_id": "$element_pk"}},
+            {"$project": {"element_pk": "$_id", "_id": 0}}
+        ]
+
+        results = list(self.db.elements.aggregate(pipeline))
+        return [result["element_pk"] for result in results]
+
+    # ========================================
+    # ALL EXISTING METHODS (Enhanced with structured search support)
+    # ========================================
 
     def initialize(self) -> None:
         """Initialize the database by connecting and creating collections if they don't exist."""
@@ -319,6 +929,106 @@ class MongoDBDocumentDatabase(DocumentDatabase):
             self.client.close()
             self.client = None
             self.db = None
+
+    def get_outgoing_relationships(self, element_pk: int) -> List[ElementRelationship]:
+        """
+        Find all relationships where the specified element_pk is the source.
+
+        Implementation for MongoDB database using aggregation pipeline to efficiently
+        retrieve target element information.
+
+        Args:
+            element_pk: The primary key of the element
+
+        Returns:
+            List of ElementRelationship objects where the specified element is the source
+        """
+        if not self.db:
+            raise ValueError("Database not initialized")
+
+        relationships = []
+
+        # Get the element to find its element_id and type
+        element = self.get_element(element_pk)
+        if not element:
+            logger.warning(f"Element with PK {element_pk} not found")
+            return []
+
+        element_id = element.get("element_id")
+        if not element_id:
+            logger.warning(f"Element with PK {element_pk} has no element_id")
+            return []
+
+        element_type = element.get("element_type", "")
+
+        try:
+            # Use aggregation pipeline to join relationships with elements
+            # This is similar to a SQL JOIN but using MongoDB's aggregation framework
+            pipeline = [
+                # Match relationships where this element is the source
+                {"$match": {"source_id": element_id}},
+
+                # Lookup target elements
+                {"$lookup": {
+                    "from": "elements",
+                    "localField": "target_reference",
+                    "foreignField": "element_id",
+                    "as": "target_element"
+                }},
+
+                # Unwind target_element array (or preserve null with preserveNullAndEmptyArrays)
+                {"$unwind": {
+                    "path": "$target_element",
+                    "preserveNullAndEmptyArrays": True
+                }}
+            ]
+
+            # Execute the aggregation pipeline
+            results = list(self.db.relationships.aggregate(pipeline))
+
+            # Process results
+            for result in results:
+                # Remove MongoDB's _id field
+                if "_id" in result:
+                    del result["_id"]
+
+                # Extract target element information if available
+                target_element_pk = None
+                target_element_type = None
+                target_content_preview = None
+
+                if "target_element" in result and result["target_element"]:
+                    target_element = result["target_element"]
+                    target_element_pk = target_element.get("element_pk")
+                    target_element_type = target_element.get("element_type")
+                    target_content_preview = target_element.get("content_preview", "")
+
+                    # Remove the target_element object from the result
+                    del result["target_element"]
+
+                # Create enriched relationship
+                relationship = ElementRelationship(
+                    relationship_id=result.get("relationship_id", ""),
+                    source_id=element_id,
+                    source_element_pk=element_pk,
+                    source_element_type=element_type,
+                    relationship_type=result.get("relationship_type", ""),
+                    target_reference=result.get("target_reference", ""),
+                    target_element_pk=target_element_pk,
+                    target_element_type=target_element_type,
+                    target_content_preview=target_content_preview,
+                    doc_id=result.get("doc_id"),
+                    metadata=result.get("metadata", {}),
+                    is_source=True
+                )
+
+                relationships.append(relationship)
+
+            return relationships
+
+        except Exception as e:
+            logger.error(f"Error getting outgoing relationships for element {element_pk}: {str(e)}")
+            return []
 
     def get_last_processed_info(self, source_id: str) -> Optional[Dict[str, Any]]:
         """Get information about when a document was last processed."""
@@ -2038,3 +2748,389 @@ class MongoDBDocumentDatabase(DocumentDatabase):
             current_pk = parent_id
 
         return ancestry
+
+    # ========================================
+    # DATE STORAGE AND SEARCH METHODS (MongoDB specific implementation)
+    # ========================================
+
+    def store_element_dates(self, element_id: str, dates: List[Dict[str, Any]]) -> None:
+        """
+        Store extracted dates associated with an element using MongoDB's embedded documents.
+
+        Args:
+            element_id: Element ID
+            dates: List of date dictionaries from ExtractedDate.to_dict()
+        """
+        if not self.db:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Update the element document to include the extracted dates
+            self.db.elements.update_one(
+                {"element_id": element_id},
+                {"$set": {"extracted_dates": dates}}
+            )
+
+        except Exception as e:
+            logger.error(f"Error storing dates for element {element_id}: {str(e)}")
+            raise
+
+    def get_element_dates(self, element_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all dates associated with an element.
+
+        Args:
+            element_id: Element ID
+
+        Returns:
+            List of date dictionaries, empty list if none found
+        """
+        if not self.db:
+            raise ValueError("Database not initialized")
+
+        try:
+            element = self.db.elements.find_one(
+                {"element_id": element_id},
+                {"extracted_dates": 1}
+            )
+
+            if not element or "extracted_dates" not in element:
+                return []
+
+            return element["extracted_dates"]
+
+        except Exception as e:
+            logger.error(f"Error getting dates for element {element_id}: {str(e)}")
+            return []
+
+    def store_embedding_with_dates(self, element_id: str, embedding: List[float],
+                                   dates: List[Dict[str, Any]]) -> None:
+        """
+        Store both embedding and dates for an element in a single operation.
+
+        Args:
+            element_id: Element ID
+            embedding: Vector embedding
+            dates: List of extracted date dictionaries
+        """
+        # Get element_pk for the embedding
+        element = self.get_element(element_id)
+        if not element:
+            raise ValueError(f"Element not found: {element_id}")
+
+        element_pk = element["element_pk"]
+
+        # Store embedding and dates separately in MongoDB
+        self.store_embedding(element_pk, embedding)
+        self.store_element_dates(element_id, dates)
+
+    def delete_element_dates(self, element_id: str) -> bool:
+        """
+        Delete all dates associated with an element.
+
+        Args:
+            element_id: Element ID
+
+        Returns:
+            True if dates were deleted, False if none existed
+        """
+        if not self.db:
+            raise ValueError("Database not initialized")
+
+        try:
+            result = self.db.elements.update_one(
+                {"element_id": element_id},
+                {"$unset": {"extracted_dates": ""}}
+            )
+
+            return result.modified_count > 0
+
+        except Exception as e:
+            logger.error(f"Error deleting dates for element {element_id}: {str(e)}")
+            return False
+
+    def search_elements_by_date_range(self, start_date: datetime, end_date: datetime,
+                                      limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Find elements that contain dates within a specified range.
+
+        Args:
+            start_date: Start of date range (inclusive)
+            end_date: End of date range (inclusive)
+            limit: Maximum number of results
+
+        Returns:
+            List of element dictionaries that contain dates in the range
+        """
+        if not self.db:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Use aggregation pipeline to find elements with dates in range
+            pipeline = [
+                {"$match": {"extracted_dates": {"$exists": True, "$ne": []}}},
+                {"$unwind": "$extracted_dates"},
+                {
+                    "$match": {
+                        "extracted_dates.timestamp": {
+                            "$gte": start_date.timestamp(),
+                            "$lte": end_date.timestamp()
+                        }
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": "$element_pk",
+                        "element": {"$first": "$$ROOT"}
+                    }
+                },
+                {"$replaceRoot": {"newRoot": "$element"}},
+                {"$project": {"extracted_dates": 0}},  # Remove dates array from final result
+                {"$limit": limit}
+            ]
+
+            elements = list(self.db.elements.aggregate(pipeline))
+
+            # Remove MongoDB's _id field from each element
+            for element in elements:
+                if "_id" in element:
+                    del element["_id"]
+
+            return elements
+
+        except Exception as e:
+            logger.error(f"Error searching elements by date range: {str(e)}")
+            return []
+
+    def search_by_text_and_date_range(self,
+                                      search_text: str,
+                                      start_date: Optional[datetime] = None,
+                                      end_date: Optional[datetime] = None,
+                                      limit: int = 10) -> List[Tuple[int, float]]:
+        """
+        Search elements by semantic similarity AND date range.
+
+        Args:
+            search_text: Text to search for semantically
+            start_date: Optional start of date range
+            end_date: Optional end of date range
+            limit: Maximum number of results
+
+        Returns:
+            List of (element_id, similarity_score) tuples
+        """
+        # First get elements in date range if specified
+        date_element_pks = None
+        if start_date or end_date:
+            date_element_pks = set(self._get_element_pks_in_date_range(start_date, end_date))
+
+        # Perform text similarity search
+        text_results = self.search_by_text(search_text, limit=limit * 2)  # Get more to allow for filtering
+
+        # Filter by date results if we have them
+        if date_element_pks is not None:
+            filtered_results = []
+            for element_pk, similarity in text_results:
+                if element_pk in date_element_pks:
+                    filtered_results.append((element_pk, similarity))
+            return filtered_results[:limit]
+        else:
+            return text_results[:limit]
+
+    def search_by_embedding_and_date_range(self,
+                                           query_embedding: List[float],
+                                           start_date: Optional[datetime] = None,
+                                           end_date: Optional[datetime] = None,
+                                           limit: int = 10) -> List[Tuple[int, float]]:
+        """
+        Search elements by embedding similarity AND date range.
+
+        Args:
+            query_embedding: Query embedding vector
+            start_date: Optional start of date range
+            end_date: Optional end of date range
+            limit: Maximum number of results
+
+        Returns:
+            List of (element_id, similarity_score) tuples
+        """
+        # First get elements in date range if specified
+        date_element_pks = None
+        if start_date or end_date:
+            date_element_pks = set(self._get_element_pks_in_date_range(start_date, end_date))
+
+        # Perform embedding similarity search
+        embedding_results = self.search_by_embedding(query_embedding, limit=limit * 2)
+
+        # Filter by date results if we have them
+        if date_element_pks is not None:
+            filtered_results = []
+            for element_pk, similarity in embedding_results:
+                if element_pk in date_element_pks:
+                    filtered_results.append((element_pk, similarity))
+            return filtered_results[:limit]
+        else:
+            return embedding_results[:limit]
+
+    def get_elements_with_dates(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Get all elements that have associated dates.
+
+        Args:
+            limit: Maximum number of results
+
+        Returns:
+            List of element dictionaries that have dates
+        """
+        if not self.db:
+            raise ValueError("Database not initialized")
+
+        try:
+            elements = list(self.db.elements.find(
+                {"extracted_dates": {"$exists": True, "$ne": []}},
+                {"extracted_dates": 0}  # Exclude dates from result
+            ).limit(limit))
+
+            # Remove MongoDB's _id field from each element
+            for element in elements:
+                if "_id" in element:
+                    del element["_id"]
+
+            return elements
+
+        except Exception as e:
+            logger.error(f"Error getting elements with dates: {str(e)}")
+            return []
+
+    def get_date_statistics(self) -> Dict[str, Any]:
+        """
+        Get statistics about dates in the database.
+
+        Returns:
+            Dictionary with date statistics
+        """
+        if not self.db:
+            raise ValueError("Database not initialized")
+
+        try:
+            # Use aggregation pipeline to get comprehensive date statistics
+            pipeline = [
+                {"$match": {"extracted_dates": {"$exists": True, "$ne": []}}},
+                {"$unwind": "$extracted_dates"},
+                {
+                    "$group": {
+                        "_id": None,
+                        "total_dates": {"$sum": 1},
+                        "elements_with_dates": {"$addToSet": "$element_pk"},
+                        "avg_confidence": {"$avg": "$extracted_dates.confidence"},
+                        "earliest_timestamp": {"$min": "$extracted_dates.timestamp"},
+                        "latest_timestamp": {"$max": "$extracted_dates.timestamp"},
+                        "specificity_levels": {"$addToSet": "$extracted_dates.specificity_level"}
+                    }
+                },
+                {
+                    "$project": {
+                        "_id": 0,
+                        "total_dates": 1,
+                        "elements_with_dates": {"$size": "$elements_with_dates"},
+                        "avg_confidence": 1,
+                        "earliest_timestamp": 1,
+                        "latest_timestamp": 1,
+                        "specificity_levels": 1
+                    }
+                }
+            ]
+
+            results = list(self.db.elements.aggregate(pipeline))
+
+            if not results:
+                return {}
+
+            result = results[0]
+
+            stats = {
+                'total_dates': result.get('total_dates', 0),
+                'elements_with_dates': result.get('elements_with_dates', 0),
+                'avg_confidence': result.get('avg_confidence', 0.0)
+            }
+
+            # Format dates
+            if result.get('earliest_timestamp'):
+                stats['earliest_date'] = datetime.fromtimestamp(result['earliest_timestamp']).isoformat()
+            if result.get('latest_timestamp'):
+                stats['latest_date'] = datetime.fromtimestamp(result['latest_timestamp']).isoformat()
+
+            # Get specificity distribution
+            if result.get('specificity_levels'):
+                specificity_pipeline = [
+                    {"$match": {"extracted_dates": {"$exists": True, "$ne": []}}},
+                    {"$unwind": "$extracted_dates"},
+                    {
+                        "$group": {
+                            "_id": "$extracted_dates.specificity_level",
+                            "count": {"$sum": 1}
+                        }
+                    }
+                ]
+
+                specificity_results = list(self.db.elements.aggregate(specificity_pipeline))
+                specificity_dist = {}
+                for spec_result in specificity_results:
+                    level = spec_result['_id'] or 'unknown'
+                    specificity_dist[level] = spec_result['count']
+
+                stats['specificity_distribution'] = specificity_dist
+
+            return stats
+
+        except Exception as e:
+            logger.error(f"Error getting date statistics: {str(e)}")
+            return {}
+
+
+if __name__ == "__main__":
+    # Example demonstrating structured search with MongoDB
+    conn_params = {
+        'host': 'localhost',
+        'port': 27017,
+        'db_name': 'doculyzer'
+    }
+
+    db = MongoDBDocumentDatabase(conn_params)
+    db.initialize()
+
+    # Show backend capabilities
+    capabilities = db.get_backend_capabilities()
+    print(f"MongoDB supports {len(capabilities.supported)} capabilities:")
+    for cap in sorted(capabilities.get_supported_list()):
+        print(f"  ✓ {cap}")
+
+    # Example structured search
+    from .structured_search import SearchQueryBuilder, LogicalOperator
+
+    query = (SearchQueryBuilder()
+             .with_operator(LogicalOperator.AND)
+             .text_search("machine learning algorithms", similarity_threshold=0.8)
+             .last_days(30)
+             .topics(include=["ml%", "ai%"])
+             .element_types(["header", "paragraph"])
+             .include_dates(True)
+             .include_topics_in_results(True)
+             .build())
+
+    print(f"\nExecuting structured search...")
+    print(f"Query capabilities required: {len(query.get_required_capabilities())}")
+
+    # Validate query
+    missing = db.validate_query_support(query)
+    if missing:
+        print(f"Missing capabilities: {[m.value for m in missing]}")
+    else:
+        print("Query fully supported!")
+
+        # Execute the search
+        results = db.execute_structured_search(query)
+        print(f"Found {len(results)} results")
+
+        for result in results[:3]:  # Show first 3 results
+            print(f"  - {result['element_id']}: {result['final_score']:.3f}")

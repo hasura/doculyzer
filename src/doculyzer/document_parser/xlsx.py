@@ -1,7 +1,7 @@
 """
 XLSX document parser module for the document pointer system.
 
-This module parses Excel (XLSX) files into structured elements.
+This module parses Excel (XLSX) files into structured elements with comprehensive date extraction.
 """
 
 import json
@@ -22,12 +22,13 @@ except ImportError:
     logging.warning("openpyxl not available. Install with 'pip install openpyxl' to use XLSX parser")
 
 from .base import DocumentParser
+from .extract_dates import DateExtractor, extract_dates_as_dicts
 
 logger = logging.getLogger(__name__)
 
 
 class XlsxParser(DocumentParser):
-    """Parser for Excel (XLSX) documents."""
+    """Parser for Excel (XLSX) documents with enhanced date extraction."""
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """Initialize the XLSX parser."""
@@ -52,6 +53,30 @@ class XlsxParser(DocumentParser):
         self.detect_tables = self.config.get("detect_tables", True)  # Whether to detect data tables
         self.min_table_rows = self.config.get("min_table_rows", 2)  # Minimum rows for table detection
         self.min_table_cols = self.config.get("min_table_cols", 2)  # Minimum columns for table detection
+
+        # Date extraction configuration
+        self.extract_dates = self.config.get("extract_dates", True)
+        self.date_context_chars = self.config.get("date_context_chars", 50)  # Small context window
+        self.min_year = self.config.get("min_year", 1900)
+        self.max_year = self.config.get("max_year", 2100)
+        self.fiscal_year_start_month = self.config.get("fiscal_year_start_month", 10)
+        self.default_locale = self.config.get("default_locale", "US")
+
+        # Initialize date extractor if enabled
+        self.date_extractor = None
+        if self.extract_dates:
+            try:
+                self.date_extractor = DateExtractor(
+                    context_chars=self.date_context_chars,
+                    min_year=self.min_year,
+                    max_year=self.max_year,
+                    fiscal_year_start_month=self.fiscal_year_start_month,
+                    default_locale=self.default_locale
+                )
+                logger.debug("Date extraction enabled with comprehensive temporal analysis for XLSX")
+            except ImportError as e:
+                logger.warning(f"Date extraction disabled: {e}")
+                self.extract_dates = False
 
     """
     Fix the RGB object serialization issue in the Excel parser.
@@ -232,16 +257,16 @@ class XlsxParser(DocumentParser):
             # Convert any other type to string
             return str(obj)
 
-    # Update the parse method to ensure serializable metadata
+    # Update the parse method to ensure serializable metadata and add date extraction
     def parse(self, doc_content: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Parse an XLSX document into structured elements.
+        Parse an XLSX document into structured elements with comprehensive date extraction.
 
         Args:
             doc_content: Document content and metadata
 
         Returns:
-            Dictionary with document metadata, elements, relationships, and extracted links
+            Dictionary with document metadata, elements, relationships, extracted links, and dates
         """
         # Extract metadata from doc_content
         source_id = doc_content["id"]
@@ -314,6 +339,39 @@ class XlsxParser(DocumentParser):
         # Extract links from the document using the helper method
         links = self._extract_workbook_links(workbook, elements)
 
+        # Extract dates from XLSX content with comprehensive temporal analysis
+        element_dates = {}
+        if self.extract_dates and self.date_extractor:
+            try:
+                # Extract dates from the entire workbook content
+                full_text = self._extract_workbook_text(workbook)
+                if full_text.strip():
+                    document_dates = self.date_extractor.extract_dates_as_dicts(full_text)
+                    if document_dates:
+                        element_dates[root_id] = document_dates
+                        logger.debug(f"Extracted {len(document_dates)} dates from XLSX document")
+
+                # Extract dates from individual elements
+                self._extract_dates_from_elements(elements, element_dates)
+
+            except Exception as e:
+                logger.warning(f"Error during XLSX date extraction: {e}")
+
+        # Add date statistics to document metadata
+        if element_dates:
+            total_dates = sum(len(dates) for dates in element_dates.values())
+            document["metadata"]["date_extraction"] = {
+                "total_dates_found": total_dates,
+                "elements_with_dates": len(element_dates),
+                "extraction_enabled": True
+            }
+        else:
+            document["metadata"]["date_extraction"] = {
+                "total_dates_found": 0,
+                "elements_with_dates": 0,
+                "extraction_enabled": self.extract_dates
+            }
+
         # Clean up temporary file if needed
         if binary_path != doc_content.get("binary_path") and os.path.exists(binary_path):
             try:
@@ -325,13 +383,107 @@ class XlsxParser(DocumentParser):
         # Close workbook
         workbook.close()
 
-        # Return the parsed document with extracted links and relationships
-        return {
+        # Return the parsed document with extracted links, relationships, and dates
+        result = {
             "document": document,
             "elements": elements,
             "links": links,
             "relationships": relationships
         }
+
+        # Add dates if any were extracted
+        if element_dates:
+            result["element_dates"] = element_dates
+
+        return result
+
+    def _extract_workbook_text(self, workbook: openpyxl.workbook.Workbook) -> str:
+        """
+        Extract all text content from the workbook for document-level date extraction.
+
+        Args:
+            workbook: The Excel workbook
+
+        Returns:
+            Combined text from all sheets
+        """
+        all_text = []
+
+        try:
+            for sheet_name in workbook.sheetnames:
+                sheet = workbook[sheet_name]
+
+                # Skip hidden sheets if not configured to extract them
+                if hasattr(sheet, 'sheet_state') and sheet.sheet_state == 'hidden' and not self.extract_hidden_sheets:
+                    continue
+
+                # Extract text from cells
+                max_row = min(sheet.max_row or 0, self.max_rows)
+                max_col = min(sheet.max_column or 0, self.max_cols)
+
+                sheet_text = []
+                for row_idx in range(1, max_row + 1):
+                    for col_idx in range(1, max_col + 1):
+                        cell = sheet.cell(row=row_idx, column=col_idx)
+                        if cell.value is not None:
+                            # Convert cell value to string for date extraction
+                            cell_text = str(cell.value)
+                            if cell_text.strip():
+                                sheet_text.append(cell_text)
+
+                # Add comments if available
+                if self.extract_comments and hasattr(sheet, 'comments') and sheet.comments:
+                    for comment in sheet.comments.values():
+                        comment_text = comment.text if hasattr(comment, 'text') else str(comment)
+                        if comment_text.strip():
+                            sheet_text.append(comment_text)
+
+                if sheet_text:
+                    all_text.extend(sheet_text)
+
+        except Exception as e:
+            logger.debug(f"Error extracting workbook text for date analysis: {e}")
+
+        return " ".join(all_text)
+
+    def _extract_dates_from_elements(self, elements: List[Dict[str, Any]], element_dates: Dict[str, List[Dict[str, Any]]]):
+        """
+        Extract dates from individual XLSX elements.
+
+        Args:
+            elements: List of document elements
+            element_dates: Dictionary to store extracted dates by element ID
+        """
+        if not self.date_extractor:
+            return
+
+        for element in elements:
+            element_id = element.get("element_id")
+            element_type = element.get("element_type", "")
+
+            # Only extract dates from text-containing elements
+            if element_type in ["sheet", "table_cell", "table_header", "comment",
+                              "data_table", "table_header_row", "table_row_headers"]:
+
+                try:
+                    # Get the text content of this element
+                    content_location = element.get("content_location", "{}")
+                    location_data = json.loads(content_location)
+
+                    # Extract text from the element
+                    text_content = self._resolve_element_text(location_data)
+
+                    if text_content and text_content.strip():
+                        # Extract dates from this element's text
+                        element_date_list = self.date_extractor.extract_dates_as_dicts(text_content)
+
+                        if element_date_list:
+                            element_dates[element_id] = element_date_list
+                            logger.debug(f"Extracted {len(element_date_list)} dates from {element_type} element")
+
+                except Exception as e:
+                    logger.debug(f"Error extracting dates from element {element_id}: {e}")
+                    continue
 
     """
     Fix all ReadOnly worksheet compatibility issues in the Excel parser.
@@ -1077,7 +1229,7 @@ class XlsxParser(DocumentParser):
     # Modify the _process_sheet function to fix the issue with sheet.index
     # In the _parse_workbook function, around line 554 in xlsx.py
 
-    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]]) -> str:
+    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]] = None) -> str:
         """
         Resolve the plain text representation of an Excel element.
 

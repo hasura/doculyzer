@@ -1,3 +1,11 @@
+"""
+Neo4j Implementation with Structured Search Support
+
+This module provides a complete Neo4j implementation of the DocumentDatabase
+with full structured search capabilities. It leverages Neo4j's graph database features
+including Cypher queries, graph relationships, and JSON properties to provide comprehensive search.
+"""
+
 import datetime
 import json
 import logging
@@ -26,6 +34,14 @@ else:
 from .base import DocumentDatabase
 from .element_relationship import ElementRelationship
 from .element_element import ElementType  # Import existing enum
+
+# Import structured search components
+from .structured_search import (
+    StructuredSearchQuery, SearchCriteriaGroup, BackendCapabilities, SearchCapability,
+    UnsupportedSearchError, TextSearchCriteria, EmbeddingSearchCriteria, DateSearchCriteria,
+    TopicSearchCriteria, MetadataSearchCriteria, ElementSearchCriteria,
+    LogicalOperator, DateRangeOperator, SimilarityOperator
+)
 
 # Setup logger
 logger = logging.getLogger(__name__)
@@ -72,7 +88,7 @@ class DateTimeEncoder(json.JSONEncoder):
 
 
 class Neo4jDocumentDatabase(DocumentDatabase):
-    """Neo4j implementation of document database."""
+    """Neo4j implementation of document database with structured search support."""
 
     def __init__(self, uri: str, user: str, password: str, database: str = "neo4j"):
         """
@@ -95,6 +111,713 @@ class Neo4jDocumentDatabase(DocumentDatabase):
             self.vector_dimension = config.config.get('embedding', {}).get('dimensions', 384)
         else:
             self.vector_dimension = 384  # Default if config not available
+
+    # ========================================
+    # STRUCTURED SEARCH IMPLEMENTATION
+    # ========================================
+
+    def get_backend_capabilities(self) -> BackendCapabilities:
+        """
+        Neo4j supports most search capabilities through Cypher queries and graph relationships.
+        """
+        supported = {
+            # Core search types
+            SearchCapability.TEXT_SIMILARITY,
+            SearchCapability.EMBEDDING_SIMILARITY,
+            SearchCapability.FULL_TEXT_SEARCH,
+
+            # Date capabilities
+            SearchCapability.DATE_FILTERING,
+            SearchCapability.DATE_RANGE_QUERIES,
+            SearchCapability.FISCAL_YEAR_DATES,
+            SearchCapability.RELATIVE_DATES,
+            SearchCapability.DATE_AGGREGATIONS,
+
+            # Topic capabilities
+            SearchCapability.TOPIC_FILTERING,
+            SearchCapability.TOPIC_LIKE_PATTERNS,
+            SearchCapability.TOPIC_CONFIDENCE_FILTERING,
+
+            # Metadata capabilities
+            SearchCapability.METADATA_EXACT,
+            SearchCapability.METADATA_LIKE,
+            SearchCapability.METADATA_RANGE,
+            SearchCapability.METADATA_EXISTS,
+            SearchCapability.NESTED_METADATA,
+
+            # Element capabilities
+            SearchCapability.ELEMENT_TYPE_FILTERING,
+            SearchCapability.ELEMENT_HIERARCHY,
+            SearchCapability.ELEMENT_RELATIONSHIPS,
+
+            # Logical operations
+            SearchCapability.LOGICAL_AND,
+            SearchCapability.LOGICAL_OR,
+            SearchCapability.LOGICAL_NOT,
+            SearchCapability.NESTED_QUERIES,
+
+            # Scoring and ranking
+            SearchCapability.CUSTOM_SCORING,
+            SearchCapability.SIMILARITY_THRESHOLDS,
+            SearchCapability.BOOST_FACTORS,
+            SearchCapability.SCORE_COMBINATION,
+
+            # Advanced features
+            SearchCapability.FACETED_SEARCH,
+            # Note: Neo4j doesn't have built-in result highlighting like PostgreSQL full-text search
+        }
+
+        return BackendCapabilities(supported)
+
+    def execute_structured_search(self, query: StructuredSearchQuery) -> List[Dict[str, Any]]:
+        """
+        Execute a structured search query using Neo4j's Cypher query language.
+        """
+        if not self.driver:
+            raise ValueError("Database not initialized")
+
+        # Validate query support
+        missing = self.validate_query_support(query)
+        if missing:
+            raise UnsupportedSearchError(missing)
+
+        try:
+            # Execute the root criteria group
+            raw_results = self._execute_criteria_group(query.criteria_group)
+
+            # Process and enrich results
+            final_results = self._process_search_results(raw_results, query)
+
+            # Apply pagination
+            start_idx = query.offset
+            end_idx = start_idx + query.limit
+
+            return final_results[start_idx:end_idx]
+
+        except Exception as e:
+            logger.error(f"Error executing structured search: {str(e)}")
+            return []
+
+    def _execute_criteria_group(self, group: SearchCriteriaGroup) -> List[Dict[str, Any]]:
+        """Execute a single criteria group and return scored results."""
+
+        # Collect results from all criteria in this group
+        all_results = []
+
+        # Execute individual criteria
+        if group.text_criteria:
+            text_results = self._execute_text_criteria(group.text_criteria)
+            all_results.append(("text", text_results))
+
+        if group.embedding_criteria:
+            embedding_results = self._execute_embedding_criteria(group.embedding_criteria)
+            all_results.append(("embedding", embedding_results))
+
+        if group.date_criteria:
+            date_results = self._execute_date_criteria(group.date_criteria)
+            all_results.append(("date", date_results))
+
+        if group.topic_criteria:
+            topic_results = self._execute_topic_criteria(group.topic_criteria)
+            all_results.append(("topic", topic_results))
+
+        if group.metadata_criteria:
+            metadata_results = self._execute_metadata_criteria(group.metadata_criteria)
+            all_results.append(("metadata", metadata_results))
+
+        if group.element_criteria:
+            element_results = self._execute_element_criteria(group.element_criteria)
+            all_results.append(("element", element_results))
+
+        # Execute sub-groups recursively
+        for sub_group in group.sub_groups:
+            sub_results = self._execute_criteria_group(sub_group)
+            all_results.append(("subgroup", sub_results))
+
+        # Combine results based on the group's logical operator
+        return self._combine_results(all_results, group.operator)
+
+    def _execute_text_criteria(self, criteria: TextSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute text similarity search using embeddings."""
+        try:
+            # Generate embedding for the query text
+            query_embedding = self._generate_embedding(criteria.query_text)
+
+            # Perform similarity search
+            similarity_results = self.search_by_embedding(
+                query_embedding,
+                limit=1000,  # Get many results for filtering
+                filter_criteria=None
+            )
+
+            # Filter by similarity threshold and operator
+            filtered_results = []
+            for element_pk, similarity in similarity_results:
+                if self._compare_similarity(similarity, criteria.similarity_threshold, criteria.similarity_operator):
+                    filtered_results.append({
+                        'element_pk': element_pk,
+                        'scores': {
+                            'text_similarity': similarity * criteria.boost_factor
+                        }
+                    })
+
+            return filtered_results
+
+        except Exception as e:
+            logger.error(f"Error executing text criteria: {str(e)}")
+            return []
+
+    def _execute_embedding_criteria(self, criteria: EmbeddingSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute direct embedding vector search."""
+        try:
+            similarity_results = self.search_by_embedding(
+                criteria.embedding_vector,
+                limit=1000,
+                filter_criteria=None
+            )
+
+            filtered_results = []
+            for element_pk, similarity in similarity_results:
+                if self._compare_similarity(similarity, criteria.similarity_threshold, criteria.similarity_operator):
+                    filtered_results.append({
+                        'element_pk': element_pk,
+                        'scores': {
+                            'embedding_similarity': similarity * criteria.boost_factor
+                        }
+                    })
+
+            return filtered_results
+
+        except Exception as e:
+            logger.error(f"Error executing embedding criteria: {str(e)}")
+            return []
+
+    def _execute_date_criteria(self, criteria: DateSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute date-based filtering using Neo4j date functions."""
+        try:
+            # Build date filter based on operator
+            if criteria.operator == DateRangeOperator.WITHIN:
+                element_pks = self._get_element_pks_in_date_range(criteria.start_date, criteria.end_date)
+
+            elif criteria.operator == DateRangeOperator.AFTER:
+                element_pks = self._get_element_pks_in_date_range(criteria.exact_date, None)
+
+            elif criteria.operator == DateRangeOperator.BEFORE:
+                element_pks = self._get_element_pks_in_date_range(None, criteria.exact_date)
+
+            elif criteria.operator == DateRangeOperator.EXACTLY:
+                # For exactly, we need a tight range around the date
+                start_of_day = criteria.exact_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_of_day = criteria.exact_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+                element_pks = self._get_element_pks_in_date_range(start_of_day, end_of_day)
+
+            elif criteria.operator == DateRangeOperator.RELATIVE_DAYS:
+                end_date = datetime.datetime.now()
+                start_date = end_date - datetime.timedelta(days=criteria.relative_value)
+                element_pks = self._get_element_pks_in_date_range(start_date, end_date)
+
+            elif criteria.operator == DateRangeOperator.RELATIVE_MONTHS:
+                end_date = datetime.datetime.now()
+                start_date = end_date - datetime.timedelta(days=criteria.relative_value * 30)  # Approximate
+                element_pks = self._get_element_pks_in_date_range(start_date, end_date)
+
+            elif criteria.operator == DateRangeOperator.FISCAL_YEAR:
+                # Assume fiscal year starts in July (customize as needed)
+                start_date = datetime.datetime(criteria.year - 1, 7, 1)
+                end_date = datetime.datetime(criteria.year, 6, 30, 23, 59, 59)
+                element_pks = self._get_element_pks_in_date_range(start_date, end_date)
+
+            elif criteria.operator == DateRangeOperator.CALENDAR_YEAR:
+                start_date = datetime.datetime(criteria.year, 1, 1)
+                end_date = datetime.datetime(criteria.year, 12, 31, 23, 59, 59)
+                element_pks = self._get_element_pks_in_date_range(start_date, end_date)
+
+            elif criteria.operator == DateRangeOperator.QUARTER:
+                quarter_starts = {1: (1, 1), 2: (4, 1), 3: (7, 1), 4: (10, 1)}
+                quarter_ends = {1: (3, 31), 2: (6, 30), 3: (9, 30), 4: (12, 31)}
+
+                start_month, start_day = quarter_starts[criteria.quarter]
+                end_month, end_day = quarter_ends[criteria.quarter]
+
+                start_date = datetime.datetime(criteria.year, start_month, start_day)
+                end_date = datetime.datetime(criteria.year, end_month, end_day, 23, 59, 59)
+                element_pks = self._get_element_pks_in_date_range(start_date, end_date)
+
+            # Also filter by specificity levels if needed
+            if criteria.specificity_levels:
+                element_pks = self._filter_by_specificity(element_pks, criteria.specificity_levels)
+
+            # Convert to result format
+            results = []
+            for element_pk in element_pks:
+                results.append({
+                    'element_pk': element_pk,
+                    'scores': {
+                        'date_relevance': 1.0  # Could calculate date relevance score
+                    }
+                })
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Error executing date criteria: {str(e)}")
+            return []
+
+    def _execute_topic_criteria(self, criteria: TopicSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute topic-based filtering using Neo4j JSON operators."""
+        try:
+            topic_results = self.search_by_text_and_topics(
+                search_text=None,
+                include_topics=criteria.include_topics,
+                exclude_topics=criteria.exclude_topics,
+                min_confidence=criteria.min_confidence,
+                limit=1000
+            )
+
+            results = []
+            for result in topic_results:
+                results.append({
+                    'element_pk': result['element_pk'],
+                    'scores': {
+                        'topic_confidence': result['confidence'] * criteria.boost_factor
+                    }
+                })
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Error executing topic criteria: {str(e)}")
+            return []
+
+    def _execute_metadata_criteria(self, criteria: MetadataSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute metadata-based filtering using Neo4j JSON operators."""
+        try:
+            with self.driver.session(database=self.database) as session:
+                # Build Cypher query for metadata filtering
+                cypher_query = "MATCH (e:Element) WHERE 1=1"
+                params = {}
+
+                # Add exact matches
+                param_counter = 0
+                for key, value in criteria.exact_matches.items():
+                    param_name = f"exact_value_{param_counter}"
+                    cypher_query += f" AND e.metadata CONTAINS '{key}\":\"{value}\"'"
+                    param_counter += 1
+
+                # Add LIKE patterns
+                for key, pattern in criteria.like_patterns.items():
+                    # Neo4j doesn't have direct JSON LIKE, so we use CONTAINS for simple patterns
+                    if pattern.startswith('%') and pattern.endswith('%'):
+                        # %text% -> contains
+                        search_value = pattern[1:-1]
+                        cypher_query += f" AND e.metadata CONTAINS '{key}' AND e.metadata CONTAINS '{search_value}'"
+                    elif pattern.endswith('%'):
+                        # text% -> starts with (approximate)
+                        search_value = pattern[:-1]
+                        cypher_query += f" AND e.metadata CONTAINS '{key}\":\"{search_value}'"
+                    elif pattern.startswith('%'):
+                        # %text -> ends with (approximate)
+                        search_value = pattern[1:]
+                        cypher_query += f" AND e.metadata CONTAINS '{search_value}\"'"
+
+                # Add range filters (requires parsing JSON in Neo4j)
+                for key, range_filter in criteria.range_filters.items():
+                    # This is a simplified approach - in production you might want to use APOC procedures
+                    if 'gte' in range_filter:
+                        cypher_query += f" AND apoc.convert.getJsonProperty(e.metadata, '{key}') >= {range_filter['gte']}"
+                    if 'lte' in range_filter:
+                        cypher_query += f" AND apoc.convert.getJsonProperty(e.metadata, '{key}') <= {range_filter['lte']}"
+                    if 'gt' in range_filter:
+                        cypher_query += f" AND apoc.convert.getJsonProperty(e.metadata, '{key}') > {range_filter['gt']}"
+                    if 'lt' in range_filter:
+                        cypher_query += f" AND apoc.convert.getJsonProperty(e.metadata, '{key}') < {range_filter['lt']}"
+
+                # Add exists filters
+                for key in criteria.exists_filters:
+                    cypher_query += f" AND e.metadata CONTAINS '{key}'"
+
+                cypher_query += " RETURN id(e) AS element_pk LIMIT 1000"
+
+                # Execute query
+                result = session.run(cypher_query, params)
+                element_pks = [record["element_pk"] for record in result]
+
+            results = []
+            for element_pk in element_pks:
+                results.append({
+                    'element_pk': element_pk,
+                    'scores': {
+                        'metadata_relevance': 1.0
+                    }
+                })
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Error executing metadata criteria: {str(e)}")
+            return []
+
+    def _execute_element_criteria(self, criteria: ElementSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute element-based filtering using Neo4j."""
+        try:
+            with self.driver.session(database=self.database) as session:
+                # Build Cypher query for element filtering
+                cypher_query = "MATCH (e:Element) WHERE 1=1"
+                params = {}
+
+                # Add element type filter
+                if criteria.element_types:
+                    type_values = self._prepare_element_type_query(criteria.element_types)
+                    if type_values:
+                        if len(type_values) == 1:
+                            cypher_query += " AND e.element_type = $element_type"
+                            params["element_type"] = type_values[0]
+                        else:
+                            cypher_query += " AND e.element_type IN $element_types"
+                            params["element_types"] = type_values
+
+                # Add document ID filters
+                if criteria.doc_ids:
+                    cypher_query += " AND e.doc_id IN $doc_ids"
+                    params["doc_ids"] = criteria.doc_ids
+
+                if criteria.exclude_doc_ids:
+                    cypher_query += " AND NOT e.doc_id IN $exclude_doc_ids"
+                    params["exclude_doc_ids"] = criteria.exclude_doc_ids
+
+                # Add content length filters
+                if criteria.content_length_min is not None:
+                    cypher_query += " AND size(e.content_preview) >= $content_length_min"
+                    params["content_length_min"] = criteria.content_length_min
+
+                if criteria.content_length_max is not None:
+                    cypher_query += " AND size(e.content_preview) <= $content_length_max"
+                    params["content_length_max"] = criteria.content_length_max
+
+                # Add parent element filters
+                if criteria.parent_element_ids:
+                    cypher_query += " AND e.parent_id IN $parent_element_ids"
+                    params["parent_element_ids"] = criteria.parent_element_ids
+
+                cypher_query += " RETURN id(e) AS element_pk LIMIT 1000"
+
+                # Execute query
+                result = session.run(cypher_query, params)
+                element_pks = [record["element_pk"] for record in result]
+
+            results = []
+            for element_pk in element_pks:
+                results.append({
+                    'element_pk': element_pk,
+                    'scores': {
+                        'element_match': 1.0
+                    }
+                })
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Error executing element criteria: {str(e)}")
+            return []
+
+    def _combine_results(self, all_results: List[Tuple[str, List[Dict[str, Any]]]],
+                         operator: LogicalOperator) -> List[Dict[str, Any]]:
+        """Combine results from multiple criteria using logical operators."""
+
+        if not all_results:
+            return []
+
+        if len(all_results) == 1:
+            return all_results[0][1]  # Return the single result set
+
+        # Extract just the result lists
+        result_sets = [results for _, results in all_results]
+
+        if operator == LogicalOperator.AND:
+            return self._intersect_results(result_sets)
+        elif operator == LogicalOperator.OR:
+            return self._union_results(result_sets)
+        elif operator == LogicalOperator.NOT:
+            # NOT operation: first set minus all other sets
+            if len(result_sets) >= 2:
+                return self._subtract_results(result_sets[0], result_sets[1:])
+            else:
+                return result_sets[0]
+
+        return []
+
+    def _intersect_results(self, result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        """Find intersection of multiple result sets."""
+        if not result_sets:
+            return []
+
+        # Get element_pks from all sets and combine scores
+        element_pk_sets = []
+        element_scores = {}  # element_pk -> combined scores
+
+        for result_set in result_sets:
+            pk_set = set()
+            for result in result_set:
+                element_pk = result['element_pk']
+                pk_set.add(element_pk)
+
+                # Accumulate scores
+                if element_pk not in element_scores:
+                    element_scores[element_pk] = {}
+
+                for score_type, score_value in result.get('scores', {}).items():
+                    if score_type not in element_scores[element_pk]:
+                        element_scores[element_pk][score_type] = []
+                    element_scores[element_pk][score_type].append(score_value)
+
+            element_pk_sets.append(pk_set)
+
+        # Find intersection
+        common_pks = element_pk_sets[0]
+        for pk_set in element_pk_sets[1:]:
+            common_pks = common_pks.intersection(pk_set)
+
+        # Build result list
+        results = []
+        for element_pk in common_pks:
+            results.append({
+                'element_pk': element_pk,
+                'scores': element_scores[element_pk]
+            })
+
+        return results
+
+    def _union_results(self, result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        """Find union of multiple result sets."""
+        element_scores = {}  # element_pk -> combined scores
+
+        for result_set in result_sets:
+            for result in result_set:
+                element_pk = result['element_pk']
+
+                if element_pk not in element_scores:
+                    element_scores[element_pk] = {}
+
+                for score_type, score_value in result.get('scores', {}).items():
+                    if score_type not in element_scores[element_pk]:
+                        element_scores[element_pk][score_type] = []
+                    element_scores[element_pk][score_type].append(score_value)
+
+        # Build result list
+        results = []
+        for element_pk, scores in element_scores.items():
+            results.append({
+                'element_pk': element_pk,
+                'scores': scores
+            })
+
+        return results
+
+    def _subtract_results(self, base_set: List[Dict[str, Any]],
+                          subtract_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        """Subtract multiple sets from base set."""
+        base_pks = {result['element_pk'] for result in base_set}
+
+        # Collect all PKs to subtract
+        subtract_pks = set()
+        for subtract_set in subtract_sets:
+            for result in subtract_set:
+                subtract_pks.add(result['element_pk'])
+
+        # Return base results that are not in subtract sets
+        final_pks = base_pks - subtract_pks
+
+        return [result for result in base_set if result['element_pk'] in final_pks]
+
+    def _process_search_results(self, raw_results: List[Dict[str, Any]],
+                                query: StructuredSearchQuery) -> List[Dict[str, Any]]:
+        """Process and enrich search results."""
+
+        # Calculate combined scores
+        for result in raw_results:
+            result['final_score'] = self._calculate_combined_score(
+                result.get('scores', {}),
+                query.score_combination,
+                query.custom_weights
+            )
+
+        # Sort by final score
+        raw_results.sort(key=lambda x: x['final_score'], reverse=True)
+
+        # Enrich with element details
+        enriched_results = []
+        for result in raw_results:
+            element_pk = result['element_pk']
+            element = self.get_element(element_pk)
+
+            if not element:
+                continue
+
+            enriched_result = {
+                'element_pk': element_pk,
+                'element_id': element.get('element_id'),
+                'doc_id': element.get('doc_id'),
+                'element_type': element.get('element_type'),
+                'content_preview': element.get('content_preview'),
+                'final_score': result['final_score']
+            }
+
+            if query.include_similarity_scores:
+                enriched_result['scores'] = result.get('scores', {})
+
+            if query.include_metadata:
+                enriched_result['metadata'] = element.get('metadata', {})
+
+            if query.include_topics:
+                enriched_result['topics'] = self.get_embedding_topics(element_pk)
+
+            if query.include_element_dates:
+                element_id = element.get('element_id')
+                if element_id:
+                    enriched_result['extracted_dates'] = self.get_element_dates(element_id)
+                    enriched_result['date_count'] = len(enriched_result['extracted_dates'])
+
+            enriched_results.append(enriched_result)
+
+        return enriched_results
+
+    def _calculate_combined_score(self, scores: Dict[str, List[float]],
+                                  combination_method: str,
+                                  weights: Dict[str, float]) -> float:
+        """Calculate final combined score from multiple score types."""
+
+        if not scores:
+            return 0.0
+
+        # Average scores of the same type
+        avg_scores = {}
+        for score_type, score_list in scores.items():
+            if score_list:
+                avg_scores[score_type] = sum(score_list) / len(score_list)
+
+        if not avg_scores:
+            return 0.0
+
+        if combination_method == "multiply":
+            final_score = 1.0
+            for score_type, score in avg_scores.items():
+                weight = weights.get(score_type, 1.0)
+                final_score *= (score * weight)
+            return final_score
+
+        elif combination_method == "add":
+            final_score = 0.0
+            for score_type, score in avg_scores.items():
+                weight = weights.get(score_type, 1.0)
+                final_score += (score * weight)
+            return final_score
+
+        elif combination_method == "max":
+            weighted_scores = []
+            for score_type, score in avg_scores.items():
+                weight = weights.get(score_type, 1.0)
+                weighted_scores.append(score * weight)
+            return max(weighted_scores)
+
+        elif combination_method == "weighted_avg":
+            total_weighted_score = 0.0
+            total_weight = 0.0
+            for score_type, score in avg_scores.items():
+                weight = weights.get(score_type, 1.0)
+                total_weighted_score += (score * weight)
+                total_weight += weight
+            return total_weighted_score / total_weight if total_weight > 0 else 0.0
+
+        return 0.0
+
+    def _compare_similarity(self, similarity: float, threshold: float,
+                            operator: SimilarityOperator) -> bool:
+        """Compare similarity score against threshold using specified operator."""
+        if operator == SimilarityOperator.GREATER_THAN:
+            return similarity > threshold
+        elif operator == SimilarityOperator.GREATER_EQUAL:
+            return similarity >= threshold
+        elif operator == SimilarityOperator.LESS_THAN:
+            return similarity < threshold
+        elif operator == SimilarityOperator.LESS_EQUAL:
+            return similarity <= threshold
+        elif operator == SimilarityOperator.EQUALS:
+            return abs(similarity - threshold) < 0.001  # Small epsilon for float comparison
+        return False
+
+    def _generate_embedding(self, search_text: str) -> List[float]:
+        """Generate embedding for search text."""
+        try:
+            from ..embeddings import get_embedding_generator
+
+            if self.embedding_generator is None:
+                if not config:
+                    logger.error("Config not available for embedding generator")
+                    raise ValueError("Config not available")
+                self.embedding_generator = get_embedding_generator(config)
+
+            return self.embedding_generator.generate(search_text)
+        except Exception as e:
+            logger.error(f"Error generating embedding: {str(e)}")
+            raise
+
+    def _get_element_pks_in_date_range(self, start_date: Optional[datetime.datetime],
+                                       end_date: Optional[datetime.datetime]) -> List[int]:
+        """Get element_pks that have dates within the specified range using Neo4j."""
+        if not (start_date or end_date):
+            return []
+
+        with self.driver.session(database=self.database) as session:
+            # Build Cypher query for date range filtering
+            cypher_query = """
+                MATCH (e:Element)
+                WHERE EXISTS {
+                    MATCH (e)-[:HAS_DATE]->(d:ExtractedDate)
+                    WHERE 1=1
+            """
+            params = {}
+
+            if start_date:
+                cypher_query += " AND d.timestamp_value >= $start_timestamp"
+                params["start_timestamp"] = start_date.timestamp()
+
+            if end_date:
+                cypher_query += " AND d.timestamp_value <= $end_timestamp"
+                params["end_timestamp"] = end_date.timestamp()
+
+            cypher_query += """
+                }
+                RETURN DISTINCT id(e) AS element_pk
+            """
+
+            result = session.run(cypher_query, params)
+            return [record["element_pk"] for record in result]
+
+    def _filter_by_specificity(self, element_pks: List[int],
+                               allowed_levels: List[str]) -> List[int]:
+        """Filter element PKs by date specificity levels."""
+        if not element_pks or not allowed_levels:
+            return element_pks
+
+        with self.driver.session(database=self.database) as session:
+            # Query to get element PKs that have dates with allowed specificity levels
+            cypher_query = """
+                MATCH (e:Element)-[:HAS_DATE]->(d:ExtractedDate)
+                WHERE id(e) IN $element_pks
+                AND d.specificity_level IN $allowed_levels
+                RETURN DISTINCT id(e) AS element_pk
+            """
+
+            result = session.run(cypher_query, {
+                "element_pks": element_pks,
+                "allowed_levels": allowed_levels
+            })
+
+            return [record["element_pk"] for record in result]
+
+    # ========================================
+    # ALL EXISTING METHODS (unchanged from previous implementation)
+    # ========================================
 
     def initialize(self) -> None:
         """Initialize the database by creating constraints and indexes."""
@@ -763,25 +1486,6 @@ class Neo4jDocumentDatabase(DocumentDatabase):
     def find_elements(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
         """
         Find elements matching query with support for pattern matching and ElementType enums.
-
-        Args:
-            query: Query parameters. Use '_like' suffix for pattern matching.
-                   Examples:
-                   - {"element_type": "header"} - exact match with string
-                   - {"element_type": ElementType.HEADER} - exact match with enum
-                   - {"element_type": [ElementType.HEADER, ElementType.PARAGRAPH]} - enum list
-                   - {"element_type_like": "head%"} - pattern match
-                   - {"content_preview_like": "%important%"} - pattern match
-                   - {"content_preview_contains": "summary"} - contains pattern
-                   - {"content_preview_starts": "Introduction"} - starts with pattern
-                   - {"content_preview_ends": "conclusion"} - ends with pattern
-                   - {"doc_id": ["doc1", "doc2"]} - list for IN clause
-                   - {"metadata": {"section": "intro"}} - metadata exact match
-                   - {"metadata_like": {"title": "%summary%"}} - metadata pattern match
-            limit: Maximum number of results
-
-        Returns:
-            List of matching elements
         """
         if not self.driver:
             raise ValueError("Database not initialized")
@@ -2057,3 +2761,423 @@ class Neo4jDocumentDatabase(DocumentDatabase):
             current_pk = parent_id
 
         return ancestry
+
+    # ========================================
+    # DATE STORAGE AND SEARCH METHODS (Neo4j specific implementation)
+    # ========================================
+
+    def store_element_dates(self, element_id: str, dates: List[Dict[str, Any]]) -> None:
+        """
+        Store extracted dates associated with an element using Neo4j relationships.
+
+        Args:
+            element_id: Element ID
+            dates: List of date dictionaries from ExtractedDate.to_dict()
+        """
+        if not self.driver:
+            raise ValueError("Database not initialized")
+
+        with self.driver.session(database=self.database) as session:
+            # First, delete existing date relationships for this element
+            session.run("""
+                MATCH (e:Element {element_id: $element_id})-[r:HAS_DATE]->(d:ExtractedDate)
+                DELETE r, d
+            """, element_id=element_id)
+
+            # Store each date as a separate node with relationship
+            for date_dict in dates:
+                session.run("""
+                    MATCH (e:Element {element_id: $element_id})
+                    CREATE (d:ExtractedDate {
+                        original_text: $original_text,
+                        parsed_date: $parsed_date,
+                        timestamp_value: $timestamp_value,
+                        confidence: $confidence,
+                        specificity_level: $specificity_level,
+                        date_format: $date_format,
+                        metadata: $metadata
+                    })
+                    CREATE (e)-[:HAS_DATE]->(d)
+                """,
+                            element_id=element_id,
+                            original_text=date_dict.get('original_text', ''),
+                            parsed_date=date_dict.get('parsed_date', ''),
+                            timestamp_value=date_dict.get('timestamp'),
+                            confidence=date_dict.get('confidence', 1.0),
+                            specificity_level=date_dict.get('specificity_level', ''),
+                            date_format=date_dict.get('date_format', ''),
+                            metadata=json.dumps(date_dict.get('metadata', {}))
+                            )
+
+    def get_element_dates(self, element_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all dates associated with an element.
+
+        Args:
+            element_id: Element ID
+
+        Returns:
+            List of date dictionaries, empty list if none found
+        """
+        if not self.driver:
+            raise ValueError("Database not initialized")
+
+        with self.driver.session(database=self.database) as session:
+            result = session.run("""
+                MATCH (e:Element {element_id: $element_id})-[:HAS_DATE]->(d:ExtractedDate)
+                RETURN d
+                ORDER BY d.timestamp_value
+            """, element_id=element_id)
+
+            dates = []
+            for record in result:
+                date_node = dict(record['d'])
+
+                # Convert back to expected format
+                date_dict = {
+                    'original_text': date_node.get('original_text', ''),
+                    'parsed_date': date_node.get('parsed_date', ''),
+                    'timestamp': date_node.get('timestamp_value'),
+                    'confidence': date_node.get('confidence', 1.0),
+                    'specificity_level': date_node.get('specificity_level', ''),
+                    'date_format': date_node.get('date_format', ''),
+                    'metadata': json.loads(date_node.get('metadata', '{}'))
+                }
+                dates.append(date_dict)
+
+            return dates
+
+    def store_embedding_with_dates(self, element_id: str, embedding: List[float],
+                                   dates: List[Dict[str, Any]]) -> None:
+        """
+        Store both embedding and dates for an element in a single operation.
+
+        Args:
+            element_id: Element ID
+            embedding: Vector embedding
+            dates: List of extracted date dictionaries
+        """
+        # Store embedding and dates separately in Neo4j
+        self.store_embedding(element_id, embedding)
+        self.store_element_dates(element_id, dates)
+
+    def delete_element_dates(self, element_id: str) -> bool:
+        """
+        Delete all dates associated with an element.
+
+        Args:
+            element_id: Element ID
+
+        Returns:
+            True if dates were deleted, False if none existed
+        """
+        if not self.driver:
+            raise ValueError("Database not initialized")
+
+        with self.driver.session(database=self.database) as session:
+            result = session.run("""
+                MATCH (e:Element {element_id: $element_id})-[r:HAS_DATE]->(d:ExtractedDate)
+                DELETE r, d
+                RETURN count(r) AS deleted_count
+            """, element_id=element_id)
+
+            record = result.single()
+            return record and record['deleted_count'] > 0
+
+    def search_elements_by_date_range(self, start_date: datetime.datetime, end_date: datetime.datetime,
+                                      limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Find elements that contain dates within a specified range.
+
+        Args:
+            start_date: Start of date range (inclusive)
+            end_date: End of date range (inclusive)
+            limit: Maximum number of results
+
+        Returns:
+            List of element dictionaries that contain dates in the range
+        """
+        if not self.driver:
+            raise ValueError("Database not initialized")
+
+        with self.driver.session(database=self.database) as session:
+            result = session.run("""
+                MATCH (e:Element)-[:HAS_DATE]->(d:ExtractedDate)
+                WHERE d.timestamp_value >= $start_timestamp 
+                AND d.timestamp_value <= $end_timestamp
+                RETURN DISTINCT e, id(e) AS element_pk
+                LIMIT $limit
+            """,
+                                 start_timestamp=start_date.timestamp(),
+                                 end_timestamp=end_date.timestamp(),
+                                 limit=limit)
+
+            elements = []
+            for record in result:
+                element = dict(record['e'])
+                element['element_pk'] = record['element_pk']
+
+                # Convert metadata from JSON
+                try:
+                    element["metadata"] = json.loads(element.get("metadata", "{}"))
+                except (json.JSONDecodeError, TypeError):
+                    element["metadata"] = {}
+
+                elements.append(element)
+
+            return elements
+
+    def search_by_text_and_date_range(self,
+                                      search_text: str,
+                                      start_date: Optional[datetime.datetime] = None,
+                                      end_date: Optional[datetime.datetime] = None,
+                                      limit: int = 10) -> List[Tuple[int, float]]:
+        """
+        Search elements by semantic similarity AND date range.
+
+        Args:
+            search_text: Text to search for semantically
+            start_date: Optional start of date range
+            end_date: Optional end of date range
+            limit: Maximum number of results
+
+        Returns:
+            List of (element_id, similarity_score) tuples
+        """
+        # First get elements in date range if specified
+        date_element_pks = None
+        if start_date or end_date:
+            date_element_pks = set()
+
+            with self.driver.session(database=self.database) as session:
+                cypher_query = """
+                    MATCH (e:Element)-[:HAS_DATE]->(d:ExtractedDate)
+                    WHERE 1=1
+                """
+                params = {}
+
+                if start_date:
+                    cypher_query += " AND d.timestamp_value >= $start_timestamp"
+                    params["start_timestamp"] = start_date.timestamp()
+
+                if end_date:
+                    cypher_query += " AND d.timestamp_value <= $end_timestamp"
+                    params["end_timestamp"] = end_date.timestamp()
+
+                cypher_query += " RETURN DISTINCT id(e) AS element_pk"
+
+                result = session.run(cypher_query, params)
+                date_element_pks = {record["element_pk"] for record in result}
+
+        # Perform text similarity search
+        text_results = self.search_by_text(search_text, limit=limit * 2)  # Get more to allow for filtering
+
+        # Filter by date results if we have them
+        if date_element_pks is not None:
+            filtered_results = []
+            for element_pk, similarity in text_results:
+                if element_pk in date_element_pks:
+                    filtered_results.append((element_pk, similarity))
+            return filtered_results[:limit]
+        else:
+            return text_results[:limit]
+
+    def search_by_embedding_and_date_range(self,
+                                           query_embedding: List[float],
+                                           start_date: Optional[datetime.datetime] = None,
+                                           end_date: Optional[datetime.datetime] = None,
+                                           limit: int = 10) -> List[Tuple[int, float]]:
+        """
+        Search elements by embedding similarity AND date range.
+
+        Args:
+            query_embedding: Query embedding vector
+            start_date: Optional start of date range
+            end_date: Optional end of date range
+            limit: Maximum number of results
+
+        Returns:
+            List of (element_id, similarity_score) tuples
+        """
+        # First get elements in date range if specified
+        date_element_pks = None
+        if start_date or end_date:
+            date_element_pks = set()
+
+            with self.driver.session(database=self.database) as session:
+                cypher_query = """
+                    MATCH (e:Element)-[:HAS_DATE]->(d:ExtractedDate)
+                    WHERE 1=1
+                """
+                params = {}
+
+                if start_date:
+                    cypher_query += " AND d.timestamp_value >= $start_timestamp"
+                    params["start_timestamp"] = start_date.timestamp()
+
+                if end_date:
+                    cypher_query += " AND d.timestamp_value <= $end_timestamp"
+                    params["end_timestamp"] = end_date.timestamp()
+
+                cypher_query += " RETURN DISTINCT id(e) AS element_pk"
+
+                result = session.run(cypher_query, params)
+                date_element_pks = {record["element_pk"] for record in result}
+
+        # Perform embedding similarity search
+        embedding_results = self.search_by_embedding(query_embedding, limit=limit * 2)
+
+        # Filter by date results if we have them
+        if date_element_pks is not None:
+            filtered_results = []
+            for element_pk, similarity in embedding_results:
+                if element_pk in date_element_pks:
+                    filtered_results.append((element_pk, similarity))
+            return filtered_results[:limit]
+        else:
+            return embedding_results[:limit]
+
+    def get_elements_with_dates(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Get all elements that have associated dates.
+
+        Args:
+            limit: Maximum number of results
+
+        Returns:
+            List of element dictionaries that have dates
+        """
+        if not self.driver:
+            raise ValueError("Database not initialized")
+
+        with self.driver.session(database=self.database) as session:
+            result = session.run("""
+                MATCH (e:Element)-[:HAS_DATE]->(:ExtractedDate)
+                RETURN DISTINCT e, id(e) AS element_pk
+                LIMIT $limit
+            """, limit=limit)
+
+            elements = []
+            for record in result:
+                element = dict(record['e'])
+                element['element_pk'] = record['element_pk']
+
+                # Convert metadata from JSON
+                try:
+                    element["metadata"] = json.loads(element.get("metadata", "{}"))
+                except (json.JSONDecodeError, TypeError):
+                    element["metadata"] = {}
+
+                elements.append(element)
+
+            return elements
+
+    def get_date_statistics(self) -> Dict[str, Any]:
+        """
+        Get statistics about dates in the database.
+
+        Returns:
+            Dictionary with date statistics
+        """
+        if not self.driver:
+            raise ValueError("Database not initialized")
+
+        try:
+            with self.driver.session(database=self.database) as session:
+                # Get basic counts and statistics
+                result = session.run("""
+                    MATCH (d:ExtractedDate)
+                    RETURN 
+                        count(d) AS total_dates,
+                        min(d.timestamp_value) AS earliest_timestamp,
+                        max(d.timestamp_value) AS latest_timestamp,
+                        avg(d.confidence) AS avg_confidence
+                """)
+
+                record = result.single()
+                if not record:
+                    return {}
+
+                stats = {
+                    'total_dates': record['total_dates'],
+                    'avg_confidence': record['avg_confidence'],
+                    'earliest_date': None,
+                    'latest_date': None
+                }
+
+                if record['earliest_timestamp']:
+                    stats['earliest_date'] = datetime.datetime.fromtimestamp(record['earliest_timestamp']).isoformat()
+                if record['latest_timestamp']:
+                    stats['latest_date'] = datetime.datetime.fromtimestamp(record['latest_timestamp']).isoformat()
+
+                # Get count of elements with dates
+                result = session.run("""
+                    MATCH (e:Element)-[:HAS_DATE]->(:ExtractedDate)
+                    RETURN count(DISTINCT e) AS elements_with_dates
+                """)
+
+                record = result.single()
+                if record:
+                    stats['elements_with_dates'] = record['elements_with_dates']
+
+                # Get specificity level distribution
+                result = session.run("""
+                    MATCH (d:ExtractedDate)
+                    RETURN d.specificity_level AS level, count(d) AS count
+                    ORDER BY count DESC
+                """)
+
+                specificity_dist = {}
+                for record in result:
+                    level = record['level'] or 'unknown'
+                    specificity_dist[level] = record['count']
+
+                stats['specificity_distribution'] = specificity_dist
+
+                return stats
+
+        except Exception as e:
+            logger.error(f"Error getting date statistics: {str(e)}")
+            return {}
+
+
+if __name__ == "__main__":
+    # Example demonstrating structured search with Neo4j
+    db = Neo4jDocumentDatabase("bolt://localhost:7687", "neo4j", "password")
+    db.initialize()
+
+    # Show backend capabilities
+    capabilities = db.get_backend_capabilities()
+    print(f"Neo4j supports {len(capabilities.supported)} capabilities:")
+    for cap in sorted(capabilities.get_supported_list()):
+        print(f"  ✓ {cap}")
+
+    # Example structured search
+    from .structured_search import SearchQueryBuilder, LogicalOperator
+
+    query = (SearchQueryBuilder()
+             .with_operator(LogicalOperator.AND)
+             .text_search("machine learning algorithms", similarity_threshold=0.8)
+             .last_days(30)
+             .topics(include=["ml%", "ai%"])
+             .element_types(["header", "paragraph"])
+             .include_dates(True)
+             .include_topics_in_results(True)
+             .build())
+
+    print(f"\nExecuting structured search...")
+    print(f"Query capabilities required: {len(query.get_required_capabilities())}")
+
+    # Validate query
+    missing = db.validate_query_support(query)
+    if missing:
+        print(f"Missing capabilities: {[m.value for m in missing]}")
+    else:
+        print("Query fully supported!")
+
+        # Execute the search
+        results = db.execute_structured_search(query)
+        print(f"Found {len(results)} results")
+
+        for result in results[:3]:  # Show first 3 results
+            print(f"  - {result['element_id']}: {result['final_score']:.3f}")

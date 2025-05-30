@@ -13,7 +13,7 @@ Doculyzer is a powerful document management system that creates a universal, str
 │ Confluence API  │     │Parser Adapters  │     │SQLite Backend │
 │ Markdown Files  │◄───►│Structure Extract│◄───►│MongoDB Backend│
 │ HTML from URLs  │     │Embedding Gen    │     │Vector Database│
-│ DOCX Documents  │     │Relationship Map │     │SOLR Backend   │
+│ DOCX Documents  │     │Relationship Map │     │Elasticsearch  │
 └─────────────────┘     └─────────────────┘     └───────────────┘
 ```
 
@@ -22,6 +22,7 @@ Doculyzer is a powerful document management system that creates a universal, str
 - **Universal Document Model**: Common representation across document types
 - **Preservation of Structure**: Maintains hierarchical document structure
 - **Content Resolution**: Resolves pointers back to original content when needed
+- **Advanced Structured Search**: Powerful query language with logical operators, similarity thresholds, and backend capability detection
 - **Enhanced Search Capabilities**: Advanced pattern matching, element type filtering, and metadata search with LIKE patterns and ElementType enum support
 - **Contextual Semantic Search**: Uses advanced embedding techniques that incorporate document context (hierarchy, neighbors) for more accurate semantic search
 - **Topic-Aware Organization**: Categorize and filter content by topics for enhanced organization and discovery
@@ -29,6 +30,7 @@ Doculyzer is a powerful document management system that creates a universal, str
 - **Relationship Mapping**: Identifies connections between document elements
 - **Configurable Vector Representations**: Support for different vector dimensions based on content needs, allowing larger vectors for technical content and smaller vectors for general content
 - **Modular Dependencies**: Only install the components you need, with graceful fallbacks when optional dependencies are missing
+- **Backend-Agnostic Architecture**: Pluggable storage backends with automatic capability detection and query optimization
 
 ## Supported Document Types
 
@@ -87,18 +89,19 @@ except ImportError as e:
 
 Doculyzer supports multiple storage backends through a modular, pluggable architecture. Each backend has its own optional dependencies, which are only required if you use that specific storage method:
 
-| Storage Backend | Description | Topic Support | Required Dependencies | Installation |
-|-----------------|-------------|---------------|----------------------|--------------|
-| File-based | Simple storage using the file system | ✅ | None (core) | Default install |
-| SQLite | Lightweight, embedded database | ✅ | None (core) | Default install |
-| SQLite Enhanced | SQLite with vector extension support | ✅ | `sqlean.py` | `pip install "doculyzer[db-core]"` |
-| Neo4J | Graph database with native relationship support | ✅ | `neo4j` | `pip install "doculyzer[db-neo4j]"` |
-| PostgreSQL | Robust relational database for production | ✅ | `psycopg2` | `pip install "doculyzer[db-postgresql]"` |
-| PostgreSQL + pgvector | PostgreSQL with vector search | ✅ | `psycopg2`, `pgvector` | `pip install "doculyzer[db-postgresql,db-vector]"` |
-| MongoDB | Document-oriented database | ✅ | `pymongo` | `pip install "doculyzer[db-mongodb]"` |
-| MySQL/MariaDB | Popular open-source SQL database | ✅ | `sqlalchemy`, `pymysql` | `pip install "doculyzer[db-mysql]"` |
-| Oracle | Enterprise SQL database | ✅ | `sqlalchemy`, `cx_Oracle` | `pip install "doculyzer[db-oracle]"` |
-| Microsoft SQL Server | Enterprise SQL database | ✅ | `sqlalchemy`, `pymssql` | `pip install "doculyzer[db-mssql]"` |
+| Storage Backend | Description | Topic Support | Vector Search | Required Dependencies | Installation |
+|-----------------|-------------|---------------|---------------|----------------------|--------------|
+| File-based | Simple storage using the file system | ✅ | ❌ | None (core) | Default install |
+| SQLite | Lightweight, embedded database | ✅ | ❌ | None (core) | Default install |
+| SQLite Enhanced | SQLite with vector extension support | ✅ | ✅ | `sqlean.py` | `pip install "doculyzer[db-core]"` |
+| Neo4J | Graph database with native relationship support | ✅ | ✅ | `neo4j` | `pip install "doculyzer[db-neo4j]"` |
+| PostgreSQL | Robust relational database for production | ✅ | ❌ | `psycopg2` | `pip install "doculyzer[db-postgresql]"` |
+| PostgreSQL + pgvector | PostgreSQL with vector search | ✅ | ✅ | `psycopg2`, `pgvector` | `pip install "doculyzer[db-postgresql,db-vector]"` |
+| MongoDB | Document-oriented database | ✅ | ✅ | `pymongo` | `pip install "doculyzer[db-mongodb]"` |
+| MySQL/MariaDB | Popular open-source SQL database | ✅ | ❌ | `sqlalchemy`, `pymysql` | `pip install "doculyzer[db-mysql]"` |
+| Oracle | Enterprise SQL database | ✅ | ❌ | `sqlalchemy`, `cx_Oracle` | `pip install "doculyzer[db-oracle]"` |
+| Microsoft SQL Server | Enterprise SQL database | ✅ | ❌ | `sqlalchemy`, `pymssql` | `pip install "doculyzer[db-mssql]"` |
+| **Elasticsearch** | **Distributed search and analytics** | ✅ | ✅ | `elasticsearch` | `pip install "doculyzer[db-elasticsearch]"` |
 
 ### Storage Backend Graceful Fallbacks
 
@@ -137,6 +140,19 @@ storage:
   backend: sqlite
   path: "./data/docs.db"
   topic_support: true  # Enable topic features
+
+# Elasticsearch (requires elasticsearch Python client)
+storage:
+  backend: elasticsearch
+  elasticsearch:
+    hosts: ["localhost:9200"]
+    username: "elastic"  # optional
+    password: "password"  # optional
+    index_prefix: "doculyzer"
+    vector_dimension: 384
+    store_full_text: true
+    index_full_text: true
+    compress_full_text: false
 
 # Neo4j (requires neo4j Python driver)
 storage:
@@ -190,7 +206,32 @@ storage:
 ### Using a Specific Database Backend
 
 ```python
-from doculyzer.db import Neo4jDocumentDatabase, PostgreSQLDocumentDatabase
+from doculyzer.db import Neo4jDocumentDatabase, PostgreSQLDocumentDatabase, ElasticsearchDocumentDatabase
+
+# Using Elasticsearch backend (requires elasticsearch)
+try:
+    es_db = ElasticsearchDocumentDatabase({
+        "hosts": ["localhost:9200"],
+        "username": "elastic",
+        "password": "changeme",
+        "index_prefix": "doculyzer",
+        "vector_dimension": 384,
+        "store_full_text": True,
+        "index_full_text": True
+    })
+    es_db.initialize()
+    
+    # Store and retrieve documents with advanced search capabilities
+    es_db.store_document(document, elements, relationships)
+    retrieved_doc = es_db.get_document("doc123")
+    
+    # Use advanced vector search
+    results = es_db.search_by_embedding(query_embedding, limit=10)
+    
+except ImportError as e:
+    print(f"Could not initialize ElasticsearchDocumentDatabase: {e}")
+    print("Install required dependencies with:")
+    print("pip install 'doculyzer[db-elasticsearch]'")
 
 # Using Neo4j backend (requires neo4j)
 try:
@@ -247,6 +288,7 @@ For semantic search, Doculyzer supports several vector-capable database backends
 | PostgreSQL + pgvector | Postgres vector extension | ✅ | `psycopg2`, `pgvector` | `pip install "doculyzer[db-postgresql,db-vector]"` |
 | MongoDB Atlas | Vector search capability | ✅ | `pymongo` | `pip install "doculyzer[db-mongodb]"` |
 | Neo4j Vector Search | Graph + vector search | ✅ | `neo4j` | `pip install "doculyzer[db-neo4j]"` |
+| **Elasticsearch** | **Dense vector + kNN search** | ✅ | `elasticsearch` | `pip install "doculyzer[db-elasticsearch]"` |
 
 ```python
 # Configure vector-capable storage
@@ -254,15 +296,15 @@ from doculyzer import Config
 
 config = Config({
     "storage": {
-        "backend": "postgresql",
+        "backend": "elasticsearch",
         "topic_support": True,  # Enable topic features
-        "postgresql": {
-            "host": "localhost",
-            "port": 5432,
-            "database": "doculyzer",
-            "user": "postgres",
-            "password": "postgres",
-            "vector_extension": "pgvector"  # Enable pgvector if available
+        "elasticsearch": {
+            "hosts": ["localhost:9200"],
+            "index_prefix": "doculyzer",
+            "vector_dimension": 384,
+            "store_full_text": True,
+            "index_full_text": True,
+            "compress_full_text": True  # Enable compression for large text
         }
     }
 })
@@ -277,7 +319,7 @@ try:
 except ImportError as e:
     print(f"Vector-capable backend not available: {e}")
     print("Install required dependencies with:")
-    print("pip install 'doculyzer[db-postgresql,db-vector]'")
+    print("pip install 'doculyzer[db-elasticsearch]'")
 ```
 
 ## Architecture
@@ -291,6 +333,200 @@ The system is built with a modular architecture:
 5. **Embedding Generator**: Creates vector representations for semantic search (with model-specific dependencies)
 6. **Relationship Detector**: Identifies connections between document elements
 7. **Topic Manager**: Organizes content by topics for enhanced categorization and filtering
+8. **Structured Search Engine**: Advanced query processing with backend capability detection
+
+## Advanced Structured Search System
+
+Doculyzer includes a powerful, backend-agnostic structured search system that provides sophisticated querying capabilities with automatic optimization based on backend capabilities.
+
+### Search Capabilities and Backend Detection
+
+The system automatically detects what search features each backend supports:
+
+```python
+from doculyzer.structured_search import SearchCapability
+
+# Check backend capabilities
+capabilities = db.get_backend_capabilities()
+
+print("Supported capabilities:")
+for capability in capabilities.supported:
+    print(f"  - {capability.value}")
+
+# Common capabilities include:
+# - TEXT_SIMILARITY: Semantic text search
+# - EMBEDDING_SIMILARITY: Vector-based similarity search  
+# - DATE_FILTERING: Date range and temporal queries
+# - TOPIC_FILTERING: Topic-based content filtering
+# - METADATA_EXACT: Exact metadata matching
+# - METADATA_LIKE: Pattern-based metadata search
+# - LOGICAL_AND/OR/NOT: Boolean query composition
+# - SIMILARITY_THRESHOLDS: Configurable similarity scoring
+```
+
+### Fluent Query Builder
+
+Build complex search queries using the intuitive fluent interface:
+
+```python
+from doculyzer.structured_search import SearchQueryBuilder, LogicalOperator
+
+# Simple text search
+query = (SearchQueryBuilder()
+         .text_search("machine learning algorithms", similarity_threshold=0.8)
+         .limit(20)
+         .build())
+
+# Complex query with multiple criteria
+complex_query = (SearchQueryBuilder()
+                 .with_operator(LogicalOperator.AND)
+                 .text_search("security policy", similarity_threshold=0.7)
+                 .last_days(30)
+                 .topics(include=["security%", "policy%"], exclude=["deprecated%"])
+                 .element_types(["header", "paragraph"])
+                 .metadata_exact(department="engineering", priority="high")
+                 .content_length(min_length=100, max_length=5000)
+                 .include_highlighting(True)
+                 .build())
+
+# Nested logical operations
+nested_query = (SearchQueryBuilder()
+                .begin_group(LogicalOperator.OR)
+                .text_search("artificial intelligence")
+                .topics(include=["ai%", "ml%"])
+                .end_group()
+                .begin_group(LogicalOperator.NOT)
+                .topics(include=["deprecated%"])
+                .end_group()
+                .build())
+```
+
+### Advanced Date and Time Filtering
+
+The structured search system provides sophisticated temporal filtering capabilities:
+
+```python
+from doculyzer.structured_search import DateRangeOperator
+from datetime import datetime, timedelta
+
+# Recent content
+recent_query = (SearchQueryBuilder()
+                .text_search("quarterly reports")
+                .last_days(7)
+                .build())
+
+# Specific date ranges
+date_range_query = (SearchQueryBuilder()
+                    .text_search("financial data")
+                    .date_range(
+                        start_date=datetime(2024, 1, 1),
+                        end_date=datetime(2024, 3, 31)
+                    )
+                    .build())
+
+# Fiscal year filtering
+fiscal_query = (SearchQueryBuilder()
+                .fiscal_year(2024)
+                .topics(include=["finance%", "budget%"])
+                .build())
+
+# Quarter-specific search
+quarter_query = (SearchQueryBuilder()
+                 .quarter(2024, 3)  # Q3 2024
+                 .element_types(["header", "table"])
+                 .build())
+```
+
+### Vector and Hybrid Search
+
+Combine text search with vector similarity for optimal results:
+
+```python
+# Pure vector search
+vector_query = (SearchQueryBuilder()
+                .embedding_search(
+                    embedding_vector=query_embedding,
+                    similarity_threshold=0.75,
+                    distance_metric="cosine"
+                )
+                .topics(include=["technical%"])
+                .build())
+
+# Hybrid search (text + vector)
+hybrid_query = (SearchQueryBuilder()
+                .text_search("database optimization", boost_factor=0.3)
+                .embedding_search(query_embedding, boost_factor=0.7)
+                .score_combination("weighted_avg", {
+                    "text_similarity": 0.3,
+                    "embedding_similarity": 0.7
+                })
+                .build())
+```
+
+### Executing Structured Queries
+
+```python
+# Execute query and get results
+results = db.execute_structured_search(complex_query)
+
+for result in results:
+    print(f"Element: {result['element_id']}")
+    print(f"Score: {result['final_score']:.3f}")
+    print(f"Preview: {result['content_preview']}")
+    
+    if result.get('topics'):
+        print(f"Topics: {result['topics']}")
+    
+    if result.get('extracted_dates'):
+        print(f"Dates: {len(result['extracted_dates'])} found")
+    
+    print("---")
+```
+
+### Query Validation and Optimization
+
+The system validates queries against backend capabilities and provides helpful error messages:
+
+```python
+from doculyzer.structured_search import validate_query_capabilities, UnsupportedSearchError
+
+try:
+    # Validate query before execution
+    missing_capabilities = validate_query_capabilities(query, db.get_backend_capabilities())
+    
+    if missing_capabilities:
+        print(f"Query requires unsupported capabilities: {[c.value for c in missing_capabilities]}")
+        # Automatically fallback or modify query
+    else:
+        results = db.execute_structured_search(query)
+        
+except UnsupportedSearchError as e:
+    print(f"Backend cannot execute this query: {e}")
+    # Suggest alternative backends or query modifications
+```
+
+### Common Query Patterns
+
+Access pre-built query patterns for common use cases:
+
+```python
+from doculyzer.structured_search import get_common_query_patterns
+
+patterns = get_common_query_patterns()
+
+# Use pre-built patterns
+simple_text_query = patterns["simple_text"]
+recent_content_query = patterns["recent_content"]
+topic_search_query = patterns["topic_search"]
+complex_logic_query = patterns["complex_logic"]
+
+# Modify patterns as needed
+custom_query = (SearchQueryBuilder()
+                .text_search("custom search term")
+                .last_days(14)  # Modified from pattern
+                .element_types(["paragraph", "header"])
+                .build())
+```
 
 ## Enhanced Search Capabilities
 
@@ -425,6 +661,13 @@ results = db.find_elements({
 
 Doculyzer automatically uses database-specific features for optimal performance:
 
+#### Elasticsearch Features
+- Native vector search with kNN queries
+- Configurable text storage and indexing options
+- Bulk operations for high-performance ingestion
+- Advanced text analysis and scoring
+- Compressed storage for large text content
+
 #### PostgreSQL Features
 - Native `ILIKE` for case-insensitive patterns
 - JSONB operators for efficient metadata queries
@@ -453,6 +696,13 @@ print(f"LIKE patterns: {db.supports_like_patterns()}")
 print(f"Case-insensitive LIKE: {db.supports_case_insensitive_like()}")
 print(f"ElementType enums: {db.supports_element_type_enums()}")
 print(f"Topic support: {db.supports_topics()}")
+print(f"Vector search: {db.supports_vector_search()}")
+
+# Check structured search capabilities
+capabilities = db.get_backend_capabilities()
+print(f"Text similarity: {capabilities.supports(SearchCapability.TEXT_SIMILARITY)}")
+print(f"Date filtering: {capabilities.supports(SearchCapability.DATE_FILTERING)}")
+print(f"Nested queries: {capabilities.supports(SearchCapability.NESTED_QUERIES)}")
 
 # Use case-insensitive search when available
 if db.supports_case_insensitive_like():
@@ -546,11 +796,12 @@ Doculyzer supports a modular installation system where you can choose which comp
 pip install doculyzer
 
 # Install with specific database backend
-pip install "doculyzer[db-postgresql]"  # PostgreSQL support
-pip install "doculyzer[db-mongodb]"     # MongoDB support
-pip install "doculyzer[db-neo4j]"       # Neo4j support
-pip install "doculyzer[db-mysql]"       # MySQL support
-pip install "doculyzer[db-core]"        # SQLite extensions + SQLAlchemy
+pip install "doculyzer[db-postgresql]"    # PostgreSQL support
+pip install "doculyzer[db-mongodb]"       # MongoDB support
+pip install "doculyzer[db-neo4j]"         # Neo4j support
+pip install "doculyzer[db-mysql]"         # MySQL support
+pip install "doculyzer[db-elasticsearch]" # Elasticsearch support
+pip install "doculyzer[db-core]"          # SQLite extensions + SQLAlchemy
 
 # Install with specific content sources
 pip install "doculyzer[source-database]"     # Database content sources
@@ -614,6 +865,9 @@ python-pptx~=1.0.2
 # sqlean.py~=3.47.0; platform_system == 'Darwin'
 # sqlean.py~=3.47.0; platform_system == 'Linux' and platform_machine == 'x86_64'
 
+# Elasticsearch backend
+# elasticsearch~=8.0.0
+
 # Database content sources
 # sqlalchemy~=2.0.40
 # psycopg2-binary~=2.9.9; platform_system != 'Windows'
@@ -643,9 +897,20 @@ Create a configuration file `config.yaml`:
 
 ```yaml
 storage:
-  backend: sqlite  # Options: file, sqlite, mongodb, postgresql, sqlalchemy
-  path: "./data"
+  backend: elasticsearch  # Options: file, sqlite, mongodb, postgresql, elasticsearch, sqlalchemy
   topic_support: true  # Enable topic features
+  
+  # Elasticsearch-specific configuration
+  elasticsearch:
+    hosts: ["localhost:9200"]
+    username: "elastic"  # optional
+    password: "changeme"  # optional
+    index_prefix: "doculyzer"
+    vector_dimension: 384
+    store_full_text: true
+    index_full_text: true
+    compress_full_text: false
+    full_text_max_length: null  # No limit
   
   # MongoDB-specific configuration (if using MongoDB)
   mongodb:
@@ -742,6 +1007,7 @@ logging:
 
 ```python
 from doculyzer import Config, ingest_documents
+from doculyzer.structured_search import SearchQueryBuilder, LogicalOperator
 
 # Load configuration
 config = Config("config.yaml")
@@ -774,6 +1040,21 @@ docs = db.find_documents({
     "metadata_like": {"title": "%annual%"},
     "source_like": "%reports%"
 })
+
+# Advanced structured search
+structured_query = (SearchQueryBuilder()
+                    .text_search("machine learning", similarity_threshold=0.8)
+                    .last_days(30)
+                    .topics(include=["tech%", "ai%"], exclude=["deprecated%"])
+                    .element_types([ElementType.HEADER, ElementType.PARAGRAPH])
+                    .metadata_exact(priority="high")
+                    .include_highlighting(True)
+                    .limit(20)
+                    .build())
+
+results = db.execute_structured_search(structured_query)
+for result in results:
+    print(f"Score: {result['final_score']:.3f} - {result['content_preview']}")
 
 # Semantic search (if embeddings are enabled)
 from doculyzer.embeddings import get_embedding_generator
@@ -885,6 +1166,20 @@ if db.supports_topics():
     stats = db.get_topic_statistics()
     for topic, info in stats.items():
         print(f"{topic}: {info['embedding_count']} embeddings, {info['document_count']} docs")
+
+# Using structured search with topics
+topic_query = (SearchQueryBuilder()
+               .text_search("security protocols")
+               .topics(
+                   include=["security%", "protocol%"],
+                   exclude=["deprecated%", "draft%"],
+                   require_all=False,  # OR logic for includes
+                   min_confidence=0.8
+               )
+               .last_months(6)
+               .build())
+
+results = db.execute_structured_search(topic_query)
 ```
 
 #### Topic Filtering Logic
@@ -1135,6 +1430,11 @@ pip install doculyzer
 pip install "doculyzer[db-core,fastembed]"
 ```
 
+### High-Performance Search with Elasticsearch
+```
+pip install "doculyzer[db-elasticsearch,fastembed]"
+```
+
 ### Production PostgreSQL with Database Content Sources
 ```
 pip install "doculyzer[db-postgresql,source-database,fastembed]"
@@ -1150,12 +1450,19 @@ pip install "doculyzer[db-all,embedding-all,source-all,cloud-aws]"
 pip install "doculyzer[db-postgresql,fastembed]"
 ```
 
+### Advanced Structured Search System
+```
+pip install "doculyzer[db-elasticsearch,huggingface]"
+```
+
 # Verified Compatibility
 
 Tested and working with:
 - SQLite storage (with and without vector search plugins)
 - PostgreSQL storage (with and without pgvector extension)
+- **Elasticsearch storage (with full-text search and vector capabilities)**
 - Enhanced search capabilities (LIKE patterns, ElementType enums, metadata search)
+- **Advanced structured search system with backend capability detection**
 - Topic-aware embeddings and search
 - Category-based element filtering
 - Web Content Source
@@ -1163,3 +1470,4 @@ Tested and working with:
 - Database Content Source
 - Content types: MD, HTML, XLSX, PDF, XML, CSV, DOCX, PPTX
 - Embedding providers: HuggingFace, OpenAI, FastEmbed
+- **Complex query composition with logical operators and similarity thresholds**

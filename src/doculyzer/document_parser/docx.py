@@ -1,7 +1,7 @@
 """
 DOCX document parser module for the document pointer system.
 
-This module parses DOCX documents into structured elements.
+This module parses DOCX documents into structured elements with comprehensive date extraction.
 """
 
 import json
@@ -34,12 +34,13 @@ except ImportError:
 from bs4 import BeautifulSoup
 
 from .base import DocumentParser
+from .extract_dates import DateExtractor, extract_dates_as_dicts
 
 logger = logging.getLogger(__name__)
 
 
 class DocxParser(DocumentParser):
-    """Parser for DOCX documents."""
+    """Parser for DOCX documents with enhanced date extraction."""
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """Initialize the DOCX parser."""
@@ -58,7 +59,31 @@ class DocxParser(DocumentParser):
         self.temp_dir = self.config.get("temp_dir", os.path.join(os.path.dirname(__file__), 'temp'))
         self.max_content_preview = self.config.get("max_content_preview", 100)
 
-    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]]) -> str:
+        # Date extraction configuration
+        self.extract_dates = self.config.get("extract_dates", True)
+        self.date_context_chars = self.config.get("date_context_chars", 50)  # Small context window
+        self.min_year = self.config.get("min_year", 1900)
+        self.max_year = self.config.get("max_year", 2100)
+        self.fiscal_year_start_month = self.config.get("fiscal_year_start_month", 10)
+        self.default_locale = self.config.get("default_locale", "US")
+
+        # Initialize date extractor if enabled
+        self.date_extractor = None
+        if self.extract_dates:
+            try:
+                self.date_extractor = DateExtractor(
+                    context_chars=self.date_context_chars,
+                    min_year=self.min_year,
+                    max_year=self.max_year,
+                    fiscal_year_start_month=self.fiscal_year_start_month,
+                    default_locale=self.default_locale
+                )
+                logger.debug("Date extraction enabled with comprehensive temporal analysis")
+            except ImportError as e:
+                logger.warning(f"Date extraction disabled: {e}")
+                self.extract_dates = False
+
+    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]] = None) -> str:
         """
         Resolve the plain text representation of a DOCX element.
 
@@ -102,13 +127,13 @@ class DocxParser(DocumentParser):
 
     def parse(self, doc_content: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Parse a DOCX document into structured elements.
+        Parse a DOCX document into structured elements with comprehensive date extraction.
 
         Args:
             doc_content: Document content and metadata
 
         Returns:
-            Dictionary with document metadata, elements, relationships, and extracted links
+            Dictionary with document metadata, elements, relationships, extracted links, and dates
         """
         # Extract metadata from doc_content
         source_id = doc_content["id"]
@@ -179,13 +204,68 @@ class DocxParser(DocumentParser):
             # Extract links from the document
             links = self._extract_links(doc, elements)
 
-            # Return the parsed document with extracted links and relationships
-            return {
+            # Extract dates from document with comprehensive temporal analysis
+            element_dates = {}
+            if self.extract_dates and self.date_extractor:
+                try:
+                    # Extract text content from the entire document for date extraction
+                    full_text = self._extract_full_text(doc)
+
+                    # Extract dates from the full document
+                    if full_text.strip():
+                        document_dates = self.date_extractor.extract_dates_as_dicts(full_text)
+                        if document_dates:
+                            element_dates[root_id] = document_dates
+                            logger.debug(f"Extracted {len(document_dates)} dates from DOCX document")
+
+                    # Extract dates from individual elements
+                    for element in elements:
+                        element_id = element["element_id"]
+                        element_type = element["element_type"]
+
+                        # Only extract dates from text-containing elements
+                        if element_type in [ElementType.PARAGRAPH.value, "header", ElementType.LIST_ITEM.value,
+                                          ElementType.TABLE_CELL.value, "table_header", ElementType.COMMENT.value]:
+                            # Get the text content for this element
+                            element_text = self._get_element_text_for_dates(element, doc)
+
+                            if element_text and element_text.strip():
+                                element_specific_dates = self.date_extractor.extract_dates_as_dicts(element_text)
+                                if element_specific_dates:
+                                    element_dates[element_id] = element_specific_dates
+                                    logger.debug(f"Extracted {len(element_specific_dates)} dates from {element_type} element")
+
+                except Exception as e:
+                    logger.warning(f"Error during date extraction: {e}")
+
+            # Add date statistics to document metadata
+            if element_dates:
+                total_dates = sum(len(dates) for dates in element_dates.values())
+                document["metadata"]["date_extraction"] = {
+                    "total_dates_found": total_dates,
+                    "elements_with_dates": len(element_dates),
+                    "extraction_enabled": True
+                }
+            else:
+                document["metadata"]["date_extraction"] = {
+                    "total_dates_found": 0,
+                    "elements_with_dates": 0,
+                    "extraction_enabled": self.extract_dates
+                }
+
+            # Return the parsed document with comprehensive date information
+            result = {
                 "document": document,
                 "elements": elements,
                 "links": links,
                 "relationships": relationships
             }
+
+            # Add dates if any were extracted
+            if element_dates:
+                result["element_dates"] = element_dates
+
+            return result
         finally:
             # Clean up temporary file
             if binary_path and os.path.exists(binary_path):
@@ -193,6 +273,134 @@ class DocxParser(DocumentParser):
                     os.remove(binary_path)
                 except Exception as e:
                     logger.warning(f"Failed to delete temporary file {binary_path}: {str(e)}")
+
+    def _extract_full_text(self, doc: DocxDocument) -> str:
+        """
+        Extract all text content from the document for date extraction.
+
+        Args:
+            doc: The DOCX document
+
+        Returns:
+            Full text content of the document
+        """
+        text_parts = []
+
+        # Extract text from all paragraphs
+        for paragraph in doc.paragraphs:
+            if paragraph.text.strip():
+                text_parts.append(paragraph.text.strip())
+
+        # Extract text from tables
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    cell_text = " ".join(p.text for p in cell.paragraphs).strip()
+                    if cell_text:
+                        text_parts.append(cell_text)
+
+        # Extract text from headers and footers if enabled
+        if self.extract_headers_footers:
+            try:
+                for section in doc.sections:
+                    # Process headers
+                    for header_type in ['first_page_header', 'header', 'even_page_header']:
+                        header = getattr(section, header_type)
+                        if header and header.is_linked_to_previous is False:
+                            header_text = ""
+                            for paragraph in header.paragraphs:
+                                header_text += paragraph.text + "\n"
+                            if header_text.strip():
+                                text_parts.append(header_text.strip())
+
+                    # Process footers
+                    for footer_type in ['first_page_footer', 'footer', 'even_page_footer']:
+                        footer = getattr(section, footer_type)
+                        if footer and footer.is_linked_to_previous is False:
+                            footer_text = ""
+                            for paragraph in footer.paragraphs:
+                                footer_text += paragraph.text + "\n"
+                            if footer_text.strip():
+                                text_parts.append(footer_text.strip())
+            except Exception as e:
+                logger.warning(f"Error extracting text from headers/footers: {e}")
+
+        # Extract text from comments if enabled
+        if self.extract_comments:
+            try:
+                # Get comments part if it exists
+                if doc.part.package.parts:
+                    for rel_type, parts in doc.part.package.rels.items():
+                        if 'comments' in rel_type.lower():
+                            for rel_id, rel in parts.items():
+                                if hasattr(rel, 'target_part') and rel.target_part:
+                                    comments_xml = rel.target_part.blob
+                                    if comments_xml:
+                                        soup = BeautifulSoup(comments_xml, 'xml')
+                                        for comment in soup.find_all('comment'):
+                                            comment_text = comment.get_text().strip()
+                                            if comment_text:
+                                                text_parts.append(comment_text)
+            except Exception as e:
+                logger.warning(f"Error extracting text from comments: {e}")
+
+        return "\n".join(text_parts)
+
+    def _get_element_text_for_dates(self, element: Dict[str, Any], doc: DocxDocument) -> str:
+        """
+        Get the text content of a specific element for date extraction.
+
+        Args:
+            element: Element dictionary
+            doc: The DOCX document
+
+        Returns:
+            Text content of the element
+        """
+        try:
+            # Parse the content location to get element details
+            content_location = json.loads(element["content_location"])
+            element_type = content_location.get("type", "")
+
+            if element_type == ElementType.PARAGRAPH.value:
+                index = content_location.get("index", 0)
+                if 0 <= index < len(doc.paragraphs):
+                    return doc.paragraphs[index].text.strip()
+
+            elif element_type == "header":
+                # For headers, we already have the text in the content_preview
+                return element.get("content_preview", "")
+
+            elif element_type == ElementType.LIST_ITEM.value:
+                index = content_location.get("index", 0)
+                if 0 <= index < len(doc.paragraphs):
+                    return doc.paragraphs[index].text.strip()
+
+            elif element_type in [ElementType.TABLE_CELL.value, "table_header"]:
+                table_index = content_location.get("table_index", 0)
+                row = content_location.get("row", 0)
+                col = content_location.get("col", 0)
+
+                tables = [t for t in doc._body._body.iterchildren() if isinstance(t, CT_Tbl)]
+                if 0 <= table_index < len(tables):
+                    table = Table(tables[table_index], doc._body)
+                    if 0 <= row < len(table.rows) and 0 <= col < len(table.rows[row].cells):
+                        cell = table.rows[row].cells[col]
+                        return " ".join(p.text for p in cell.paragraphs).strip()
+
+            elif element_type == ElementType.COMMENT.value:
+                # For comments, we can use the text from metadata
+                return element.get("metadata", {}).get("text", "")
+
+            elif element_type in [ElementType.PAGE_HEADER.value, ElementType.PAGE_FOOTER.value]:
+                # For headers/footers, we can use the text from metadata
+                return element.get("metadata", {}).get("text", "")
+
+        except Exception as e:
+            logger.warning(f"Error getting element text for dates: {e}")
+
+        # Fallback to content preview
+        return element.get("content_preview", "")
 
     def _resolve_element_content(self, location_data: Dict[str, Any],
                                  source_content: Optional[Union[str, bytes]]) -> str:

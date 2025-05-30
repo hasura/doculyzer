@@ -1,8 +1,8 @@
 """
-JSON document parser module with caching strategies for the document pointer system.
+JSON document parser module with caching strategies and date extraction for the document pointer system.
 
 This module parses JSON documents into structured elements and provides
-efficient caching strategies for improved performance.
+efficient caching strategies for improved performance with comprehensive date extraction.
 """
 
 import functools
@@ -17,6 +17,7 @@ from typing import Dict, Any, List, Optional, Union, Tuple
 import time
 
 from .base import DocumentParser
+from .extract_dates import DateExtractor, extract_dates_as_dicts
 from .lru_cache import LRUCache, ttl_cache
 from .temporal_semantics import detect_temporal_type, TemporalType, create_semantic_temporal_expression
 from ..relationships import RelationshipType
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 class JSONParser(DocumentParser):
-    """Parser for JSON documents with caching for improved performance."""
+    """Parser for JSON documents with caching and comprehensive date extraction."""
 
     def supports_location(self, content_location: Dict[str, any]) -> bool:
         """
@@ -61,7 +62,7 @@ class JSONParser(DocumentParser):
             return False
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        """Initialize the JSON parser with caching capabilities."""
+        """Initialize the JSON parser with caching capabilities and date extraction."""
         super().__init__(config)
 
         # Configuration options
@@ -77,6 +78,30 @@ class JSONParser(DocumentParser):
         self.max_cache_size = self.config.get("max_cache_size", 128)  # Default max cache size
         self.enable_caching = self.config.get("enable_caching", True)
 
+        # Date extraction configuration
+        self.extract_dates = self.config.get("extract_dates", True)
+        self.date_context_chars = self.config.get("date_context_chars", 50)  # Small context window
+        self.min_year = self.config.get("min_year", 1900)
+        self.max_year = self.config.get("max_year", 2100)
+        self.fiscal_year_start_month = self.config.get("fiscal_year_start_month", 10)
+        self.default_locale = self.config.get("default_locale", "US")
+
+        # Initialize date extractor if enabled
+        self.date_extractor = None
+        if self.extract_dates:
+            try:
+                self.date_extractor = DateExtractor(
+                    context_chars=self.date_context_chars,
+                    min_year=self.min_year,
+                    max_year=self.max_year,
+                    fiscal_year_start_month=self.fiscal_year_start_month,
+                    default_locale=self.default_locale
+                )
+                logger.debug("Date extraction enabled with comprehensive temporal analysis")
+            except ImportError as e:
+                logger.warning(f"Date extraction disabled: {e}")
+                self.extract_dates = False
+
         # Performance monitoring
         self.enable_performance_monitoring = self.config.get("enable_performance_monitoring", False)
         self.performance_stats = {
@@ -87,6 +112,7 @@ class JSONParser(DocumentParser):
             "total_path_generation_time": 0.0,
             "total_element_processing_time": 0.0,
             "total_link_extraction_time": 0.0,
+            "total_date_extraction_time": 0.0,
             "method_times": {}
         }
 
@@ -94,6 +120,68 @@ class JSONParser(DocumentParser):
         self.document_cache = LRUCache(max_size=self.max_cache_size, ttl=self.cache_ttl)
         self.json_cache = LRUCache(max_size=min(50, self.max_cache_size), ttl=self.cache_ttl)  # For parsed JSON objects
         self.text_cache = LRUCache(max_size=self.max_cache_size * 2, ttl=self.cache_ttl)
+
+    def _extract_dates_from_text(self, text: str, element_id: str, element_dates: Dict[str, List[Dict[str, Any]]]):
+        """
+        Extract dates from text content and add to element_dates.
+
+        Args:
+            text: Text content to extract dates from
+            element_id: ID of the element containing the text
+            element_dates: Dictionary to store extracted dates
+        """
+        if not self.extract_dates or not self.date_extractor or not text.strip():
+            return
+
+        try:
+            dates = self.date_extractor.extract_dates_as_dicts(text)
+            if dates:
+                element_dates[element_id] = dates
+                logger.debug(f"Extracted {len(dates)} dates from element {element_id}")
+        except Exception as e:
+            logger.warning(f"Error extracting dates from element {element_id}: {e}")
+
+    def _extract_dates_from_json_value(self, value: Any, element_id: str, element_dates: Dict[str, List[Dict[str, Any]]]):
+        """
+        Extract dates from a JSON value, handling different data types.
+
+        Args:
+            value: JSON value (string, number, dict, list, etc.)
+            element_id: ID of the element containing the value
+            element_dates: Dictionary to store extracted dates
+        """
+        if not self.extract_dates or not self.date_extractor:
+            return
+
+        # Extract text content for date extraction
+        text_content = ""
+
+        if isinstance(value, str):
+            text_content = value
+        elif isinstance(value, (int, float)):
+            # Convert numbers to strings for potential date matching
+            text_content = str(value)
+        elif isinstance(value, dict):
+            # Extract text from all string values in the object
+            text_parts = []
+            for k, v in value.items():
+                if isinstance(v, str):
+                    text_parts.append(v)
+                elif isinstance(v, (int, float)):
+                    text_parts.append(str(v))
+            text_content = " ".join(text_parts)
+        elif isinstance(value, list):
+            # Extract text from all string values in the array
+            text_parts = []
+            for item in value:
+                if isinstance(item, str):
+                    text_parts.append(item)
+                elif isinstance(item, (int, float)):
+                    text_parts.append(str(item))
+            text_content = " ".join(text_parts)
+
+        if text_content:
+            self._extract_dates_from_text(text_content, element_id, element_dates)
 
     @staticmethod
     def _load_source_content(source_path: str) -> Tuple[Union[str, dict, list, None], Optional[str]]:
@@ -228,7 +316,7 @@ class JSONParser(DocumentParser):
         else:
             return any(identity in field_lower and identity != field_lower for identity in common_identities)
 
-    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]]) -> str:
+    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]] = None) -> str:
         """
         Resolve the plain text representation of a JSON element with caching.
 
@@ -670,13 +758,13 @@ class JSONParser(DocumentParser):
     @ttl_cache(256, 3600)
     def parse(self, doc_content: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Parse a JSON document into structured elements with caching for performance.
+        Parse a JSON document into structured elements with caching and comprehensive date extraction.
 
         Args:
             doc_content: Document content and metadata
 
         Returns:
-            Dictionary with document metadata, elements, relationships, and extracted links
+            Dictionary with document metadata, elements, relationships, extracted links, and dates
         """
         start_time = time.time()
 
@@ -767,17 +855,49 @@ class JSONParser(DocumentParser):
         elements = [self._create_root_element(doc_id, source_id)]
         root_id = elements[0]["element_id"]
 
-        # Initialize relationships list
+        # Initialize relationships list and element_dates dictionary
         relationships = []
+        element_dates = {}
 
-        # Parse JSON structure recursively with relationships
-        self._parse_json_element(json_data, doc_id, root_id, source_id, elements, relationships, "$", 0)
+        # Extract dates from the full JSON document first
+        if self.extract_dates and self.date_extractor:
+            start_date_time = time.time()
+            try:
+                # Convert JSON to string and extract dates
+                json_string = json.dumps(json_data) if not isinstance(content, str) else content
+                document_dates = self.date_extractor.extract_dates_as_dicts(json_string)
+                if document_dates:
+                    element_dates[root_id] = document_dates
+                    logger.debug(f"Extracted {len(document_dates)} dates from JSON document")
+            except Exception as e:
+                logger.warning(f"Error during document date extraction: {e}")
+
+            if self.enable_performance_monitoring:
+                self.performance_stats["total_date_extraction_time"] += time.time() - start_date_time
+
+        # Parse JSON structure recursively with relationships and date extraction
+        self._parse_json_element(json_data, doc_id, root_id, source_id, elements, relationships, "$", 0, element_dates)
 
         # Extract links from the document
         extract_links_start = time.time()
         links = self._extract_links(json.dumps(json_data), root_id)
         if self.enable_performance_monitoring:
             self.performance_stats["total_link_extraction_time"] += time.time() - extract_links_start
+
+        # Add date statistics to document metadata
+        if element_dates:
+            total_dates = sum(len(dates) for dates in element_dates.values())
+            document["metadata"]["date_extraction"] = {
+                "total_dates_found": total_dates,
+                "elements_with_dates": len(element_dates),
+                "extraction_enabled": True
+            }
+        else:
+            document["metadata"]["date_extraction"] = {
+                "total_dates_found": 0,
+                "elements_with_dates": 0,
+                "extraction_enabled": self.extract_dates
+            }
 
         # Create result
         result = {
@@ -786,6 +906,10 @@ class JSONParser(DocumentParser):
             "links": links,
             "relationships": relationships
         }
+
+        # Add dates if any were extracted
+        if element_dates:
+            result["element_dates"] = element_dates
 
         # Add performance metrics if enabled
         total_time = time.time() - start_time
@@ -803,7 +927,7 @@ class JSONParser(DocumentParser):
     @ttl_cache(maxsize=256, ttl=3600)
     def _parse_json_element(self, data: Any, doc_id: str, parent_id: str, source_id: str,
                             elements: List[Dict[str, Any]], relationships: List[Dict[str, Any]],
-                            json_path: str, depth: int) -> None:
+                            json_path: str, depth: int, element_dates: Dict[str, List[Dict[str, Any]]]) -> None:
         """
         Recursively parse a JSON element and its children, creating relationship records.
         Uses performance monitoring for optimization analysis.
@@ -817,6 +941,7 @@ class JSONParser(DocumentParser):
             relationships: List to add relationships to
             json_path: The JSON path to this element
             depth: Current recursion depth
+            element_dates: Dictionary to store extracted dates
         """
         # Prevent infinite recursion
         if depth > self.max_depth:
@@ -827,6 +952,9 @@ class JSONParser(DocumentParser):
             # Create object element
             object_id = self._generate_id("obj_")
             object_preview = self._get_preview(data)
+
+            # Extract dates from object content
+            self._extract_dates_from_json_value(data, object_id, element_dates)
 
             object_element = {
                 "element_id": object_id,
@@ -880,6 +1008,9 @@ class JSONParser(DocumentParser):
                 # Create field element
                 field_id = self._generate_id("field_")
                 field_preview = self._get_preview(value)
+
+                # Extract dates from field value
+                self._extract_dates_from_json_value(value, field_id, element_dates)
 
                 # Check for temporal data if this is a string value
                 temporal_metadata = {}
@@ -941,7 +1072,7 @@ class JSONParser(DocumentParser):
                 # Recursively process child elements
                 if isinstance(value, (dict, list)) and not (isinstance(value, list) and self.flatten_arrays):
                     self._parse_json_element(value, doc_id, field_id, source_id, elements, relationships, field_path,
-                                             depth + 1)
+                                             depth + 1, element_dates)
 
         elif isinstance(data, list):
             # If flattening arrays, add items directly to parent
@@ -950,6 +1081,9 @@ class JSONParser(DocumentParser):
                     item_path = f"{json_path}[{i}]"
                     item_id = self._generate_id("item_")
                     item_preview = self._get_preview(item)
+
+                    # Extract dates from item value
+                    self._extract_dates_from_json_value(item, item_id, element_dates)
 
                     # Check for temporal data if this is a string value
                     temporal_metadata = {}
@@ -1011,11 +1145,14 @@ class JSONParser(DocumentParser):
                     # Recursively process child elements
                     if isinstance(item, (dict, list)):
                         self._parse_json_element(item, doc_id, item_id, source_id, elements, relationships, item_path,
-                                                 depth + 1)
+                                                 depth + 1, element_dates)
             else:
                 # Create array element
                 array_id = self._generate_id("arr_")
                 array_preview = self._get_preview(data)
+
+                # Extract dates from array content
+                self._extract_dates_from_json_value(data, array_id, element_dates)
 
                 array_element = {
                     "element_id": array_id,
@@ -1066,6 +1203,9 @@ class JSONParser(DocumentParser):
                     item_path = f"{json_path}[{i}]"
                     item_id = self._generate_id("item_")
                     item_preview = self._get_preview(item)
+
+                    # Extract dates from item value
+                    self._extract_dates_from_json_value(item, item_id, element_dates)
 
                     # Check for temporal data if this is a string value
                     temporal_metadata = {}
@@ -1127,7 +1267,7 @@ class JSONParser(DocumentParser):
                     # Recursively process child elements
                     if isinstance(item, (dict, list)):
                         self._parse_json_element(item, doc_id, item_id, source_id, elements, relationships, item_path,
-                                                 depth + 1)
+                                                 depth + 1, element_dates)
 
     def _get_preview(self, data: Any) -> str:
         """Generate a preview of JSON data."""
@@ -1384,6 +1524,7 @@ class JSONParser(DocumentParser):
             "total_path_generation_time": 0.0,
             "total_element_processing_time": 0.0,
             "total_link_extraction_time": 0.0,
+            "total_date_extraction_time": 0.0,
             "method_times": {}
         }
         logger.info("Performance statistics reset")

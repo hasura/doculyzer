@@ -1,8 +1,8 @@
 """
-Markdown document parser module with caching strategies for the document pointer system.
+Markdown document parser module with caching strategies and date extraction for the document pointer system.
 
 This module parses Markdown documents into structured elements and provides
-semantic textual representations of the data with improved performance.
+semantic textual representations of the data with improved performance and comprehensive date extraction.
 """
 
 import functools
@@ -20,6 +20,7 @@ import yaml
 from bs4 import BeautifulSoup
 
 from .base import DocumentParser
+from .extract_dates import DateExtractor, extract_dates_as_dicts
 from .lru_cache import LRUCache, ttl_cache
 from ..relationships import RelationshipType
 from ..storage import ElementType
@@ -28,10 +29,10 @@ logger = logging.getLogger(__name__)
 
 
 class MarkdownParser(DocumentParser):
-    """Parser for Markdown documents with caching for improved performance."""
+    """Parser for Markdown documents with caching and comprehensive date extraction."""
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        """Initialize the Markdown parser with caching capabilities."""
+        """Initialize the Markdown parser with caching capabilities and date extraction."""
         super().__init__(config)
         # Configuration options
         self.config = config or {}
@@ -50,6 +51,30 @@ class MarkdownParser(DocumentParser):
         self.max_cache_size = self.config.get("max_cache_size", 128)  # Default max cache size
         self.enable_caching = self.config.get("enable_caching", True)
 
+        # Date extraction configuration
+        self.extract_dates = self.config.get("extract_dates", True)
+        self.date_context_chars = self.config.get("date_context_chars", 50)  # Small context window
+        self.min_year = self.config.get("min_year", 1900)
+        self.max_year = self.config.get("max_year", 2100)
+        self.fiscal_year_start_month = self.config.get("fiscal_year_start_month", 10)
+        self.default_locale = self.config.get("default_locale", "US")
+
+        # Initialize date extractor if enabled
+        self.date_extractor = None
+        if self.extract_dates:
+            try:
+                self.date_extractor = DateExtractor(
+                    context_chars=self.date_context_chars,
+                    min_year=self.min_year,
+                    max_year=self.max_year,
+                    fiscal_year_start_month=self.fiscal_year_start_month,
+                    default_locale=self.default_locale
+                )
+                logger.debug("Date extraction enabled with comprehensive temporal analysis")
+            except ImportError as e:
+                logger.warning(f"Date extraction disabled: {e}")
+                self.extract_dates = False
+
         # Performance monitoring
         self.enable_performance_monitoring = self.config.get("enable_performance_monitoring", False)
         self.performance_stats = {
@@ -59,6 +84,7 @@ class MarkdownParser(DocumentParser):
             "total_parse_time": 0.0,
             "total_element_processing_time": 0.0,
             "total_link_extraction_time": 0.0,
+            "total_date_extraction_time": 0.0,
             "method_times": {}
         }
 
@@ -66,6 +92,26 @@ class MarkdownParser(DocumentParser):
         self.document_cache = LRUCache(max_size=self.max_cache_size, ttl=self.cache_ttl)
         self.html_cache = LRUCache(max_size=min(50, self.max_cache_size), ttl=self.cache_ttl)  # For converted HTML
         self.text_cache = LRUCache(max_size=self.max_cache_size * 2, ttl=self.cache_ttl)
+
+    def _extract_dates_from_text(self, text: str, element_id: str, element_dates: Dict[str, List[Dict[str, Any]]]):
+        """
+        Extract dates from text content and add to element_dates.
+
+        Args:
+            text: Text content to extract dates from
+            element_id: ID of the element containing the text
+            element_dates: Dictionary to store extracted dates
+        """
+        if not self.extract_dates or not self.date_extractor or not text.strip():
+            return
+
+        try:
+            dates = self.date_extractor.extract_dates_as_dicts(text)
+            if dates:
+                element_dates[element_id] = dates
+                logger.debug(f"Extracted {len(dates)} dates from element {element_id}")
+        except Exception as e:
+            logger.warning(f"Error extracting dates from element {element_id}: {e}")
 
     def _generate_hash(self, content):
         """Generate a hash for content, always returning a string."""
@@ -158,7 +204,7 @@ class MarkdownParser(DocumentParser):
             logger.error(error_msg)
             return None, error_msg
 
-    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]]) -> str:
+    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]] = None) -> str:
         """
         Resolve the plain text representation of a Markdown element.
 
@@ -542,7 +588,7 @@ class MarkdownParser(DocumentParser):
         return html_content
 
     def parse(self, doc_content: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse a Markdown document into structured elements with caching."""
+        """Parse a Markdown document into structured elements with caching and comprehensive date extraction."""
         content = doc_content["content"]
         source_id = doc_content["id"]  # Should already be a fully qualified path
         metadata = doc_content.get("metadata", {}).copy()  # Make a copy to avoid modifying original
@@ -591,8 +637,23 @@ class MarkdownParser(DocumentParser):
         elements = [self._create_root_element(doc_id, source_id)]
         root_id = elements[0]["element_id"]
 
-        # Initialize relationships list
+        # Initialize relationships list and element_dates dictionary
         relationships = []
+        element_dates = {}
+
+        # Extract dates from full document content first
+        if self.extract_dates and self.date_extractor:
+            start_date_time = time.time()
+            try:
+                document_dates = self.date_extractor.extract_dates_as_dicts(content)
+                if document_dates:
+                    element_dates[root_id] = document_dates
+                    logger.debug(f"Extracted {len(document_dates)} dates from document")
+            except Exception as e:
+                logger.warning(f"Error during document date extraction: {e}")
+
+            if self.enable_performance_monitoring:
+                self.performance_stats["total_date_extraction_time"] += time.time() - start_date_time
 
         # Extract links directly from Markdown content
         start_link_time = time.time()
@@ -606,7 +667,7 @@ class MarkdownParser(DocumentParser):
         # Parse HTML to extract elements and create relationships
         start_element_time = time.time()
         html_elements, html_links, element_relationships = self._parse_html_elements(html_content, doc_id, root_id,
-                                                                                     source_id)
+                                                                                     source_id, element_dates)
         if self.enable_performance_monitoring:
             self.performance_stats["total_element_processing_time"] += time.time() - start_element_time
 
@@ -616,6 +677,21 @@ class MarkdownParser(DocumentParser):
         # Combine links from both sources
         extracted_links = direct_links + html_links
 
+        # Add date statistics to document metadata
+        if element_dates:
+            total_dates = sum(len(dates) for dates in element_dates.values())
+            document["metadata"]["date_extraction"] = {
+                "total_dates_found": total_dates,
+                "elements_with_dates": len(element_dates),
+                "extraction_enabled": True
+            }
+        else:
+            document["metadata"]["date_extraction"] = {
+                "total_dates_found": 0,
+                "elements_with_dates": 0,
+                "extraction_enabled": self.extract_dates
+            }
+
         # Prepare result
         result = {
             "document": document,
@@ -623,6 +699,10 @@ class MarkdownParser(DocumentParser):
             "links": extracted_links,
             "relationships": relationships
         }
+
+        # Add dates if any were extracted
+        if element_dates:
+            result["element_dates"] = element_dates
 
         # Add performance metrics if enabled
         if self.enable_performance_monitoring:
@@ -693,7 +773,8 @@ class MarkdownParser(DocumentParser):
 
         return links
 
-    def _parse_html_elements(self, html_content: str, doc_id: str, root_id: str, source_id: str) -> Tuple[
+    def _parse_html_elements(self, html_content: str, doc_id: str, root_id: str, source_id: str,
+                           element_dates: Dict[str, List[Dict[str, Any]]] = None) -> Tuple[
         List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Parse HTML content into structured elements and create relationships.
@@ -703,10 +784,14 @@ class MarkdownParser(DocumentParser):
             doc_id: Document ID
             root_id: Root element ID
             source_id: Source identifier (fully qualified path)
+            element_dates: Dictionary to store extracted dates
 
         Returns:
             Tuple of (list of elements, list of links, list of relationships)
         """
+        if element_dates is None:
+            element_dates = {}
+
         # Generate cache key
         if self.enable_caching:
             cache_key = f"html_elements_{doc_id}_{self._generate_hash(html_content)}"
@@ -777,6 +862,9 @@ class MarkdownParser(DocumentParser):
 
                 elements.append(header_element)
 
+                # Extract dates from header text
+                self._extract_dates_from_text(header_text, element_id, element_dates)
+
                 # Create relationship from parent to header
                 contains_relationship = {
                     "relationship_id": self._generate_id("rel_"),
@@ -846,6 +934,9 @@ class MarkdownParser(DocumentParser):
 
                 elements.append(para_element)
 
+                # Extract dates from paragraph text
+                self._extract_dates_from_text(para_text, element_id, element_dates)
+
                 # Create relationship from parent to paragraph
                 contains_relationship = {
                     "relationship_id": self._generate_id("rel_"),
@@ -883,6 +974,7 @@ class MarkdownParser(DocumentParser):
                 # List element
                 list_id = self._generate_id("list_")
                 list_type = 'ordered' if tag.name == 'ol' else 'unordered'
+                list_text = tag.get_text().strip()
 
                 list_element = {
                     "element_id": list_id,
@@ -896,7 +988,7 @@ class MarkdownParser(DocumentParser):
                         "list_type": list_type,
                         "element_id": list_id
                     }),
-                    "content_hash": self._generate_hash(tag.get_text()),
+                    "content_hash": self._generate_hash(list_text),
                     "metadata": {
                         "list_type": list_type,
                         "full_path": source_id  # Store the full path in metadata
@@ -904,6 +996,9 @@ class MarkdownParser(DocumentParser):
                 }
 
                 elements.append(list_element)
+
+                # Extract dates from list text
+                self._extract_dates_from_text(list_text, list_id, element_dates)
 
                 # Create relationship from parent to list
                 contains_relationship = {
@@ -956,6 +1051,9 @@ class MarkdownParser(DocumentParser):
                     }
 
                     elements.append(item_element)
+
+                    # Extract dates from list item text
+                    self._extract_dates_from_text(item_text, item_id, element_dates)
 
                     # Create relationship from list to item
                     contains_relationship = {
@@ -1028,6 +1126,9 @@ class MarkdownParser(DocumentParser):
 
                 elements.append(code_element)
 
+                # Extract dates from code comments (might contain dates)
+                self._extract_dates_from_text(code_text, element_id, element_dates)
+
                 # Create relationship from parent to code block
                 contains_relationship = {
                     "relationship_id": self._generate_id("rel_"),
@@ -1077,6 +1178,9 @@ class MarkdownParser(DocumentParser):
 
                 elements.append(quote_element)
 
+                # Extract dates from blockquote text
+                self._extract_dates_from_text(quote_text, element_id, element_dates)
+
                 # Create relationship from parent to blockquote
                 contains_relationship = {
                     "relationship_id": self._generate_id("rel_"),
@@ -1114,6 +1218,7 @@ class MarkdownParser(DocumentParser):
                 # Table element
                 table_id = self._generate_id("table_")
                 table_html = str(tag)
+                table_text = tag.get_text().strip()
 
                 table_element = {
                     "element_id": table_id,
@@ -1135,6 +1240,9 @@ class MarkdownParser(DocumentParser):
                 }
 
                 elements.append(table_element)
+
+                # Extract dates from table text
+                self._extract_dates_from_text(table_text, table_id, element_dates)
 
                 # Create relationship from parent to table
                 contains_relationship = {
@@ -1190,6 +1298,9 @@ class MarkdownParser(DocumentParser):
 
                         elements.append(cell_element)
 
+                        # Extract dates from header cell text
+                        self._extract_dates_from_text(cell_text, cell_id, element_dates)
+
                         # Create relationship from table to header cell
                         contains_relationship = {
                             "relationship_id": self._generate_id("rel_"),
@@ -1228,6 +1339,7 @@ class MarkdownParser(DocumentParser):
                 tbody = tag.find('tbody') or tag
                 for i, row in enumerate(tbody.find_all('tr')):
                     row_id = self._generate_id("tr_")
+                    row_text = row.get_text().strip()
 
                     row_element = {
                         "element_id": row_id,
@@ -1249,6 +1361,9 @@ class MarkdownParser(DocumentParser):
                     }
 
                     elements.append(row_element)
+
+                    # Extract dates from row text
+                    self._extract_dates_from_text(row_text, row_id, element_dates)
 
                     # Create relationship from table to row
                     contains_relationship = {
@@ -1303,6 +1418,9 @@ class MarkdownParser(DocumentParser):
                         }
 
                         elements.append(cell_element)
+
+                        # Extract dates from cell text
+                        self._extract_dates_from_text(cell_text, cell_id, element_dates)
 
                         # Create relationship from row to cell
                         contains_relationship = {
@@ -1646,6 +1764,7 @@ class MarkdownParser(DocumentParser):
             "total_parse_time": 0.0,
             "total_element_processing_time": 0.0,
             "total_link_extraction_time": 0.0,
+            "total_date_extraction_time": 0.0,
             "method_times": {}
         }
         logger.info("Performance statistics reset")

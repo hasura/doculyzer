@@ -1,7 +1,7 @@
 """
 PDF document parser module for the document pointer system.
 
-This module parses PDF documents into structured elements.
+This module parses PDF documents into structured elements with comprehensive date extraction.
 """
 
 import hashlib
@@ -25,12 +25,13 @@ except ImportError:
     logging.warning("PyMuPDF not available. Install with 'pip install pymupdf' to use PDF parser")
 
 from .base import DocumentParser
+from .extract_dates import DateExtractor, extract_dates_as_dicts
 
 logger = logging.getLogger(__name__)
 
 
 class PdfParser(DocumentParser):
-    """Parser for PDF documents."""
+    """Parser for PDF documents with enhanced date extraction."""
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """Initialize the PDF parser."""
@@ -58,7 +59,31 @@ class PdfParser(DocumentParser):
         self.min_table_rows = self.config.get("min_table_rows", 2)
         self.min_table_cols = self.config.get("min_table_cols", 2)
 
-    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]]) -> str:
+        # Date extraction configuration
+        self.extract_dates = self.config.get("extract_dates", True)
+        self.date_context_chars = self.config.get("date_context_chars", 50)  # Small context window
+        self.min_year = self.config.get("min_year", 1900)
+        self.max_year = self.config.get("max_year", 2100)
+        self.fiscal_year_start_month = self.config.get("fiscal_year_start_month", 10)
+        self.default_locale = self.config.get("default_locale", "US")
+
+        # Initialize date extractor if enabled
+        self.date_extractor = None
+        if self.extract_dates:
+            try:
+                self.date_extractor = DateExtractor(
+                    context_chars=self.date_context_chars,
+                    min_year=self.min_year,
+                    max_year=self.max_year,
+                    fiscal_year_start_month=self.fiscal_year_start_month,
+                    default_locale=self.default_locale
+                )
+                logger.debug("Date extraction enabled with comprehensive temporal analysis for PDF")
+            except ImportError as e:
+                logger.warning(f"Date extraction disabled: {e}")
+                self.extract_dates = False
+
+    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]] = None) -> str:
         """
         Resolve the plain text representation of a PDF element.
 
@@ -307,13 +332,13 @@ class PdfParser(DocumentParser):
 
     def parse(self, doc_content: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Parse a PDF document into structured elements.
+        Parse a PDF document into structured elements with comprehensive date extraction.
 
         Args:
             doc_content: Document content and metadata
 
         Returns:
-            Dictionary with document metadata, elements, relationships, and extracted links
+            Dictionary with document metadata, elements, relationships, extracted links, and dates
         """
         # Extract metadata from doc_content
         source_id = doc_content["id"]
@@ -374,6 +399,43 @@ class PdfParser(DocumentParser):
         # Extract links from the document using the helper method
         links = self._extract_document_links(doc, elements)
 
+        # Extract dates from PDF content with comprehensive temporal analysis
+        element_dates = {}
+        if self.extract_dates and self.date_extractor:
+            try:
+                # Extract dates from the entire document
+                full_text = ""
+                for page_idx in range(min(len(doc), self.max_pages)):
+                    page = doc[page_idx]
+                    full_text += page.get_text() + "\n"
+
+                if full_text.strip():
+                    document_dates = self.date_extractor.extract_dates_as_dicts(full_text)
+                    if document_dates:
+                        element_dates[root_id] = document_dates
+                        logger.debug(f"Extracted {len(document_dates)} dates from PDF document")
+
+                # Extract dates from individual text elements
+                self._extract_dates_from_elements(elements, element_dates)
+
+            except Exception as e:
+                logger.warning(f"Error during PDF date extraction: {e}")
+
+        # Add date statistics to document metadata
+        if element_dates:
+            total_dates = sum(len(dates) for dates in element_dates.values())
+            document["metadata"]["date_extraction"] = {
+                "total_dates_found": total_dates,
+                "elements_with_dates": len(element_dates),
+                "extraction_enabled": True
+            }
+        else:
+            document["metadata"]["date_extraction"] = {
+                "total_dates_found": 0,
+                "elements_with_dates": 0,
+                "extraction_enabled": self.extract_dates
+            }
+
         # Clean up temporary file if needed
         if binary_path != doc_content.get("binary_path") and os.path.exists(binary_path):
             try:
@@ -383,13 +445,59 @@ class PdfParser(DocumentParser):
             except Exception as e:
                 logger.warning(f"Failed to delete temporary file {binary_path}: {str(e)}")
 
-        # Return the parsed document with extracted links and relationships
-        return {
+        # Return the parsed document with extracted links, relationships, and dates
+        result = {
             "document": document,
             "elements": elements,
             "links": links,
             "relationships": relationships
         }
+
+        # Add dates if any were extracted
+        if element_dates:
+            result["element_dates"] = element_dates
+
+        return result
+
+    def _extract_dates_from_elements(self, elements: List[Dict[str, Any]], element_dates: Dict[str, List[Dict[str, Any]]]):
+        """
+        Extract dates from individual text elements.
+
+        Args:
+            elements: List of document elements
+            element_dates: Dictionary to store extracted dates by element ID
+        """
+        if not self.date_extractor:
+            return
+
+        for element in elements:
+            element_id = element.get("element_id")
+            element_type = element.get("element_type", "")
+
+            # Only extract dates from text-containing elements
+            if element_type in ["page", "paragraph", "header", "text_block", "section",
+                              "table_cell", "table_header", "annotation", "comment",
+                              "text_annotation"]:
+
+                try:
+                    # Get the text content of this element
+                    content_location = element.get("content_location", "{}")
+                    location_data = json.loads(content_location)
+
+                    # Extract text from the element
+                    text_content = self._resolve_element_text(location_data)
+
+                    if text_content and text_content.strip():
+                        # Extract dates from this element's text
+                        element_date_list = self.date_extractor.extract_dates_as_dicts(text_content)
+
+                        if element_date_list:
+                            element_dates[element_id] = element_date_list
+                            logger.debug(f"Extracted {len(element_date_list)} dates from {element_type} element")
+
+                except Exception as e:
+                    logger.debug(f"Error extracting dates from element {element_id}: {e}")
+                    continue
 
     def _extract_document_metadata(self, doc: fitz.Document, base_metadata: Dict[str, Any]) -> Dict[str, Any]:
         """

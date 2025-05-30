@@ -1,7 +1,8 @@
 """
 PPTX document parser module for the document pointer system.
 
-This module parses PowerPoint (PPTX) documents into structured elements.
+This module parses PowerPoint (PPTX) documents into structured elements
+with comprehensive date extraction and temporal analysis.
 """
 
 import json
@@ -33,12 +34,13 @@ except ImportError:
     logging.warning("python-pptx not available. Install with 'pip install python-pptx' to use PPTX parser")
 
 from .base import DocumentParser
+from .extract_dates import DateExtractor, extract_dates_as_dicts
 
 logger = logging.getLogger(__name__)
 
 
 class PptxParser(DocumentParser):
-    """Parser for PowerPoint (PPTX) documents."""
+    """Parser for PowerPoint (PPTX) documents with enhanced date extraction."""
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """Initialize the PPTX parser."""
@@ -61,7 +63,31 @@ class PptxParser(DocumentParser):
         self.extract_templates = self.config.get("extract_templates", False)
         self.temp_dir = self.config.get("temp_dir", os.path.join(os.path.dirname(__file__), 'temp'))
 
-    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]]) -> str:
+        # Date extraction configuration
+        self.extract_dates = self.config.get("extract_dates", True)
+        self.date_context_chars = self.config.get("date_context_chars", 50)  # Small context window
+        self.min_year = self.config.get("min_year", 1900)
+        self.max_year = self.config.get("max_year", 2100)
+        self.fiscal_year_start_month = self.config.get("fiscal_year_start_month", 10)
+        self.default_locale = self.config.get("default_locale", "US")
+
+        # Initialize date extractor if enabled
+        self.date_extractor = None
+        if self.extract_dates:
+            try:
+                self.date_extractor = DateExtractor(
+                    context_chars=self.date_context_chars,
+                    min_year=self.min_year,
+                    max_year=self.max_year,
+                    fiscal_year_start_month=self.fiscal_year_start_month,
+                    default_locale=self.default_locale
+                )
+                logger.debug("Date extraction enabled with comprehensive temporal analysis")
+            except ImportError as e:
+                logger.warning(f"Date extraction disabled: {e}")
+                self.extract_dates = False
+
+    def _resolve_element_text(self, location_data: Dict[str, Any], source_content: Optional[Union[str, bytes]] = None) -> str:
         """
         Resolve the plain text representation of a PPTX element.
 
@@ -510,6 +536,26 @@ class PptxParser(DocumentParser):
 
         return links
 
+    def _extract_dates_from_text(self, text: str, element_id: str, element_dates: Dict[str, List[Dict[str, Any]]]):
+        """
+        Extract dates from text content and add to element_dates.
+
+        Args:
+            text: Text content to extract dates from
+            element_id: ID of the element containing the text
+            element_dates: Dictionary to store extracted dates
+        """
+        if not self.extract_dates or not self.date_extractor or not text.strip():
+            return
+
+        try:
+            dates = self.date_extractor.extract_dates_as_dicts(text)
+            if dates:
+                element_dates[element_id] = dates
+                logger.debug(f"Extracted {len(dates)} dates from element {element_id}")
+        except Exception as e:
+            logger.warning(f"Error extracting dates from element {element_id}: {e}")
+
     @staticmethod
     def _extract_document_links(presentation, elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -585,13 +631,13 @@ class PptxParser(DocumentParser):
 
     def parse(self, doc_content: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Parse a PPTX document into structured elements.
+        Parse a PPTX document into structured elements with comprehensive date extraction.
 
         Args:
             doc_content: Document content and metadata
 
         Returns:
-            Dictionary with document metadata, elements, relationships, and extracted links
+            Dictionary with document metadata, elements, relationships, extracted links, and dates
         """
         # Extract metadata from doc_content
         source_id = doc_content["id"]
@@ -642,15 +688,31 @@ class PptxParser(DocumentParser):
         elements = [self._create_root_element(doc_id, source_id)]
         root_id = elements[0]["element_id"]
 
-        # Initialize relationships list
+        # Initialize relationships list and element_dates dictionary
         relationships = []
+        element_dates = {}
 
         # Parse document elements and create relationships
-        new_elements = self._parse_presentation(presentation, doc_id, root_id, source_id, relationships)
+        new_elements = self._parse_presentation(presentation, doc_id, root_id, source_id, relationships, element_dates)
         elements.extend(new_elements)
 
         # Extract links from the document using the helper method
         links = self._extract_document_links(presentation, elements)
+
+        # Add date statistics to document metadata
+        if element_dates:
+            total_dates = sum(len(dates) for dates in element_dates.values())
+            document["metadata"]["date_extraction"] = {
+                "total_dates_found": total_dates,
+                "elements_with_dates": len(element_dates),
+                "extraction_enabled": True
+            }
+        else:
+            document["metadata"]["date_extraction"] = {
+                "total_dates_found": 0,
+                "elements_with_dates": 0,
+                "extraction_enabled": self.extract_dates
+            }
 
         # Clean up temporary file if we created one
         if binary_path != doc_content.get("binary_path") and os.path.exists(binary_path):
@@ -660,13 +722,19 @@ class PptxParser(DocumentParser):
             except Exception as e:
                 logger.warning(f"Failed to delete temporary file {binary_path}: {str(e)}")
 
-        # Return the parsed document with extracted links and relationships
-        return {
+        # Return the parsed document with extracted links, relationships, and dates
+        result = {
             "document": document,
             "elements": elements,
             "links": links,
             "relationships": relationships
         }
+
+        # Add dates if any were extracted
+        if element_dates:
+            result["element_dates"] = element_dates
+
+        return result
 
     @staticmethod
     def _extract_document_metadata(presentation: Presentation, base_metadata: Dict[str, Any]) -> Dict[str, Any]:
@@ -722,7 +790,7 @@ class PptxParser(DocumentParser):
         return metadata
 
     def _parse_presentation(self, presentation: Presentation, doc_id: str, parent_id: str, source_id: str,
-                            relationships: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                            relationships: List[Dict[str, Any]], element_dates: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """
         Parse PowerPoint presentation into structured elements and create relationships.
 
@@ -732,6 +800,7 @@ class PptxParser(DocumentParser):
             parent_id: Parent element ID
             source_id: Source identifier
             relationships: List to add relationships to
+            element_dates: Dictionary to store extracted dates
 
         Returns:
             List of parsed elements
@@ -788,23 +857,23 @@ class PptxParser(DocumentParser):
                 continue
 
             # Process this slide
-            slide_elements = self._process_slide(slide, slide_idx, doc_id, body_id, source_id, relationships)
+            slide_elements = self._process_slide(slide, slide_idx, doc_id, body_id, source_id, relationships, element_dates)
             elements.extend(slide_elements)
 
         # Extract masters if configured
         if self.extract_masters and hasattr(presentation, 'slide_masters'):
-            master_elements = self._extract_slide_masters(presentation, doc_id, parent_id, source_id, relationships)
+            master_elements = self._extract_slide_masters(presentation, doc_id, parent_id, source_id, relationships, element_dates)
             elements.extend(master_elements)
 
         # Extract templates if configured
         if self.extract_templates and hasattr(presentation, 'slide_layouts'):
-            template_elements = self._extract_slide_templates(presentation, doc_id, parent_id, source_id, relationships)
+            template_elements = self._extract_slide_templates(presentation, doc_id, parent_id, source_id, relationships, element_dates)
             elements.extend(template_elements)
 
         return elements
 
     def _extract_slide_masters(self, presentation, doc_id: str, parent_id: str, source_id: str,
-                               relationships: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                               relationships: List[Dict[str, Any]], element_dates: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """
         Extract slide masters from presentation and create relationships.
 
@@ -814,6 +883,7 @@ class PptxParser(DocumentParser):
             parent_id: Parent element ID
             source_id: Source identifier
             relationships: List to add relationships to
+            element_dates: Dictionary to store extracted dates
 
         Returns:
             List of slide master elements
@@ -921,7 +991,7 @@ class PptxParser(DocumentParser):
                 # Process master shapes if desired
                 if self.extract_shapes and hasattr(master, 'shapes'):
                     shape_elements = self._process_shapes(master.shapes, doc_id, master_id, source_id, -1,
-                                                          relationships, f"master_{master_idx}")
+                                                          relationships, f"master_{master_idx}", element_dates)
                     elements.extend(shape_elements)
 
         except Exception as e:
@@ -930,7 +1000,7 @@ class PptxParser(DocumentParser):
         return elements
 
     def _extract_slide_templates(self, presentation, doc_id: str, parent_id: str, source_id: str,
-                                 relationships: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                                 relationships: List[Dict[str, Any]], element_dates: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """
         Extract slide templates (layouts) from presentation and create relationships.
 
@@ -940,6 +1010,7 @@ class PptxParser(DocumentParser):
             parent_id: Parent element ID
             source_id: Source identifier
             relationships: List to add relationships to
+            element_dates: Dictionary to store extracted dates
 
         Returns:
             List of slide template elements
@@ -1064,7 +1135,7 @@ class PptxParser(DocumentParser):
                 # Process layout shapes if desired
                 if self.extract_shapes and hasattr(layout, 'shapes'):
                     shape_elements = self._process_shapes(layout.shapes, doc_id, layout_id, source_id, -1,
-                                                          relationships, f"layout_{layout_idx}")
+                                                          relationships, f"layout_{layout_idx}", element_dates)
                     elements.extend(shape_elements)
 
         except Exception as e:
@@ -1112,7 +1183,7 @@ class PptxParser(DocumentParser):
             return None
 
     def _process_slide(self, slide: Slide, slide_idx: int, doc_id: str, parent_id: str, source_id: str,
-                       relationships: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                       relationships: List[Dict[str, Any]], element_dates: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """
         Process a PowerPoint slide into structured elements and create relationships.
 
@@ -1123,6 +1194,7 @@ class PptxParser(DocumentParser):
             parent_id: Parent element ID
             source_id: Source identifier
             relationships: List to add relationships to
+            element_dates: Dictionary to store extracted dates
 
         Returns:
             List of slide-related elements
@@ -1134,6 +1206,14 @@ class PptxParser(DocumentParser):
 
         # Get slide title if available
         slide_title = self._get_slide_title(slide)
+
+        # Extract all text from the slide for date extraction
+        slide_text = ""
+        for shape in slide.shapes:
+            if hasattr(shape, 'has_text_frame') and shape.has_text_frame:
+                text = shape.text_frame.text
+                if text:
+                    slide_text += text + "\n"
 
         # Create slide element
         slide_element = {
@@ -1158,6 +1238,9 @@ class PptxParser(DocumentParser):
             }
         }
         elements.append(slide_element)
+
+        # Extract dates from slide text
+        self._extract_dates_from_text(slide_text, slide_id, element_dates)
 
         # Create relationship from parent to slide
         contains_relationship = {
@@ -1186,24 +1269,24 @@ class PptxParser(DocumentParser):
 
         # Process slide shapes
         if self.extract_shapes:
-            shape_elements = self._process_shapes(slide.shapes, doc_id, slide_id, source_id, slide_idx, relationships)
+            shape_elements = self._process_shapes(slide.shapes, doc_id, slide_id, source_id, slide_idx, relationships, "", element_dates)
             elements.extend(shape_elements)
 
         # Process slide notes
         if self.extract_notes and slide.notes_slide and slide.notes_slide.notes_text_frame.text:
             notes_elements = self._process_notes(slide.notes_slide, slide_idx, doc_id, slide_id, source_id,
-                                                 relationships)
+                                                 relationships, element_dates)
             elements.extend(notes_elements)
 
         # Process slide comments if available and configured
         if self.extract_comments and hasattr(slide, 'comments'):
-            comment_elements = self._process_comments(slide, slide_idx, doc_id, slide_id, source_id, relationships)
+            comment_elements = self._process_comments(slide, slide_idx, doc_id, slide_id, source_id, relationships, element_dates)
             elements.extend(comment_elements)
 
         return elements
 
     def _process_shapes(self, shapes, doc_id: str, parent_id: str, source_id: str, slide_idx: int,
-                        relationships: List[Dict[str, Any]], shape_path: str = "") -> List[Dict[str, Any]]:
+                        relationships: List[Dict[str, Any]], shape_path: str = "", element_dates: Dict[str, List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
         """
         Process PowerPoint shapes into structured elements and create relationships.
 
@@ -1215,10 +1298,14 @@ class PptxParser(DocumentParser):
             slide_idx: Slide index
             relationships: List to add relationships to
             shape_path: Path to the shape (for nested shapes)
+            element_dates: Dictionary to store extracted dates
 
         Returns:
             List of shape-related elements
         """
+        if element_dates is None:
+            element_dates = {}
+
         elements = []
 
         for shape_idx, shape in enumerate(shapes):
@@ -1281,31 +1368,31 @@ class PptxParser(DocumentParser):
 
                 # Process child shapes
                 child_elements = self._process_shapes(shape.shapes, doc_id, group_id, source_id, slide_idx,
-                                                      relationships, current_shape_path)
+                                                      relationships, current_shape_path, element_dates)
                 elements.extend(child_elements)
 
             elif hasattr(shape, 'has_table') and shape.has_table and self.extract_tables:
                 # Process table shape
                 table_elements = self._process_table_shape(shape, doc_id, parent_id, source_id, slide_idx,
-                                                           relationships, current_shape_path)
+                                                           relationships, current_shape_path, element_dates)
                 elements.extend(table_elements)
 
             elif hasattr(shape, 'has_chart') and shape.has_chart and self.extract_charts:
                 # Process chart shape
                 chart_elements = self._process_chart_shape(shape, doc_id, parent_id, source_id, slide_idx,
-                                                           relationships, current_shape_path)
+                                                           relationships, current_shape_path, element_dates)
                 elements.extend(chart_elements)
 
             elif isinstance(shape, Picture) and self.extract_images:
                 # Process picture shape
                 picture_elements = self._process_picture_shape(shape, doc_id, parent_id, source_id, slide_idx,
-                                                               relationships, current_shape_path)
+                                                               relationships, current_shape_path, element_dates)
                 elements.extend(picture_elements)
 
             elif hasattr(shape, 'has_text_frame') and shape.has_text_frame and self.extract_text_boxes:
                 # Process text shape
                 text_elements = self._process_text_shape(shape, doc_id, parent_id, source_id, slide_idx,
-                                                         relationships, current_shape_path)
+                                                         relationships, current_shape_path, element_dates)
                 elements.extend(text_elements)
 
             elif self.extract_shapes:
@@ -1369,7 +1456,7 @@ class PptxParser(DocumentParser):
 
     def _process_text_shape(self, shape, doc_id: str, parent_id: str, source_id: str,
                             slide_idx: int, relationships: List[Dict[str, Any]],
-                            shape_path: str) -> List[Dict[str, Any]]:
+                            shape_path: str, element_dates: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """
         Process a text shape into structured elements and create relationships.
 
@@ -1381,6 +1468,7 @@ class PptxParser(DocumentParser):
             slide_idx: Slide index
             relationships: List to add relationships to
             shape_path: Path to the shape
+            element_dates: Dictionary to store extracted dates
 
         Returns:
             List of text-related elements
@@ -1427,6 +1515,9 @@ class PptxParser(DocumentParser):
                 }
             }
             elements.append(text_element)
+
+            # Extract dates from text
+            self._extract_dates_from_text(text, text_id, element_dates)
 
             # Create relationship from parent to text box
             contains_relationship = {
@@ -1485,6 +1576,9 @@ class PptxParser(DocumentParser):
                     }
                     elements.append(para_element)
 
+                    # Extract dates from paragraph text
+                    self._extract_dates_from_text(para_text, para_id, element_dates)
+
                     # Create relationship from text box to paragraph
                     contains_para_relationship = {
                         "relationship_id": self._generate_id("rel_"),
@@ -1517,7 +1611,7 @@ class PptxParser(DocumentParser):
 
     def _process_picture_shape(self, shape, doc_id: str, parent_id: str, source_id: str,
                                slide_idx: int, relationships: List[Dict[str, Any]],
-                               shape_path: str) -> List[Dict[str, Any]]:
+                               shape_path: str, element_dates: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """
         Process a picture shape into structured elements and create relationships.
 
@@ -1529,6 +1623,7 @@ class PptxParser(DocumentParser):
             slide_idx: Slide index
             relationships: List to add relationships to
             shape_path: Path to the shape
+            element_dates: Dictionary to store extracted dates
 
         Returns:
             List of picture-related elements
@@ -1545,6 +1640,9 @@ class PptxParser(DocumentParser):
 
             if hasattr(shape, 'image') and hasattr(shape.image, 'filename'):
                 image_name = shape.image.filename
+
+            # Get alt text for date extraction
+            alt_text = shape.alt_text if hasattr(shape, 'alt_text') else ""
 
             # Create image element
             image_element = {
@@ -1565,10 +1663,16 @@ class PptxParser(DocumentParser):
                     "shape_path": shape_path,
                     "shape_name": shape_name,
                     "image_name": image_name,
-                    "alt_text": shape.alt_text if hasattr(shape, 'alt_text') else ""
+                    "alt_text": alt_text
                 }
             }
             elements.append(image_element)
+
+            # Extract dates from alt text and image name
+            if alt_text:
+                self._extract_dates_from_text(alt_text, image_id, element_dates)
+            if image_name:
+                self._extract_dates_from_text(image_name, image_id, element_dates)
 
             # Create relationship from parent to image
             contains_relationship = {
@@ -1597,7 +1701,7 @@ class PptxParser(DocumentParser):
             # Process image caption (text) if available
             if hasattr(shape, 'text_frame') and shape.text_frame.text:
                 caption_elements = self._process_text_shape(shape, doc_id, image_id, source_id, slide_idx,
-                                                            relationships, f"{shape_path}_caption")
+                                                            relationships, f"{shape_path}_caption", element_dates)
                 elements.extend(caption_elements)
 
         except Exception as e:
@@ -1607,7 +1711,7 @@ class PptxParser(DocumentParser):
 
     def _process_table_shape(self, shape, doc_id: str, parent_id: str, source_id: str,
                              slide_idx: int, relationships: List[Dict[str, Any]],
-                             shape_path: str) -> List[Dict[str, Any]]:
+                             shape_path: str, element_dates: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """
         Process a table shape into structured elements and create relationships.
 
@@ -1619,6 +1723,7 @@ class PptxParser(DocumentParser):
             slide_idx: Slide index
             relationships: List to add relationships to
             shape_path: Path to the shape
+            element_dates: Dictionary to store extracted dates
 
         Returns:
             List of table-related elements
@@ -1635,7 +1740,7 @@ class PptxParser(DocumentParser):
             # Generate table element ID
             table_id = self._generate_id(f"table_{shape_path}_")
 
-            # Extract basic table content for preview
+            # Extract basic table content for preview and date extraction
             table_text = ""
             for row in table.rows:
                 for cell in row.cells:
@@ -1666,6 +1771,9 @@ class PptxParser(DocumentParser):
                 }
             }
             elements.append(table_element)
+
+            # Extract dates from table text
+            self._extract_dates_from_text(table_text, table_id, element_dates)
 
             # Create relationship from parent to table
             contains_relationship = {
@@ -1780,6 +1888,9 @@ class PptxParser(DocumentParser):
                     }
                     elements.append(cell_element)
 
+                    # Extract dates from cell text
+                    self._extract_dates_from_text(cell_text, cell_id, element_dates)
+
                     # Create relationship from row to cell
                     contains_cell_relationship = {
                         "relationship_id": self._generate_id("rel_"),
@@ -1812,7 +1923,7 @@ class PptxParser(DocumentParser):
 
     def _process_chart_shape(self, shape, doc_id: str, parent_id: str, source_id: str,
                              slide_idx: int, relationships: List[Dict[str, Any]],
-                             shape_path: str) -> List[Dict[str, Any]]:
+                             shape_path: str, element_dates: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """
         Process a chart shape into structured elements and create relationships.
 
@@ -1824,6 +1935,7 @@ class PptxParser(DocumentParser):
             slide_idx: Slide index
             relationships: List to add relationships to
             shape_path: Path to the shape
+            element_dates: Dictionary to store extracted dates
 
         Returns:
             List of chart-related elements
@@ -1850,6 +1962,26 @@ class PptxParser(DocumentParser):
             if hasattr(chart, 'chart_title') and hasattr(chart.chart_title, 'text_frame'):
                 chart_title = chart.chart_title.text_frame.text
 
+            # Extract chart data for date extraction
+            chart_text = chart_title
+            categories = []
+            series_names = []
+
+            if hasattr(chart, 'plots') and chart.plots:
+                plot = chart.plots[0]
+
+                if hasattr(plot, 'categories'):
+                    for category in plot.categories:
+                        if category:
+                            categories.append(str(category))
+                            chart_text += " " + str(category)
+
+                if hasattr(plot, 'series'):
+                    for series in plot.series:
+                        if hasattr(series, 'name') and series.name:
+                            series_names.append(str(series.name))
+                            chart_text += " " + str(series.name)
+
             # Create chart element
             chart_element = {
                 "element_id": chart_id,
@@ -1872,7 +2004,17 @@ class PptxParser(DocumentParser):
                     "chart_title": chart_title
                 }
             }
+
+            if categories:
+                chart_element["metadata"]["categories"] = categories
+
+            if series_names:
+                chart_element["metadata"]["series"] = series_names
+
             elements.append(chart_element)
+
+            # Extract dates from chart text
+            self._extract_dates_from_text(chart_text, chart_id, element_dates)
 
             # Create relationship from parent to chart
             contains_relationship = {
@@ -1898,35 +2040,13 @@ class PptxParser(DocumentParser):
             }
             relationships.append(contained_by_relationship)
 
-            # Extract chart category and series names if available
-            if hasattr(chart, 'plots') and chart.plots:
-                plot = chart.plots[0]
-
-                if hasattr(plot, 'categories'):
-                    categories = []
-                    for category in plot.categories:
-                        if category:
-                            categories.append(str(category))
-
-                    if categories:
-                        chart_element["metadata"]["categories"] = categories
-
-                if hasattr(plot, 'series'):
-                    series_names = []
-                    for series in plot.series:
-                        if hasattr(series, 'name') and series.name:
-                            series_names.append(str(series.name))
-
-                    if series_names:
-                        chart_element["metadata"]["series"] = series_names
-
         except Exception as e:
             logger.warning(f"Error processing chart shape: {str(e)}")
 
         return elements
 
     def _process_notes(self, notes_slide, slide_idx: int, doc_id: str, parent_id: str, source_id: str,
-                       relationships: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                       relationships: List[Dict[str, Any]], element_dates: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """
         Process slide notes into structured elements and create relationships.
 
@@ -1937,6 +2057,7 @@ class PptxParser(DocumentParser):
             parent_id: Parent element ID
             source_id: Source identifier
             relationships: List to add relationships to
+            element_dates: Dictionary to store extracted dates
 
         Returns:
             List of notes-related elements
@@ -1975,6 +2096,9 @@ class PptxParser(DocumentParser):
             }
             elements.append(notes_element)
 
+            # Extract dates from notes text
+            self._extract_dates_from_text(notes_text, notes_id, element_dates)
+
             # Create relationship from parent to notes
             contains_relationship = {
                 "relationship_id": self._generate_id("rel_"),
@@ -2005,7 +2129,7 @@ class PptxParser(DocumentParser):
         return elements
 
     def _process_comments(self, slide, slide_idx: int, doc_id: str, parent_id: str, source_id: str,
-                          relationships: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                          relationships: List[Dict[str, Any]], element_dates: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """
         Process slide comments into structured elements and create relationships.
 
@@ -2016,6 +2140,7 @@ class PptxParser(DocumentParser):
             parent_id: Parent element ID
             source_id: Source identifier
             relationships: List to add relationships to
+            element_dates: Dictionary to store extracted dates
 
         Returns:
             List of comment-related elements
@@ -2110,6 +2235,9 @@ class PptxParser(DocumentParser):
                     }
                 }
                 elements.append(comment_element)
+
+                # Extract dates from comment text
+                self._extract_dates_from_text(comment_text, comment_id, element_dates)
 
                 # Create relationship from comments container to comment
                 contains_comment_relationship = {

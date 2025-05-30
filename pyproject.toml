@@ -38,6 +38,7 @@ dependencies = [
     "openpyxl~=3.1.5",
     "pymupdf~=1.25.5",
     "python-pptx~=1.0.2",
+    "datefinder~=0.7.3",
 
     # Utilities
     "python-dateutil~=2.9.0",
@@ -103,6 +104,10 @@ document_parsing = [
 # Database backends
 db-mongodb = [
     "pymongo~=4.12.0",
+]
+
+db-elasticsearch = [
+    "elasticsearch~=9.0.1",
 ]
 
 db-postgresql = [
