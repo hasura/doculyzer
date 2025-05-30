@@ -52,4 +52,4 @@ from .vendor import get_vendor_path
 
 configure_logging()
 
-__version__ = "0.40.0"
+__version__ = "0.41.0"
