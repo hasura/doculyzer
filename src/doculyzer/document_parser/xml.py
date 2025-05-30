@@ -940,7 +940,8 @@ class XmlParser(DocumentParser):
 
         return is_container, container_type
 
-    def _extract_xml_links_direct(self, lxml_root, elements, namespaces):
+    @staticmethod
+    def _extract_xml_links_direct(lxml_root, elements, namespaces):
         """
         Extract links directly using lxml's element attributes.
 

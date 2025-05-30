@@ -281,10 +281,9 @@ class GoogleDriveContentSource(ContentSource):
 
         try:
             # Build query to filter files
-            query_parts = []
+            query_parts = [f"trashed = {str(self.include_trashed).lower()}"]
 
             # Set trashed filter
-            query_parts.append(f"trashed = {str(self.include_trashed).lower()}")
 
             # Filter by file type if specified
             if self.file_types:
@@ -683,7 +682,8 @@ class GoogleDriveContentSource(ContentSource):
 
         return content, True
 
-    def _get_doc_type(self, mime_type: str) -> str:
+    @staticmethod
+    def _get_doc_type(mime_type: str) -> str:
         """
         Determine document type based on MIME type.
 
@@ -748,7 +748,8 @@ class GoogleDriveContentSource(ContentSource):
         # If no pattern matches, return the original ID as is (might be invalid)
         return source_id
 
-    def _extract_file_id_from_url(self, url: str) -> Optional[str]:
+    @staticmethod
+    def _extract_file_id_from_url(url: str) -> Optional[str]:
         """
         Extract Google Drive file ID from a URL.
 

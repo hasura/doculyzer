@@ -14,6 +14,8 @@ from typing import Optional, Dict, Any, List, Tuple, Union, TYPE_CHECKING
 
 import time
 
+from .element_element import ElementHierarchical, ElementBase
+
 # Import types for type checking only - these won't be imported at runtime
 if TYPE_CHECKING:
     from neo4j import GraphDatabase, Driver, Session
@@ -546,7 +548,8 @@ class Neo4jDocumentDatabase(DocumentDatabase):
 
         return []
 
-    def _intersect_results(self, result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _intersect_results(result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """Find intersection of multiple result sets."""
         if not result_sets:
             return []
@@ -587,7 +590,8 @@ class Neo4jDocumentDatabase(DocumentDatabase):
 
         return results
 
-    def _union_results(self, result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _union_results(result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """Find union of multiple result sets."""
         element_scores = {}  # element_pk -> combined scores
 
@@ -613,7 +617,8 @@ class Neo4jDocumentDatabase(DocumentDatabase):
 
         return results
 
-    def _subtract_results(self, base_set: List[Dict[str, Any]],
+    @staticmethod
+    def _subtract_results(base_set: List[Dict[str, Any]],
                           subtract_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """Subtract multiple sets from base set."""
         base_pks = {result['element_pk'] for result in base_set}
@@ -681,7 +686,8 @@ class Neo4jDocumentDatabase(DocumentDatabase):
 
         return enriched_results
 
-    def _calculate_combined_score(self, scores: Dict[str, List[float]],
+    @staticmethod
+    def _calculate_combined_score(scores: Dict[str, List[float]],
                                   combination_method: str,
                                   weights: Dict[str, float]) -> float:
         """Calculate final combined score from multiple score types."""
@@ -730,7 +736,8 @@ class Neo4jDocumentDatabase(DocumentDatabase):
 
         return 0.0
 
-    def _compare_similarity(self, similarity: float, threshold: float,
+    @staticmethod
+    def _compare_similarity(similarity: float, threshold: float,
                             operator: SimilarityOperator) -> bool:
         """Compare similarity score against threshold using specified operator."""
         if operator == SimilarityOperator.GREATER_THAN:
@@ -1376,6 +1383,7 @@ class Neo4jDocumentDatabase(DocumentDatabase):
         Find documents matching query with support for pattern matching.
 
         Args:
+            limit: Maximum number of results
             query: Query parameters. Use '_like' suffix for pattern matching.
                    Examples:
                    - {"doc_type": "pdf"} - exact match
@@ -1384,7 +1392,6 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                    - {"source_ends": ".pdf"} - ends with pattern
                    - {"metadata": {"author": "John"}} - metadata exact match
                    - {"metadata_like": {"title": "%annual%"}} - metadata pattern match
-            limit: Maximum number of results
 
         Returns:
             List of matching documents
@@ -1745,7 +1752,8 @@ class Neo4jDocumentDatabase(DocumentDatabase):
     # ENHANCED SEARCH HELPER METHODS
     # ========================================
 
-    def _prepare_element_type_query(self, element_types: Union[
+    @staticmethod
+    def _prepare_element_type_query(element_types: Union[
         ElementType,
         List[ElementType],
         str,
@@ -1779,7 +1787,8 @@ class Neo4jDocumentDatabase(DocumentDatabase):
 
         return None
 
-    def _convert_like_to_neo4j_pattern(self, like_pattern: str) -> Dict[str, str]:
+    @staticmethod
+    def _convert_like_to_neo4j_pattern(like_pattern: str) -> Dict[str, str]:
         """
         Convert SQL LIKE pattern to Neo4j pattern matching.
 

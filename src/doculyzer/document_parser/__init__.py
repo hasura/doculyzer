@@ -1,16 +1,19 @@
 """Automatically generated __init__.py"""
-__all__ = ['CsvParser', 'DocumentParser', 'DocumentTypeDetector', 'DocxParser', 'HtmlParser', 'JSONParser', 'LRUCache',
-           'MarkdownParser', 'PdfParser', 'PptxParser', 'TemporalType', 'TextParser', 'XlsxParser', 'XmlParser', 'base',
-           'create_parser', 'create_semantic_date_expression', 'create_semantic_date_time_expression',
-           'create_semantic_temporal_expression', 'create_semantic_time_expression',
-           'create_semantic_time_range_expression', 'csv', 'detect_temporal_type', 'document_type_detector', 'docx',
-           'factory', 'get_parser_for_content', 'html', 'json', 'lru_cache', 'markdown', 'parse_time_range', 'pdf',
-           'pptx', 'temporal_semantics', 'text', 'ttl_cache', 'xlsx', 'xml']
+__all__ = ['CsvParser', 'DateExtractor', 'DocumentParser', 'DocumentTypeDetector', 'DocxParser', 'ExtractedDate',
+           'HtmlParser', 'JSONParser', 'LRUCache', 'MarkdownParser', 'PdfParser', 'PptxParser', 'TemporalType',
+           'TextParser', 'XlsxParser', 'XmlParser', 'base', 'create_parser', 'create_semantic_date_expression',
+           'create_semantic_date_time_expression', 'create_semantic_temporal_expression',
+           'create_semantic_time_expression', 'create_semantic_time_range_expression', 'csv', 'demo',
+           'detect_temporal_type', 'document_type_detector', 'docx', 'extract_dates', 'extract_dates_as_dicts',
+           'extract_dates_from_text', 'factory', 'get_parser_for_content', 'html', 'initialize_magic', 'json',
+           'lru_cache', 'markdown', 'parse_time_range', 'pdf', 'pptx', 'temporal_semantics', 'text', 'ttl_cache',
+           'xlsx', 'xml']
 
 from . import base
 from . import csv
 from . import document_type_detector
 from . import docx
+from . import extract_dates
 from . import factory
 from . import html
 from . import json
@@ -25,7 +28,13 @@ from . import xml
 from .base import DocumentParser
 from .csv import CsvParser
 from .document_type_detector import DocumentTypeDetector
+from .document_type_detector import initialize_magic
 from .docx import DocxParser
+from .extract_dates import DateExtractor
+from .extract_dates import ExtractedDate
+from .extract_dates import demo
+from .extract_dates import extract_dates_as_dicts
+from .extract_dates import extract_dates_from_text
 from .factory import create_parser
 from .factory import get_parser_for_content
 from .html import HtmlParser

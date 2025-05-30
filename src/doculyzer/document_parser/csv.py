@@ -13,8 +13,8 @@ import re
 from typing import Dict, Any, Optional, List, Union, Tuple
 
 from .base import DocumentParser
+from .extract_dates import DateExtractor
 from .temporal_semantics import detect_temporal_type, TemporalType, create_semantic_temporal_expression
-from .extract_dates import DateExtractor, extract_dates_as_dicts
 from ..relationships import RelationshipType
 from ..storage import ElementType
 
@@ -637,7 +637,8 @@ class CsvParser(DocumentParser):
 
         return result
 
-    def _extract_full_text_from_csv(self, csv_data: List[List[str]], header_row: Optional[List[str]]) -> str:
+    @staticmethod
+    def _extract_full_text_from_csv(csv_data: List[List[str]], header_row: Optional[List[str]]) -> str:
         """
         Extract all text content from the CSV for date extraction.
 
@@ -666,7 +667,9 @@ class CsvParser(DocumentParser):
 
         return "\n".join(text_parts)
 
-    def _get_cell_text_for_dates(self, element: Dict[str, Any], csv_data: List[List[str]], header_row: Optional[List[str]]) -> str:
+    @staticmethod
+    def _get_cell_text_for_dates(element: Dict[str, Any], csv_data: List[List[str]],
+                                 header_row: Optional[List[str]]) -> str:
         """
         Get the text content of a specific cell for date extraction.
 
@@ -698,7 +701,9 @@ class CsvParser(DocumentParser):
 
         return ""
 
-    def _get_row_text_for_dates(self, element: Dict[str, Any], csv_data: List[List[str]], header_row: Optional[List[str]]) -> str:
+    @staticmethod
+    def _get_row_text_for_dates(element: Dict[str, Any], csv_data: List[List[str]],
+                                header_row: Optional[List[str]]) -> str:
         """
         Get the text content of a specific row for date extraction.
 

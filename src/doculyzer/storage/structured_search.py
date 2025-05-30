@@ -850,38 +850,36 @@ def validate_query_capabilities(query: StructuredSearchQuery,
 def get_common_query_patterns() -> Dict[str, StructuredSearchQuery]:
     """Get a dictionary of common query patterns for reference."""
 
-    patterns = {}
+    patterns = {"simple_text": (SearchQueryBuilder()
+                                .text_search("example query")
+                                .limit(10)
+                                .build()), "recent_content": (SearchQueryBuilder()
+                                                              .text_search("important updates")
+                                                              .last_days(7)
+                                                              .element_types(["header", "paragraph"])
+                                                              .build()), "topic_search": (SearchQueryBuilder()
+                                                                                          .topics(
+        include=["technology%", "innovation%"])
+                                                                                          .last_months(3)
+                                                                                          .build()),
+                "complex_logic": (SearchQueryBuilder()
+                                  .with_operator(LogicalOperator.AND)
+                                  .begin_group(LogicalOperator.OR)
+                                  .text_search("artificial intelligence")
+                                  .topics(include=["ai%", "ml%"])
+                                  .end_group()
+                                  .begin_group(LogicalOperator.NOT)
+                                  .topics(include=["deprecated%"])
+                                  .end_group()
+                                  .build())}
 
     # Simple text search
-    patterns["simple_text"] = (SearchQueryBuilder()
-                               .text_search("example query")
-                               .limit(10)
-                               .build())
 
     # Recent content search
-    patterns["recent_content"] = (SearchQueryBuilder()
-                                  .text_search("important updates")
-                                  .last_days(7)
-                                  .element_types(["header", "paragraph"])
-                                  .build())
 
     # Topic-based search
-    patterns["topic_search"] = (SearchQueryBuilder()
-                                .topics(include=["technology%", "innovation%"])
-                                .last_months(3)
-                                .build())
 
     # Complex logical search
-    patterns["complex_logic"] = (SearchQueryBuilder()
-                                 .with_operator(LogicalOperator.AND)
-                                 .begin_group(LogicalOperator.OR)
-                                 .text_search("artificial intelligence")
-                                 .topics(include=["ai%", "ml%"])
-                                 .end_group()
-                                 .begin_group(LogicalOperator.NOT)
-                                 .topics(include=["deprecated%"])
-                                 .end_group()
-                                 .build())
 
     return patterns
 

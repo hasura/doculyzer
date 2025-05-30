@@ -8,7 +8,7 @@ from typing import Optional, Dict, Any, List, Tuple, Union, TYPE_CHECKING
 
 import time
 
-from . import ElementHierarchical
+from .element_element import ElementHierarchical
 
 # Import types for type checking only
 if TYPE_CHECKING:
@@ -510,7 +510,8 @@ class FileDocumentDatabase(DocumentDatabase):
 
         return []
 
-    def _intersect_results(self, result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _intersect_results(result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """Find intersection of multiple result sets."""
         if not result_sets:
             return []
@@ -551,7 +552,8 @@ class FileDocumentDatabase(DocumentDatabase):
 
         return results
 
-    def _union_results(self, result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _union_results(result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """Find union of multiple result sets."""
         element_scores = {}  # element_pk -> combined scores
 
@@ -577,7 +579,8 @@ class FileDocumentDatabase(DocumentDatabase):
 
         return results
 
-    def _subtract_results(self, base_set: List[Dict[str, Any]],
+    @staticmethod
+    def _subtract_results(base_set: List[Dict[str, Any]],
                           subtract_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """Subtract multiple sets from base set."""
         base_pks = {result['element_pk'] for result in base_set}
@@ -645,7 +648,8 @@ class FileDocumentDatabase(DocumentDatabase):
 
         return enriched_results
 
-    def _calculate_combined_score(self, scores: Dict[str, List[float]],
+    @staticmethod
+    def _calculate_combined_score(scores: Dict[str, List[float]],
                                   combination_method: str,
                                   weights: Dict[str, float]) -> float:
         """Calculate final combined score from multiple score types."""
@@ -694,7 +698,8 @@ class FileDocumentDatabase(DocumentDatabase):
 
         return 0.0
 
-    def _compare_similarity(self, similarity: float, threshold: float,
+    @staticmethod
+    def _compare_similarity(similarity: float, threshold: float,
                             operator: SimilarityOperator) -> bool:
         """Compare similarity score against threshold using specified operator."""
         if operator == SimilarityOperator.GREATER_THAN:
@@ -1811,7 +1816,8 @@ class FileDocumentDatabase(DocumentDatabase):
         # File implementation supports case-insensitive patterns, so just use regular find_elements
         return self.find_elements(query, limit)
 
-    def _convert_like_to_fnmatch(self, like_pattern: str) -> str:
+    @staticmethod
+    def _convert_like_to_fnmatch(like_pattern: str) -> str:
         """
         Convert SQL LIKE pattern to fnmatch pattern.
 

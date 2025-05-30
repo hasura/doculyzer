@@ -581,7 +581,8 @@ class SolrDocumentDatabase(DocumentDatabase):
 
         return []
 
-    def _intersect_results(self, result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _intersect_results(result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """Find intersection of multiple result sets."""
         if not result_sets:
             return []
@@ -622,7 +623,8 @@ class SolrDocumentDatabase(DocumentDatabase):
 
         return results
 
-    def _union_results(self, result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _union_results(result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """Find union of multiple result sets."""
         element_scores = {}  # element_pk -> combined scores
 
@@ -648,7 +650,8 @@ class SolrDocumentDatabase(DocumentDatabase):
 
         return results
 
-    def _subtract_results(self, base_set: List[Dict[str, Any]],
+    @staticmethod
+    def _subtract_results(base_set: List[Dict[str, Any]],
                           subtract_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """Subtract multiple sets from base set."""
         base_pks = {result['element_pk'] for result in base_set}
@@ -716,7 +719,8 @@ class SolrDocumentDatabase(DocumentDatabase):
 
         return enriched_results
 
-    def _calculate_combined_score(self, scores: Dict[str, List[float]],
+    @staticmethod
+    def _calculate_combined_score(scores: Dict[str, List[float]],
                                   combination_method: str,
                                   weights: Dict[str, float]) -> float:
         """Calculate final combined score from multiple score types."""
@@ -765,7 +769,8 @@ class SolrDocumentDatabase(DocumentDatabase):
 
         return 0.0
 
-    def _compare_similarity(self, similarity: float, threshold: float,
+    @staticmethod
+    def _compare_similarity(similarity: float, threshold: float,
                             operator: SimilarityOperator) -> bool:
         """Compare similarity score against threshold using specified operator."""
         if operator == SimilarityOperator.GREATER_THAN:
@@ -2688,7 +2693,8 @@ class SolrDocumentDatabase(DocumentDatabase):
         """
         return True
 
-    def _prepare_element_type_query(self, element_types: Union[
+    @staticmethod
+    def _prepare_element_type_query(element_types: Union[
         ElementType,
         List[ElementType],
         str,
@@ -2838,7 +2844,8 @@ class SolrDocumentDatabase(DocumentDatabase):
         # SOLR is case-insensitive by default, so just use regular find_elements
         return self.find_elements(query, limit)
 
-    def _convert_like_to_wildcard(self, like_pattern: str) -> str:
+    @staticmethod
+    def _convert_like_to_wildcard(like_pattern: str) -> str:
         """
         Convert SQL LIKE pattern to SOLR wildcard pattern.
 
@@ -2854,7 +2861,8 @@ class SolrDocumentDatabase(DocumentDatabase):
         pattern = pattern.replace('_', '?')
         return pattern
 
-    def _escape_solr_query(self, query_string: str) -> str:
+    @staticmethod
+    def _escape_solr_query(query_string: str) -> str:
         """
         Escape special SOLR characters in query string.
 

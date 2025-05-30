@@ -11,7 +11,6 @@ import mimetypes
 import os
 import re
 import platform
-import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)

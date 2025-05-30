@@ -13,7 +13,7 @@ from typing import Optional, Dict, Any, List, Tuple, Union, TYPE_CHECKING
 
 import time
 
-from doculyzer.storage import ElementHierarchical
+from .element_element import ElementHierarchical
 
 # Import types for type checking only - these won't be imported at runtime
 if TYPE_CHECKING:
@@ -670,7 +670,8 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
 
         return []
 
-    def _intersect_results(self, result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _intersect_results(result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """Find intersection of multiple result sets."""
         if not result_sets:
             return []
@@ -711,7 +712,8 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
 
         return results
 
-    def _union_results(self, result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _union_results(result_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """Find union of multiple result sets."""
         element_scores = {}  # element_pk -> combined scores
 
@@ -737,7 +739,8 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
 
         return results
 
-    def _subtract_results(self, base_set: List[Dict[str, Any]],
+    @staticmethod
+    def _subtract_results(base_set: List[Dict[str, Any]],
                           subtract_sets: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """Subtract multiple sets from base set."""
         base_pks = {result['element_pk'] for result in base_set}
@@ -805,7 +808,8 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
 
         return enriched_results
 
-    def _calculate_combined_score(self, scores: Dict[str, List[float]],
+    @staticmethod
+    def _calculate_combined_score(scores: Dict[str, List[float]],
                                   combination_method: str,
                                   weights: Dict[str, float]) -> float:
         """Calculate final combined score from multiple score types."""
@@ -854,7 +858,8 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
 
         return 0.0
 
-    def _compare_similarity(self, similarity: float, threshold: float,
+    @staticmethod
+    def _compare_similarity(similarity: float, threshold: float,
                             operator: SimilarityOperator) -> bool:
         """Compare similarity score against threshold using specified operator."""
         if operator == SimilarityOperator.GREATER_THAN:
@@ -2955,7 +2960,7 @@ class SQLAlchemyDocumentDatabase(DocumentDatabase):
     # HIERARCHY METHODS
     # ========================================
 
-    def get_results_outline(self, elements: List[Tuple[int, float]]) -> List['ElementHierarchical']:
+    def get_results_outline(self, elements: List[Tuple[int, float]]) -> List[ElementHierarchical]:
         """
         For an arbitrary list of element pk search results, finds the root node of the source, and each
         ancestor element, to create a root -> element array of arrays like this:

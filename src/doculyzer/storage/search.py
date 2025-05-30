@@ -677,8 +677,7 @@ class ElementSearchRequest(BaseModel):
     )
 
     @field_validator('content_length_max')
-    # @classmethod
-    def validate_content_length_range(cls, v, info):
+    def validate_content_length_range(self, v, info):
         """Validate that max length is not less than min length."""
         min_length = info.data.get('content_length_min')
         if min_length is not None and v is not None and v < min_length:

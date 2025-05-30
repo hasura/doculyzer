@@ -200,7 +200,7 @@ def create_semantic_time_range_expression(time_range_str: str) -> str:
             business_terms.extend(["nine to six", "9-6", "extended office hours"])
 
         # Check for lunch hours
-        if (start_time.hour == 12 and end_time.hour == 13):
+        if start_time.hour == 12 and end_time.hour == 13:
             business_terms.extend(["lunch hour", "lunch break", "midday break"])
 
         # Combine with semantic expressions
@@ -239,10 +239,9 @@ def create_semantic_time_expression(time_obj):
             minute = 0
 
         # Essential business terms only
-        essential_terms = []
+        essential_terms = [f"{hour:02d}{minute:02d}"]
 
         # Military time (commonly used in business)
-        essential_terms.append(f"{hour:02d}{minute:02d}")
 
         # Common business time expressions
         if hour == 12 and minute == 0:

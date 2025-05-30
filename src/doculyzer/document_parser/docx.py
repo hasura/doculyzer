@@ -346,7 +346,8 @@ class DocxParser(DocumentParser):
 
         return "\n".join(text_parts)
 
-    def _get_element_text_for_dates(self, element: Dict[str, Any], doc: DocxDocument) -> str:
+    @staticmethod
+    def _get_element_text_for_dates(element: Dict[str, Any], doc: DocxDocument) -> str:
         """
         Get the text content of a specific element for date extraction.
 

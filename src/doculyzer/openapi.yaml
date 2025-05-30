@@ -2,9 +2,18 @@ openapi: 3.0.3
 info:
   title: Document Search API
   description: |
-    A REST API for semantic document search that provides both basic and advanced search capabilities.
+    A REST API for semantic document search that provides basic, advanced, and structured search capabilities.
     The API supports embedding-based similarity search with optional content resolution, relationship information,
-    and topic-based filtering for enhanced search precision.
+    topic-based filtering, and complex structured queries with logical operators for enhanced search precision.
+
+    **New Structured Search Features:**
+    - Complex multi-criteria queries with logical operators (AND, OR, NOT)
+    - Semantic text search with embedding similarity
+    - Topic-based filtering with pattern matching
+    - Date-based filtering with relative and absolute ranges
+    - Metadata and element structure filtering
+    - Nested criteria groups for sophisticated search logic
+    - Content materialization with document hierarchy preservation
   version: 1.0.0
   contact:
     name: API Support
@@ -126,6 +135,199 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/search/structured:
+    post:
+      tags:
+        - Structured Search
+      summary: Structured search with complex criteria
+      description: |
+        Execute complex structured searches with multiple criteria types and logical operators.
+        Supports semantic text search, topic filtering, date ranges, metadata filtering, and element structure filtering
+        combined with AND/OR/NOT logic. Includes optional content materialization with document hierarchy preservation.
+      operationId: structuredSearch
+      security:
+        - ApiKeyAuth: [ ]
+      parameters:
+        - name: text
+          in: query
+          description: Whether to resolve text content in search tree
+          schema:
+            type: boolean
+            default: false
+        - name: content
+          in: query
+          description: Whether to resolve raw content in search tree
+          schema:
+            type: boolean
+            default: false
+        - name: flat
+          in: query
+          description: Whether to return flat results instead of hierarchical
+          schema:
+            type: boolean
+            default: false
+        - name: include_parents
+          in: query
+          description: Whether to include parent elements in flat results
+          schema:
+            type: boolean
+            default: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StructuredSearchRequest'
+            examples:
+              complex_query:
+                summary: Complex multi-criteria query
+                value:
+                  criteria_group:
+                    operator: "AND"
+                    semantic_search:
+                      query_text: "machine learning algorithms"
+                      similarity_threshold: 0.8
+                    topic_search:
+                      include_topics: [ "ai%", "ml%" ]
+                      exclude_topics: [ "deprecated%" ]
+                      min_confidence: 0.8
+                    date_search:
+                      operator: "relative_days"
+                      relative_value: 30
+                  limit: 20
+                  include_similarity_scores: true
+                  include_topics: true
+              nested_query:
+                summary: Nested criteria groups with OR logic
+                value:
+                  criteria_group:
+                    operator: "AND"
+                    sub_groups:
+                      - operator: "OR"
+                        semantic_search:
+                          query_text: "artificial intelligence"
+                          similarity_threshold: 0.7
+                        topic_search:
+                          include_topics: [ "ai%", "deep-learning%" ]
+                      - operator: "NOT"
+                        topic_search:
+                          include_topics: [ "deprecated%", "obsolete%" ]
+                  limit: 50
+                  include_element_dates: true
+      responses:
+        '200':
+          description: Structured search completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          description: Bad request - invalid structured query format
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized - invalid or missing API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/search/structured/simple:
+    post:
+      tags:
+        - Structured Search
+      summary: Simple structured search
+      description: |
+        Simplified interface for common structured search patterns.
+        Automatically builds structured queries from simple parameters like topic filtering,
+        date ranges, and element types without requiring complex criteria group definitions.
+      operationId: simpleStructuredSearch
+      security:
+        - ApiKeyAuth: [ ]
+      parameters:
+        - name: text
+          in: query
+          description: Whether to resolve text content in search tree
+          schema:
+            type: boolean
+            default: false
+        - name: content
+          in: query
+          description: Whether to resolve raw content in search tree
+          schema:
+            type: boolean
+            default: false
+        - name: flat
+          in: query
+          description: Whether to return flat results instead of hierarchical
+          schema:
+            type: boolean
+            default: false
+        - name: include_parents
+          in: query
+          description: Whether to include parent elements in flat results
+          schema:
+            type: boolean
+            default: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SimpleStructuredSearchRequest'
+            examples:
+              basic_query:
+                summary: Basic query with topic filtering
+                value:
+                  query_text: "data science methodologies"
+                  limit: 15
+                  similarity_threshold: 0.75
+                  include_topics: [ "data-science%", "analytics%" ]
+                  exclude_topics: [ "draft%" ]
+                  days_back: 60
+                  element_types: [ "paragraph", "header" ]
+              topic_only:
+                summary: Topic-only search with date filtering
+                value:
+                  query_text: "security policies"
+                  include_topics: [ "security%", "policy%" ]
+                  exclude_topics: [ "deprecated%", "draft%" ]
+                  days_back: 90
+                  similarity_threshold: 0.8
+      responses:
+        '200':
+          description: Simple structured search completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          description: Bad request - invalid input parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized - invalid or missing API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/search/sources:
     post:
       tags:
@@ -176,6 +378,422 @@ components:
       description: API key for authentication
 
   schemas:
+    # Structured Search Enums
+    LogicalOperator:
+      type: string
+      enum: [ "AND", "OR", "NOT" ]
+      description: |
+        Logical operators for combining search criteria:
+        - AND: All criteria must match (intersection)
+        - OR: Any criteria can match (union)
+        - NOT: Exclude matching criteria (negation)
+
+    DateRangeOperator:
+      type: string
+      enum:
+        - "within"
+        - "before"
+        - "after"
+        - "exactly"
+        - "relative_days"
+        - "relative_months"
+        - "fiscal_year"
+        - "calendar_year"
+        - "quarter"
+      description: |
+        Date filtering operators:
+        - within: Between two specific dates
+        - before: Earlier than specified date
+        - after: Later than specified date
+        - exactly: Exact date match
+        - relative_days: Within last N days from now
+        - relative_months: Within last N months from now
+        - fiscal_year: Within organization's fiscal year
+        - calendar_year: Within standard calendar year
+        - quarter: Within specific quarter (Q1-Q4)
+
+    SimilarityOperator:
+      type: string
+      enum: [ ">", ">=", "<", "<=", "=" ]
+      description: |
+        Comparison operators for similarity thresholds:
+        - ">=": Similarity must meet or exceed threshold (default)
+        - ">": Similarity must exceed threshold
+        - "<=": Similarity must be at or below threshold
+        - "<": Similarity must be below threshold
+        - "=": Similarity must exactly match threshold
+
+    ScoreCombination:
+      type: string
+      enum: [ "multiply", "add", "max", "weighted_avg" ]
+      description: |
+        Methods for combining multiple relevance scores:
+        - weighted_avg: Weighted average (balanced, default)
+        - multiply: Multiplicative combination (penalizes low scores)
+        - add: Additive combination (simple sum)
+        - max: Take the highest individual score
+
+    # Structured Search Criteria Schemas
+    SemanticSearchCriteria:
+      type: object
+      required:
+        - query_text
+      properties:
+        query_text:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: Natural language query text for semantic search
+          example: "machine learning algorithms"
+        similarity_threshold:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          default: 0.7
+          description: Minimum cosine similarity score (0.0-1.0)
+        similarity_operator:
+          $ref: '#/components/schemas/SimilarityOperator'
+        boost_factor:
+          type: number
+          format: float
+          minimum: 0.1
+          maximum: 10.0
+          default: 1.0
+          description: Multiplier for text search scores in final ranking
+        search_fields:
+          type: array
+          items:
+            type: string
+          default: [ ]
+          description: Specific document fields to search within
+
+    VectorSearchCriteria:
+      type: object
+      required:
+        - embedding_vector
+      properties:
+        embedding_vector:
+          type: array
+          items:
+            type: number
+            format: float
+          minItems: 1
+          description: Pre-computed embedding vector for direct similarity search
+        similarity_threshold:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          default: 0.7
+        similarity_operator:
+          $ref: '#/components/schemas/SimilarityOperator'
+        distance_metric:
+          type: string
+          enum: [ "cosine", "euclidean", "dot_product" ]
+          default: "cosine"
+          description: Vector distance metric algorithm
+        boost_factor:
+          type: number
+          format: float
+          minimum: 0.1
+          maximum: 10.0
+          default: 1.0
+
+    DateSearchCriteria:
+      type: object
+      required:
+        - operator
+      properties:
+        operator:
+          $ref: '#/components/schemas/DateRangeOperator'
+        start_date:
+          type: string
+          format: date-time
+          description: Beginning of date range for 'within' operator
+        end_date:
+          type: string
+          format: date-time
+          description: End of date range for 'within' operator
+        exact_date:
+          type: string
+          format: date-time
+          description: Precise date for 'exactly', 'before', or 'after' operators
+        relative_value:
+          type: integer
+          minimum: 1
+          maximum: 3650
+          description: Number of days or months for relative operators
+        year:
+          type: integer
+          minimum: 1900
+          maximum: 2100
+          description: Year for fiscal_year, calendar_year, or quarter operators
+        quarter:
+          type: integer
+          minimum: 1
+          maximum: 4
+          description: Quarter number (1-4) for 'quarter' operator
+        include_partial_dates:
+          type: boolean
+          default: true
+          description: Whether to include documents with partial or vague dates
+        specificity_levels:
+          type: array
+          items:
+            type: string
+            enum: [ "full", "date_only", "month_only", "quarter_only", "year_only" ]
+          default: [ "full", "date_only", "month_only", "quarter_only", "year_only" ]
+          description: Types of date specificity to include
+
+    TopicSearchCriteria:
+      type: object
+      properties:
+        include_topics:
+          type: array
+          items:
+            type: string
+          default: [ ]
+          description: Topic LIKE patterns to include (supports % wildcards)
+          example: [ "machine-learning%", "artificial-intelligence%" ]
+        exclude_topics:
+          type: array
+          items:
+            type: string
+          default: [ ]
+          description: Topic LIKE patterns to exclude (supports % wildcards)
+          example: [ "deprecated%", "draft%" ]
+        require_all_included:
+          type: boolean
+          default: false
+          description: Whether document needs ALL included topics (AND) or ANY (OR)
+        min_confidence:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          default: 0.7
+          description: Minimum confidence threshold for topic classifications
+        boost_factor:
+          type: number
+          format: float
+          minimum: 0.1
+          maximum: 10.0
+          default: 1.0
+
+    MetadataSearchCriteria:
+      type: object
+      properties:
+        exact_matches:
+          type: object
+          additionalProperties: true
+          default: { }
+          description: Dictionary of metadata fields that must match exactly
+          example: { "department": "engineering", "status": "approved" }
+        like_patterns:
+          type: object
+          additionalProperties:
+            type: string
+          default: { }
+          description: Dictionary of metadata fields to match using LIKE patterns
+          example: { "title": "%quarterly%", "filename": "%.pdf" }
+        range_filters:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              gte:
+                description: Greater than or equal to
+              lte:
+                description: Less than or equal to
+              gt:
+                description: Greater than
+              lt:
+                description: Less than
+          default: { }
+          description: Dictionary of range queries for numeric/date fields
+          example: { "word_count": { "gte": 100, "lte": 5000 } }
+        exists_filters:
+          type: array
+          items:
+            type: string
+          default: [ ]
+          description: List of metadata field names that must exist
+          example: [ "author", "created_date", "department" ]
+
+    ElementSearchCriteria:
+      type: object
+      properties:
+        element_types:
+          type: array
+          items:
+            type: string
+          default: [ ]
+          description: List of element types to include
+          example: [ "paragraph", "header", "table" ]
+        doc_ids:
+          type: array
+          items:
+            type: string
+          default: [ ]
+          description: Specific document IDs to include
+        exclude_doc_ids:
+          type: array
+          items:
+            type: string
+          default: [ ]
+          description: Document IDs to exclude
+        doc_sources:
+          type: array
+          items:
+            type: string
+          default: [ ]
+          description: Document source patterns to filter by
+          example: [ "reports%", "policies%" ]
+        parent_element_ids:
+          type: array
+          items:
+            type: string
+          default: [ ]
+          description: Filter by parent element relationships
+        content_length_min:
+          type: integer
+          minimum: 0
+          description: Minimum character length for element content
+        content_length_max:
+          type: integer
+          minimum: 0
+          description: Maximum character length for element content
+
+    SearchCriteriaGroup:
+      type: object
+      required:
+        - operator
+      properties:
+        operator:
+          $ref: '#/components/schemas/LogicalOperator'
+        semantic_search:
+          $ref: '#/components/schemas/SemanticSearchCriteria'
+        vector_search:
+          $ref: '#/components/schemas/VectorSearchCriteria'
+        date_search:
+          $ref: '#/components/schemas/DateSearchCriteria'
+        topic_search:
+          $ref: '#/components/schemas/TopicSearchCriteria'
+        metadata_search:
+          $ref: '#/components/schemas/MetadataSearchCriteria'
+        element_search:
+          $ref: '#/components/schemas/ElementSearchCriteria'
+        sub_groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchCriteriaGroup'
+          default: [ ]
+          description: Nested criteria groups for complex logical expressions
+
+    StructuredSearchRequest:
+      type: object
+      required:
+        - criteria_group
+      properties:
+        criteria_group:
+          $ref: '#/components/schemas/SearchCriteriaGroup'
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 10
+          description: Maximum number of search results to return
+        offset:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Number of results to skip (for pagination)
+        include_element_dates:
+          type: boolean
+          default: false
+          description: Whether to include detailed date extraction information
+        include_metadata:
+          type: boolean
+          default: true
+          description: Whether to include document metadata in results
+        include_topics:
+          type: boolean
+          default: false
+          description: Whether to include topic classifications
+        include_similarity_scores:
+          type: boolean
+          default: true
+          description: Whether to include detailed similarity scores
+        include_highlighting:
+          type: boolean
+          default: false
+          description: Whether to include highlighted excerpts
+        score_combination:
+          $ref: '#/components/schemas/ScoreCombination'
+        custom_weights:
+          type: object
+          additionalProperties:
+            type: number
+            format: float
+          default:
+            text_similarity: 1.0
+            embedding_similarity: 1.0
+            topic_confidence: 0.5
+            date_relevance: 0.3
+          description: Relative importance weights for different relevance factors
+        query_id:
+          type: string
+          format: uuid
+          description: Unique identifier for this search query (auto-generated if not provided)
+
+    SimpleStructuredSearchRequest:
+      type: object
+      required:
+        - query_text
+      properties:
+        query_text:
+          type: string
+          minLength: 1
+          description: Natural language search query
+          example: "machine learning algorithms"
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 10
+          description: Maximum number of results to return
+        similarity_threshold:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          default: 0.7
+          description: Minimum similarity score threshold
+        include_topics:
+          type: array
+          items:
+            type: string
+          description: Topic patterns to include (supports % wildcards)
+          example: [ "ai%", "machine-learning%" ]
+        exclude_topics:
+          type: array
+          items:
+            type: string
+          description: Topic patterns to exclude (supports % wildcards)
+          example: [ "deprecated%", "draft%" ]
+        days_back:
+          type: integer
+          minimum: 1
+          description: Filter to documents from last N days
+          example: 30
+        element_types:
+          type: array
+          items:
+            type: string
+          description: Filter by element types
+          example: [ "paragraph", "header", "list_item" ]
+
     HealthResponse:
       type: object
       properties:
@@ -576,8 +1194,8 @@ components:
         search_type:
           type: string
           default: "embedding"
-          description: Type of search performed (embedding, text, content, topic)
-          enum: ["embedding", "text", "content", "topic"]
+          description: Type of search performed
+          enum: [ "embedding", "text", "content", "topic", "structured" ]
         min_score:
           type: number
           format: float
@@ -616,6 +1234,17 @@ components:
           additionalProperties: true
           nullable: true
           description: Topic distribution statistics
+        # Structured search metadata
+        query_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Unique query identifier for structured searches
+        execution_time_ms:
+          type: number
+          format: float
+          nullable: true
+          description: Query execution time in milliseconds
 
     ElementRelationship:
       type: object
@@ -790,7 +1419,9 @@ tags:
   - name: Info
     description: API information endpoints
   - name: Search
-    description: Document search endpoints with topic filtering support
+    description: Basic and advanced document search endpoints with topic filtering support
+  - name: Structured Search
+    description: Complex structured search with multiple criteria types and logical operators
 
 # Examples of API usage
 x-code-samples:
@@ -816,85 +1447,162 @@ x-code-samples:
       )
       results = response.json()
 
-      # Advanced search with topic filtering
+      # Structured search with complex criteria
       response = requests.post(
-          'http://localhost:5000/api/search/advanced',
+          'http://localhost:5000/api/search/structured?text=true&flat=false',
           json={
-              'query': 'neural networks',
-              'limit': 10,
-              'include_topics': ['machine_learning%'],
-              'exclude_topics': ['draft%', 'deprecated%'],
-              'min_confidence': 0.7,
-              'resolve_content': True,
-              'include_relationships': True
+              'criteria_group': {
+                  'operator': 'AND',
+                  'semantic_search': {
+                      'query_text': 'artificial intelligence',
+                      'similarity_threshold': 0.8
+                  },
+                  'topic_search': {
+                      'include_topics': ['ai%', 'technology%'],
+                      'exclude_topics': ['deprecated%'],
+                      'min_confidence': 0.8
+                  },
+                  'date_search': {
+                      'operator': 'relative_days',
+                      'relative_value': 30
+                  }
+              },
+              'limit': 20,
+              'include_similarity_scores': True,
+              'include_topics': True
           },
           headers={'X-API-Key': 'your-api-key'}
       )
-      advanced_results = response.json()
+      structured_results = response.json()
+
+      # Simple structured search
+      response = requests.post(
+          'http://localhost:5000/api/search/structured/simple?text=true',
+          json={
+              'query_text': 'data science methods',
+              'include_topics': ['data-science%'],
+              'days_back': 60,
+              'similarity_threshold': 0.75,
+              'element_types': ['paragraph', 'header']
+          },
+          headers={'X-API-Key': 'your-api-key'}
+      )
+      simple_results = response.json()
 
   - lang: cURL
     source: |
-      # Basic search with hierarchical results and topic filtering
-      curl -X POST "http://localhost:5000/api/search" \
+      # Structured search with nested criteria
+      curl -X POST "http://localhost:5000/api/search/structured?text=true&content=false&flat=false" \
         -H "X-API-Key: your-api-key" \
         -H "Content-Type: application/json" \
         -d '{
-          "query": "machine learning",
-          "limit": 5,
-          "min_score": 0.7,
-          "include_topics": ["security%", "%.policy%"],
-          "exclude_topics": ["deprecated%"],
-          "min_confidence": 0.8,
-          "flat": false,
-          "content": true
+          "criteria_group": {
+            "operator": "AND",
+            "sub_groups": [
+              {
+                "operator": "OR",
+                "semantic_search": {
+                  "query_text": "machine learning",
+                  "similarity_threshold": 0.7
+                },
+                "topic_search": {
+                  "include_topics": ["ai%", "ml%", "deep-learning%"]
+                }
+              },
+              {
+                "operator": "NOT",
+                "topic_search": {
+                  "include_topics": ["deprecated%", "obsolete%"]
+                }
+              }
+            ],
+            "date_search": {
+              "operator": "quarter",
+              "year": 2024,
+              "quarter": 3
+            }
+          },
+          "limit": 50,
+          "include_similarity_scores": true,
+          "include_topics": true
         }'
 
-      # Advanced search with topic filtering
-      curl -X POST "http://localhost:5000/api/search/advanced" \
+      # Simple structured search
+      curl -X POST "http://localhost:5000/api/search/structured/simple?text=true" \
         -H "X-API-Key: your-api-key" \
         -H "Content-Type: application/json" \
         -d '{
-          "query": "neural networks",
-          "limit": 10,
-          "include_topics": ["machine_learning%"],
-          "exclude_topics": ["draft%", "deprecated%"],
-          "min_confidence": 0.7,
-          "resolve_content": true,
-          "include_relationships": true
+          "query_text": "security policies",
+          "include_topics": ["security%", "policy%"],
+          "exclude_topics": ["deprecated%", "draft%"],
+          "days_back": 90,
+          "similarity_threshold": 0.8,
+          "limit": 15
         }'
 
   - lang: JavaScript
     source: |
-      // Using fetch API with topic filtering
-      async function search(query, options = {}) {
-        const response = await fetch('http://localhost:5000/api/search', {
+      // Complex structured search
+      async function structuredSearch(criteriaGroup, options = {}) {
+        const response = await fetch('http://localhost:5000/api/search/structured?text=true&flat=false', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'X-API-Key': 'your-api-key'
           },
           body: JSON.stringify({
-            query: query,
-            limit: 10,
-            min_score: 0.5,
-            include_topics: ['security%'],
-            exclude_topics: ['deprecated%', 'draft%'],
-            min_confidence: 0.7,
-            flat: true,
-            include_parents: false,
-            text: true,
+            criteria_group: criteriaGroup,
+            limit: 20,
+            include_similarity_scores: true,
+            include_topics: true,
             ...options
           })
         });
-
         return await response.json();
       }
 
-      // Using async/await
-      const results = await search('artificial intelligence', {
-        include_topics: ['ai%', 'machine_learning%'],
-        min_confidence: 0.8,
-        flat: false,
-        content: true
+      // Example: Complex nested query
+      const complexQuery = {
+        operator: 'AND',
+        semantic_search: {
+          query_text: 'artificial intelligence trends',
+          similarity_threshold: 0.8,
+          boost_factor: 2.0
+        },
+        topic_search: {
+          include_topics: ['ai%', 'technology%'],
+          exclude_topics: ['deprecated%'],
+          min_confidence: 0.8
+        },
+        date_search: {
+          operator: 'relative_days',
+          relative_value: 30
+        }
+      };
+
+      const results = await structuredSearch(complexQuery);
+
+      // Simple structured search
+      async function simpleStructuredSearch(queryText, options = {}) {
+        const response = await fetch('http://localhost:5000/api/search/structured/simple?text=true', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-API-Key': 'your-api-key'
+          },
+          body: JSON.stringify({
+            query_text: queryText,
+            similarity_threshold: 0.7,
+            limit: 10,
+            ...options
+          })
+        });
+        return await response.json();
+      }
+
+      const simpleResults = await simpleStructuredSearch('machine learning algorithms', {
+        include_topics: ['ai%', 'ml%'],
+        exclude_topics: ['deprecated%'],
+        days_back: 60,
+        element_types: ['paragraph', 'header']
       });
-      console.log(results);

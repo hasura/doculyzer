@@ -11,7 +11,8 @@ from werkzeug.exceptions import BadRequest, InternalServerError
 
 from .adapter import create_content_resolver
 from .config import Config
-from .search import search_with_content, search_by_text, get_document_sources, SearchResult
+from .search import search_with_content, search_by_text, get_document_sources, SearchResult, search_structured, \
+    search_simple_structured
 
 # Configure logging
 log_level = os.environ.get('LOG_LEVEL', 'INFO')
@@ -238,6 +239,7 @@ def api_info():
             '/api/info': 'API information',
             '/api/search': 'Search for elements',
             '/api/search/advanced': 'Advanced search with full results',
+            '/api/search/structured': 'Structured search with complex criteria',
             '/api/search/sources': 'Get document sources'
         },
         'configuration': {
@@ -274,6 +276,206 @@ def extract_topic_parameters(data):
             raise BadRequest("'min_confidence' must be a number between 0.0 and 1.0")
 
     return include_topics, exclude_topics, min_confidence
+
+
+# NEW STRUCTURED SEARCH ENDPOINT
+@app.route('/api/search/structured', methods=['POST'])
+def structured_search_endpoint():
+    """
+    Structured search with complex criteria and logical operators.
+
+    Request body should be a complete SearchQueryRequest JSON object with criteria groups,
+    logical operators, and multiple search types (semantic, topic, date, metadata, element).
+
+    Example request body:
+    {
+        "criteria_group": {
+            "operator": "AND",
+            "semantic_search": {
+                "query_text": "machine learning algorithms",
+                "similarity_threshold": 0.8
+            },
+            "topic_search": {
+                "include_topics": ["ai%", "ml%"],
+                "exclude_topics": ["deprecated%"],
+                "min_confidence": 0.8
+            },
+            "date_search": {
+                "operator": "relative_days",
+                "relative_value": 30
+            }
+        },
+        "limit": 20,
+        "include_similarity_scores": true,
+        "include_topics": true
+    }
+
+    Optional query parameters:
+    - text: boolean - Whether to resolve text content
+    - content: boolean - Whether to resolve content
+    - flat: boolean - Whether to return flat results
+    - include_parents: boolean - Whether to include parent elements
+    """
+    # Check API key if required
+    auth_response = check_api_key()
+    if auth_response:
+        return auth_response
+
+    try:
+        # Parse request JSON
+        data = request.get_json()
+        if not data:
+            raise BadRequest("Request body must be valid JSON containing a SearchQueryRequest")
+
+        # Extract optional query parameters for content materialization
+        text = request.args.get('text', 'false').lower() == 'true'
+        content = request.args.get('content', 'false').lower() == 'true'
+        flat = request.args.get('flat', 'false').lower() == 'true'
+        include_parents = request.args.get('include_parents', 'true').lower() == 'true'
+
+        # Log the structured search request
+        logger.info(f"Structured search request: text={text}, content={content}, "
+                    f"flat={flat}, include_parents={include_parents}")
+
+        # Log a summary of the criteria for debugging
+        criteria_group = data.get('criteria_group', {})
+        search_types = []
+        if criteria_group.get('semantic_search'):
+            search_types.append('semantic')
+        if criteria_group.get('topic_search'):
+            search_types.append('topic')
+        if criteria_group.get('date_search'):
+            search_types.append('date')
+        if criteria_group.get('metadata_search'):
+            search_types.append('metadata')
+        if criteria_group.get('element_search'):
+            search_types.append('element')
+
+        logger.info(f"Structured search types: {search_types}, operator: {criteria_group.get('operator', 'N/A')}")
+
+        # Call structured search with the JSON data and content materialization options
+        results = search_structured(
+            query=data,  # Pass the entire JSON payload
+            text=text,
+            content=content,
+            flat=flat,
+            include_parents=include_parents
+        )
+
+        # Convert results to JSON using model_dump_json() for proper serialization
+        json_str = results.model_dump_json()
+        json_dict = json.loads(json_str)
+
+        return jsonify(json_dict)
+
+    except ValueError as e:
+        # Handle Pydantic validation errors
+        logger.error(f"Structured search validation error: {str(e)}")
+        raise BadRequest(f"Invalid structured query format: {str(e)}")
+
+    except Exception as e:
+        logger.error(f"Structured search error: {str(e)}")
+        raise InternalServerError(f"Structured search operation failed: {str(e)}")
+
+
+# SIMPLE STRUCTURED SEARCH ENDPOINT (convenience method)
+@app.route('/api/search/structured/simple', methods=['POST'])
+def simple_structured_search_endpoint():
+    """
+    Simple structured search with common parameters.
+
+    Request body:
+    {
+        "query_text": "machine learning algorithms",
+        "limit": 10,
+        "similarity_threshold": 0.7,
+        "include_topics": ["ai%", "ml%"],
+        "exclude_topics": ["deprecated%"],
+        "days_back": 30,
+        "element_types": ["paragraph", "header"]
+    }
+
+    Optional query parameters:
+    - text: boolean - Whether to resolve text content
+    - content: boolean - Whether to resolve content
+    - flat: boolean - Whether to return flat results
+    - include_parents: boolean - Whether to include parent elements
+    """
+    # Check API key if required
+    auth_response = check_api_key()
+    if auth_response:
+        return auth_response
+
+    try:
+        # Parse request JSON
+        data = request.get_json()
+        if not data:
+            raise BadRequest("Request body must be valid JSON")
+
+        # Extract required parameter
+        query_text = data.get('query_text')
+        if not query_text:
+            raise BadRequest("'query_text' parameter is required")
+
+        # Extract optional parameters with defaults
+        limit = min(data.get('limit', CONFIG['DEFAULT_RESULTS']), CONFIG['MAX_RESULTS'])
+        similarity_threshold = data.get('similarity_threshold', 0.7)
+        include_topics = data.get('include_topics')
+        exclude_topics = data.get('exclude_topics')
+        days_back = data.get('days_back')
+        element_types = data.get('element_types')
+
+        # Extract content materialization options from query parameters
+        text = request.args.get('text', 'false').lower() == 'true'
+        content = request.args.get('content', 'false').lower() == 'true'
+        flat = request.args.get('flat', 'false').lower() == 'true'
+        include_parents = request.args.get('include_parents', 'true').lower() == 'true'
+
+        # Validate parameters
+        if similarity_threshold < 0.0 or similarity_threshold > 1.0:
+            raise BadRequest("'similarity_threshold' must be between 0.0 and 1.0")
+
+        if include_topics is not None and not isinstance(include_topics, list):
+            raise BadRequest("'include_topics' must be a list of strings")
+
+        if exclude_topics is not None and not isinstance(exclude_topics, list):
+            raise BadRequest("'exclude_topics' must be a list of strings")
+
+        if element_types is not None and not isinstance(element_types, list):
+            raise BadRequest("'element_types' must be a list of strings")
+
+        if days_back is not None and (not isinstance(days_back, int) or days_back <= 0):
+            raise BadRequest("'days_back' must be a positive integer")
+
+        # Log the simple structured search request
+        logger.info(f"Simple structured search: query='{query_text}', limit={limit}, "
+                    f"similarity_threshold={similarity_threshold}, include_topics={include_topics}, "
+                    f"exclude_topics={exclude_topics}, days_back={days_back}, element_types={element_types}")
+
+        # Call simple structured search
+        results = search_simple_structured(
+            query_text=query_text,
+            limit=limit,
+            similarity_threshold=similarity_threshold,
+            include_topics=include_topics,
+            exclude_topics=exclude_topics,
+            days_back=days_back,
+            element_types=element_types,
+            text=text,
+            content=content,
+            flat=flat,
+            include_parents=include_parents
+        )
+
+        # Convert results to JSON using model_dump_json() for proper serialization
+        json_str = results.model_dump_json()
+        json_dict = json.loads(json_str)
+
+        return jsonify(json_dict)
+
+    except Exception as e:
+        logger.error(f"Simple structured search error: {str(e)}")
+        raise InternalServerError(f"Simple structured search operation failed: {str(e)}")
 
 
 # Standard search endpoint
@@ -576,6 +778,8 @@ try:
     # Apply rate limiting to search endpoints
     limiter.limit(CONFIG['RATE_LIMIT'])(search_endpoint)
     limiter.limit(CONFIG['RATE_LIMIT'])(advanced_search_endpoint)
+    limiter.limit(CONFIG['RATE_LIMIT'])(structured_search_endpoint)
+    limiter.limit(CONFIG['RATE_LIMIT'])(simple_structured_search_endpoint)
     limiter.limit(CONFIG['RATE_LIMIT'])(document_sources_endpoint)
 
     logger.info(f"Rate limiting enabled: {CONFIG['RATE_LIMIT']}")
@@ -595,6 +799,12 @@ def print_startup_info():
     logger.info(f"Debug Mode: {CONFIG['DEBUG']}")
     logger.info(f"Authentication: {'Enabled' if CONFIG['API_KEY'] else 'Disabled'}")
     logger.info(f"Rate Limiting: {CONFIG['RATE_LIMIT']}")
+    logger.info("Available Endpoints:")
+    logger.info("  /api/search - Basic search")
+    logger.info("  /api/search/advanced - Advanced search with relationships")
+    logger.info("  /api/search/structured - Structured search with complex criteria")
+    logger.info("  /api/search/structured/simple - Simple structured search")
+    logger.info("  /api/search/sources - Document sources")
     logger.info("=" * 50)
 
 

@@ -124,5 +124,4 @@ pytest~=8.3.5
 pymongo~=4.13.0
 SQLAlchemy~=2.0.41
 Flask-Limiter~=3.12
-doculyzer~=0.38.0
 datefinder~=0.7.3

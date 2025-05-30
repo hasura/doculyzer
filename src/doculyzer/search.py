@@ -1,13 +1,25 @@
 import json
 import logging
 import os
-from typing import List, Optional, Dict, Any, Tuple, Set
+from typing import List, Optional, Dict, Any, Tuple, Set, Union
 
 from pydantic import BaseModel, Field, PrivateAttr
 
 from .adapter import create_content_resolver, ContentResolver
 from .config import Config
 from .storage import ElementRelationship, DocumentDatabase, ElementHierarchical, ElementFlat, flatten_hierarchy
+# Import the Pydantic models
+from .storage.search import (
+    SearchQueryRequest,
+    SearchCriteriaGroupRequest,
+    SemanticSearchRequest,
+    TopicSearchRequest,
+    DateSearchRequest,
+    ElementSearchRequest,
+    # SearchResultItem,
+    LogicalOperatorEnum,
+    DateRangeOperatorEnum
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +101,7 @@ class SearchResults(BaseModel):
     include_topics: Optional[List[str]] = None
     exclude_topics: Optional[List[str]] = None
     min_confidence: Optional[float] = None
-    search_type: str = "embedding"  # Can be "embedding", "text", "content", "topic"
+    search_type: str = "embedding"  # Can be "embedding", "text", "content", "topic", "structured"
     min_score: float = 0.0  # Minimum score threshold used
     documents: List[str] = Field(default_factory=list)  # Unique list of document sources from the results
     search_tree: Optional[List[ElementHierarchical | ElementFlat]] = None
@@ -99,6 +111,9 @@ class SearchResults(BaseModel):
     # Topic-related metadata
     supports_topics: bool = False
     topic_statistics: Optional[Dict[str, Any]] = None
+    # Structured search metadata
+    query_id: Optional[str] = None
+    execution_time_ms: Optional[float] = None
 
     @classmethod
     def from_tuples(cls, tuples: List[Tuple[int, float]],
@@ -116,11 +131,15 @@ class SearchResults(BaseModel):
                     content_resolved: bool = False,
                     text_resolved: bool = False,
                     supports_topics: bool = False,
-                    topic_statistics: Optional[Dict[str, Any]] = None) -> "SearchResults":
+                    topic_statistics: Optional[Dict[str, Any]] = None,
+                    query_id: Optional[str] = None,
+                    execution_time_ms: Optional[float] = None) -> "SearchResults":
         """
         Create a SearchResults object from a list of (element_pk, similarity) tuples.
 
         Args:
+            query_id
+            execution_time_ms
             flat
             include_parents
             tuples: List of (element_pk, similarity) tuples
@@ -163,55 +182,9 @@ class SearchResults(BaseModel):
             content_resolved=content_resolved,
             text_resolved=text_resolved,
             supports_topics=supports_topics,
-            topic_statistics=topic_statistics
-        )
-
-    @classmethod
-    def from_topic_results(cls, topic_results: List[Dict[str, Any]],
-                           query: Optional[str] = None,
-                           include_topics: Optional[List[str]] = None,
-                           exclude_topics: Optional[List[str]] = None,
-                           min_confidence: Optional[float] = None,
-                           documents: Optional[List[str]] = None,
-                           supports_topics: bool = False,
-                           topic_statistics: Optional[Dict[str, Any]] = None) -> "SearchResults":
-        """
-        Create a SearchResults object from topic search results.
-
-        Args:
-            topic_results: List of dictionaries from database search_by_text_and_topics
-            query: Optional query string that produced these results
-            include_topics: Topic patterns that were included
-            exclude_topics: Topic patterns that were excluded
-            min_confidence: Minimum confidence threshold used
-            documents: List of unique document sources
-            supports_topics: Whether the backend supports topics
-            topic_statistics: Topic distribution statistics
-
-        Returns:
-            SearchResults object
-        """
-        results = []
-        for result in topic_results:
-            item = SearchResultItem(
-                element_pk=result['element_pk'],
-                similarity=result.get('similarity', 0.0),
-                confidence=result.get('confidence'),
-                topics=result.get('topics', [])
-            )
-            results.append(item)
-
-        return cls(
-            results=results,
-            total_results=len(results),
-            query=query,
-            include_topics=include_topics,
-            exclude_topics=exclude_topics,
-            min_confidence=min_confidence,
-            search_type="topic",
-            documents=documents or [],
-            supports_topics=supports_topics,
-            topic_statistics=topic_statistics
+            topic_statistics=topic_statistics,
+            query_id=query_id,
+            execution_time_ms=execution_time_ms
         )
 
 
@@ -316,6 +289,252 @@ class SearchHelper:
         if cls._content_resolver is None:
             cls._initialize_dependencies()
         return cls._content_resolver
+
+    # NEW STRUCTURED SEARCH METHODS
+
+    @classmethod
+    def execute_structured_search(cls, query: SearchQueryRequest,
+                                  text: bool = False,
+                                  content: bool = False,
+                                  flat: bool = False,
+                                  include_parents: bool = True) -> SearchResults:
+        """
+        Execute a structured search using Pydantic models with SearchHelper enhancements.
+
+        Args:
+            query: SearchQueryRequest object with structured search criteria
+            text: Whether to resolve text content for results
+            content: Whether to resolve content for results
+            flat: Whether to return flat results
+            include_parents: Whether to include parent elements
+
+        Returns:
+            SearchResults object with results, search tree, and materialized content
+        """
+        # Ensure database is initialized
+        db = cls.get_database()
+        resolver = cls.get_content_resolver()
+
+        logger.debug(f"Executing structured search with query ID: {query.query_id}")
+
+        try:
+            # Import the execute_search function from pydantic_search
+            from .pydantic_search import execute_search
+
+            # Execute the search using the existing structured search system
+            pydantic_response = execute_search(query, db, validate_capabilities=True)
+
+            if not pydantic_response.success:
+                logger.error(f"Structured search failed: {pydantic_response.error_message}")
+                return SearchResults(
+                    results=[],
+                    total_results=0,
+                    search_type="structured",
+                    query_id=query.query_id,
+                    execution_time_ms=pydantic_response.execution_time_ms
+                )
+
+            # Convert Pydantic results to tuples for SearchHelper processing
+            result_tuples = [(item.element_pk, item.final_score) for item in pydantic_response.results]
+
+            # Build search tree and resolve content if requested (SearchHelper value-add)
+            def resolve_elements(items: List[ElementHierarchical]):
+                for item in items:
+                    if item.child_elements:
+                        resolve_elements(item.child_elements)
+                    if text and item.content_location:
+                        try:
+                            item.text = resolver.resolve_content(item.content_location, text=True)
+                        except Exception as e:
+                            logger.warning(f"Failed to resolve text for {item.content_location}: {e}")
+                    if content and item.content_location:
+                        try:
+                            item.content = resolver.resolve_content(item.content_location, text=False)
+                        except Exception as e:
+                            logger.warning(f"Failed to resolve content for {item.content_location}: {e}")
+
+            # Get document outline/hierarchy
+            search_tree = db.get_results_outline(result_tuples) if result_tuples else []
+
+            # Resolve content if requested
+            if text or content:
+                resolve_elements(search_tree)
+
+            # Get document sources for these elements
+            document_sources = cls._get_document_sources_for_elements([pk for pk, _ in result_tuples])
+
+            # Convert SearchResultItems from Pydantic format
+            search_result_items = []
+            for pydantic_item in pydantic_response.results:
+                search_item = SearchResultItem(
+                    element_pk=pydantic_item.element_pk,
+                    similarity=pydantic_item.final_score,
+                    confidence=getattr(pydantic_item, 'confidence', None),
+                    topics=getattr(pydantic_item, 'topics', None)
+                )
+                search_result_items.append(search_item)
+
+            # Extract query text from criteria group for logging
+            query_text = cls._extract_query_text_from_request(query)
+
+            # Handle flat vs hierarchical results
+            if flat and include_parents:
+                final_search_tree = flatten_hierarchy(search_tree)
+            elif flat and not include_parents:
+                final_search_tree = [r for r in flatten_hierarchy(search_tree) if r.score is not None]
+            else:
+                final_search_tree = search_tree
+
+            return SearchResults(
+                results=search_result_items,
+                total_results=pydantic_response.total_results,
+                query=query_text,
+                search_type="structured",
+                documents=document_sources,
+                search_tree=final_search_tree,
+                query_id=pydantic_response.query_id,
+                execution_time_ms=pydantic_response.execution_time_ms,
+                content_resolved=content,
+                text_resolved=text,
+                supports_topics=db.supports_topics()
+            )
+
+        except ImportError:
+            logger.error("Pydantic search module not available")
+            return SearchResults(
+                results=[],
+                total_results=0,
+                search_type="structured",
+                query_id=query.query_id,
+                execution_time_ms=None
+            )
+        except Exception as e:
+            logger.error(f"Error executing structured search: {str(e)}")
+            return SearchResults(
+                results=[],
+                total_results=0,
+                search_type="structured",
+                query_id=query.query_id,
+                execution_time_ms=None
+            )
+
+    # ENHANCED CONVENIENCE METHODS
+
+    @classmethod
+    def search_structured(cls, query: Union[SearchQueryRequest, Dict[str, Any]],
+                          text: bool = False,
+                          content: bool = False,
+                          flat: bool = False,
+                          include_parents: bool = True) -> SearchResults:
+        """
+        Convenience method for structured search that accepts either Pydantic model or dict.
+
+        Args:
+            query: SearchQueryRequest object or dictionary that can be converted to one
+            text: Whether to resolve text content for results
+            content: Whether to resolve content for results
+            flat: Whether to return flat results
+            include_parents: Whether to include parent elements
+
+        Returns:
+            SearchResults object
+        """
+        if isinstance(query, dict):
+            query = SearchQueryRequest.model_validate(query)
+
+        return cls.execute_structured_search(query, text=text, content=content,
+                                             flat=flat, include_parents=include_parents)
+
+    @classmethod
+    def search_simple_structured(cls,
+                                 query_text: str,
+                                 limit: int = 10,
+                                 similarity_threshold: float = 0.7,
+                                 include_topics: Optional[List[str]] = None,
+                                 exclude_topics: Optional[List[str]] = None,
+                                 days_back: Optional[int] = None,
+                                 element_types: Optional[List[str]] = None,
+                                 text: bool = False,
+                                 content: bool = False,
+                                 flat: bool = False,
+                                 include_parents: bool = True) -> SearchResults:
+        """
+        Create and execute a simple structured search query with content materialization.
+
+        Args:
+            query_text: Natural language search query
+            limit: Maximum number of results
+            similarity_threshold: Minimum similarity score
+            include_topics: Topic patterns to include
+            exclude_topics: Topic patterns to exclude
+            days_back: Filter to documents from last N days
+            element_types: Filter by element types
+            text: Whether to resolve text content for results
+            content: Whether to resolve content for results
+            flat: Whether to return flat results
+            include_parents: Whether to include parent elements
+
+        Returns:
+            SearchResults object with materialized content and search tree
+        """
+        # Build criteria group
+        criteria_group = SearchCriteriaGroupRequest(
+            operator=LogicalOperatorEnum.AND,
+            semantic_search=SemanticSearchRequest(
+                query_text=query_text,
+                similarity_threshold=similarity_threshold
+            )
+        )
+
+        # Add topic search if specified
+        if include_topics or exclude_topics:
+            criteria_group.topic_search = TopicSearchRequest(
+                include_topics=include_topics or [],
+                exclude_topics=exclude_topics or []
+            )
+
+        # Add date search if specified
+        if days_back:
+            criteria_group.date_search = DateSearchRequest(
+                operator=DateRangeOperatorEnum.RELATIVE_DAYS,
+                relative_value=days_back
+            )
+
+        # Add element search if specified
+        if element_types:
+            criteria_group.element_search = ElementSearchRequest(
+                element_types=element_types
+            )
+
+        # Create and execute query
+        query = SearchQueryRequest(
+            criteria_group=criteria_group,
+            limit=limit,
+            include_similarity_scores=True
+        )
+
+        return cls.execute_structured_search(query, text=text, content=content,
+                                             flat=flat, include_parents=include_parents)
+
+    @classmethod
+    def _extract_query_text_from_request(cls, query: SearchQueryRequest) -> Optional[str]:
+        """Extract query text from SearchQueryRequest for logging."""
+        return cls._extract_query_text_from_criteria_group(query.criteria_group)
+
+    @classmethod
+    def _extract_query_text_from_criteria_group(cls, criteria_group: SearchCriteriaGroupRequest) -> Optional[str]:
+        """Extract query text from criteria group for logging."""
+        if criteria_group.semantic_search:
+            return criteria_group.semantic_search.query_text
+
+        for sub_group in criteria_group.sub_groups:
+            text = cls._extract_query_text_from_criteria_group(sub_group)
+            if text:
+                return text
+
+        return None
+
+    # ORIGINAL METHODS (kept for backward compatibility)
 
     @classmethod
     def search_by_text(
@@ -635,7 +854,136 @@ class SearchHelper:
         return results
 
 
-# Convenience function that uses the singleton helper
+# UPDATED CONVENIENCE FUNCTIONS
+
+def search_structured(query: Union[SearchQueryRequest, Dict[str, Any]],
+                      text: bool = False,
+                      content: bool = False,
+                      flat: bool = False,
+                      include_parents: bool = True) -> SearchResults:
+    """
+    Execute a structured search using Pydantic models.
+    Uses singleton instances of database and content resolver.
+
+    Args:
+        query: SearchQueryRequest object or dictionary that can be converted to one
+        text: Whether to resolve text content for results
+        content: Whether to resolve content for results
+        flat: Whether to return flat results
+        include_parents: Whether to include parent elements
+
+    Returns:
+        SearchResults object with materialized content and search tree
+    """
+    return SearchHelper.search_structured(query, text=text, content=content,
+                                          flat=flat, include_parents=include_parents)
+
+
+def search_simple_structured(query_text: str,
+                             limit: int = 10,
+                             similarity_threshold: float = 0.7,
+                             include_topics: Optional[List[str]] = None,
+                             exclude_topics: Optional[List[str]] = None,
+                             days_back: Optional[int] = None,
+                             element_types: Optional[List[str]] = None,
+                             text: bool = False,
+                             content: bool = False,
+                             flat: bool = False,
+                             include_parents: bool = True) -> SearchResults:
+    """
+    Create and execute a simple structured search query with content materialization.
+    Uses singleton instances of database.
+
+    Args:
+        query_text: Natural language search query
+        limit: Maximum number of results
+        similarity_threshold: Minimum similarity score
+        include_topics: Topic patterns to include
+        exclude_topics: Topic patterns to exclude
+        days_back: Filter to documents from last N days
+        element_types: Filter by element types
+        text: Whether to resolve text content for results
+        content: Whether to resolve content for results
+        flat: Whether to return flat results
+        include_parents: Whether to include parent elements
+
+    Returns:
+        SearchResults object with materialized content and search tree
+    """
+    return SearchHelper.search_simple_structured(
+        query_text=query_text,
+        limit=limit,
+        similarity_threshold=similarity_threshold,
+        include_topics=include_topics,
+        exclude_topics=exclude_topics,
+        days_back=days_back,
+        element_types=element_types,
+        text=text,
+        content=content,
+        flat=flat,
+        include_parents=include_parents
+    )
+
+
+def create_simple_search_query(query_text: str,
+                               days_back: Optional[int] = None,
+                               element_types: Optional[List[str]] = None,
+                               limit: int = 10,
+                               similarity_threshold: float = 0.7) -> SearchQueryRequest:
+    """Create a simple SearchQueryRequest from basic parameters."""
+
+    criteria_group = SearchCriteriaGroupRequest(
+        operator=LogicalOperatorEnum.AND,
+        semantic_search=SemanticSearchRequest(
+            query_text=query_text,
+            similarity_threshold=similarity_threshold
+        )
+    )
+
+    if days_back:
+        criteria_group.date_search = DateSearchRequest(
+            operator=DateRangeOperatorEnum.RELATIVE_DAYS,
+            relative_value=days_back
+        )
+
+    if element_types:
+        criteria_group.element_search = ElementSearchRequest(
+            element_types=element_types
+        )
+
+    return SearchQueryRequest(
+        criteria_group=criteria_group,
+        limit=limit,
+        include_element_dates=bool(days_back),
+        include_similarity_scores=True
+    )
+
+
+def create_topic_search_query(include_topics: List[str],
+                              exclude_topics: Optional[List[str]] = None,
+                              min_confidence: float = 0.7,
+                              limit: int = 10) -> SearchQueryRequest:
+    """Create a topic-based SearchQueryRequest."""
+
+    criteria_group = SearchCriteriaGroupRequest(
+        operator=LogicalOperatorEnum.AND,
+        topic_search=TopicSearchRequest(
+            include_topics=include_topics,
+            exclude_topics=exclude_topics or [],
+            min_confidence=min_confidence
+        )
+    )
+
+    return SearchQueryRequest(
+        criteria_group=criteria_group,
+        limit=limit,
+        include_topics=True,
+        include_similarity_scores=True
+    )
+
+
+# ORIGINAL CONVENIENCE FUNCTIONS (maintained for backward compatibility)
+
 def search_with_content(
         query_text: str,
         limit: int = 10,
@@ -778,65 +1126,172 @@ def supports_topics() -> bool:
     return db.supports_topics()
 
 
-# Example usage:
+# EXAMPLE USAGE:
 """
-# Using topic filters with existing search methods
+# Example 1: Using the new structured search methods with content materialization
 
-# Regular text search with topic filtering
-results = search_by_text(
-    "security policy",
-    include_topics=['security%', '%.policy%'],
-    exclude_topics=['deprecated%'],
-    min_confidence=0.8,
-    limit=10
+# Create a structured query using Pydantic models
+query = SearchQueryRequest(
+    criteria_group=SearchCriteriaGroupRequest(
+        operator=LogicalOperatorEnum.AND,
+        semantic_search=SemanticSearchRequest(
+            query_text="machine learning algorithms",
+            similarity_threshold=0.8,
+            boost_factor=2.0
+        ),
+        topic_search=TopicSearchRequest(
+            include_topics=['ai%', 'ml%'],
+            exclude_topics=['deprecated%'],
+            min_confidence=0.8
+        ),
+        date_search=DateSearchRequest(
+            operator=DateRangeOperatorEnum.RELATIVE_DAYS,
+            relative_value=30
+        )
+    ),
+    limit=20,
+    include_similarity_scores=True,
+    include_topics=True
 )
 
-print(f"Found {results.total_results} results")
-print(f"Supports topics: {results.supports_topics}")
-print(f"Topic statistics: {results.topic_statistics}")
+# Execute the structured search with content materialization
+results = search_structured(query, text=True, content=True)
+print(f"Found {results.total_results} results in {results.execution_time_ms}ms")
+print(f"Search tree has {len(results.search_tree)} top-level elements")
 
-for item in results.results:
-    print(f"Element PK: {item.element_pk}, Similarity: {item.similarity:.4f}")
-    if item.topics:
-        print(f"Topics: {item.topics}")
-    if item.confidence:
-        print(f"Confidence: {item.confidence}")
+# Access materialized content in the search tree
+for tree_item in results.search_tree:
+    if hasattr(tree_item, 'text') and tree_item.text:
+        print(f"Materialized text: {tree_item.text[:100]}...")
+    if hasattr(tree_item, 'content') and tree_item.content:
+        print(f"Materialized content available: {len(tree_item.content)} chars")
 
-# Enhanced search with content and topic filtering
-results = search_with_content(
-    "security policy",
+# Example 2: Using the simple structured search with content materialization
+results = search_simple_structured(
+    query_text="data science methodologies",
+    limit=15,
+    similarity_threshold=0.75,
+    include_topics=['data-science%', 'analytics%'],
+    exclude_topics=['draft%'],
+    days_back=60,
+    element_types=['paragraph', 'header'],
+    text=True,        # Materialize text content
+    content=False,    # Don't materialize raw content
+    flat=True,        # Return flat results
+    include_parents=True
+)
+
+print(f"Text was resolved: {results.text_resolved}")
+print(f"Content was resolved: {results.content_resolved}")
+print(f"Search tree is flat: {all(hasattr(item, 'score') for item in results.search_tree)}")
+
+# Example 3: Creating queries programmatically
+simple_query = create_simple_search_query(
+    query_text="artificial intelligence trends",
+    days_back=7,
+    element_types=['paragraph'],
+    similarity_threshold=0.8
+)
+
+# Execute with document hierarchy (not flat)
+ai_results = search_structured(simple_query, text=True, flat=False, include_parents=True)
+
+# Navigate the hierarchical search tree
+for tree_item in ai_results.search_tree:
+    print(f"Top-level element: {tree_item.element_type}")
+    if hasattr(tree_item, 'child_elements'):
+        for child in tree_item.child_elements:
+            print(f"  Child: {child.element_type}")
+            if hasattr(child, 'text') and child.text:
+                print(f"    Text: {child.text[:50]}...")
+
+# Example 4: Working with dictionaries (useful for API integrations)
+query_dict = {
+    "criteria_group": {
+        "operator": "AND",
+        "semantic_search": {
+            "query_text": "quarterly financial analysis",
+            "similarity_threshold": 0.8
+        },
+        "metadata_search": {
+            "exact_matches": {"department": "finance"},
+            "exists_filters": ["approval_date"]
+        }
+    },
+    "limit": 25,
+    "include_metadata": True
+}
+
+# Execute with both text and content materialization
+results = search_structured(query_dict, text=True, content=True)
+
+# Access both the search results and the search tree
+for result_item in results.results:
+    print(f"Result: {result_item.element_pk} (score: {result_item.similarity})")
+    
+    # Access materialized content via the SearchResultItem properties
+    if result_item.text:
+        print(f"  Text: {result_item.text[:100]}...")
+    if result_item.content:
+        print(f"  Content: {result_item.content[:100]}...")
+
+# Example 5: Complex nested query with content materialization
+complex_query = SearchQueryRequest(
+    criteria_group=SearchCriteriaGroupRequest(
+        operator=LogicalOperatorEnum.AND,
+        sub_groups=[
+            SearchCriteriaGroupRequest(
+                operator=LogicalOperatorEnum.OR,
+                semantic_search=SemanticSearchRequest(
+                    query_text="machine learning",
+                    similarity_threshold=0.7
+                ),
+                topic_search=TopicSearchRequest(
+                    include_topics=['ai%', 'ml%', 'deep-learning%']
+                )
+            ),
+            SearchCriteriaGroupRequest(
+                operator=LogicalOperatorEnum.NOT,
+                topic_search=TopicSearchRequest(
+                    include_topics=['deprecated%', 'obsolete%']
+                )
+            )
+        ],
+        date_search=DateSearchRequest(
+            operator=DateRangeOperatorEnum.QUARTER,
+            year=2024,
+            quarter=3
+        )
+    ),
+    limit=50,
+    include_element_dates=True,
+    include_topics=True,
+    include_similarity_scores=True
+)
+
+# Execute complex query with selective content materialization
+complex_results = search_structured(complex_query, 
+                                  text=True,          # Get text for display
+                                  content=False,      # Skip raw content for performance
+                                  flat=False,         # Keep hierarchical structure
+                                  include_parents=True)
+
+print(f"Complex search found {complex_results.total_results} results")
+print(f"Document sources: {complex_results.documents}")
+print(f"Supports topics: {complex_results.supports_topics}")
+
+# Example 6: Performance-conscious search (flat results, no content materialization)
+fast_results = search_simple_structured(
+    query_text="security vulnerabilities",
+    limit=100,
+    similarity_threshold=0.6,
     include_topics=['security%'],
-    exclude_topics=['draft%', 'deprecated%'],
-    min_confidence=0.7,
-    resolve_content=True,
-    min_score=0.5,
-    limit=15
+    flat=True,              # Faster flat results
+    include_parents=False,  # Only scored elements
+    text=False,             # No content materialization for speed
+    content=False
 )
 
-for result in results:
-    print(f"Result: {result.element_type} (Score: {result.similarity:.4f})")
-    if result.topics:
-        print(f"Topics: {result.topics}")
-    if result.confidence:
-        print(f"Confidence: {result.confidence}")
-    print(f"Preview: {result.content_preview}")
-
-# Topic-only search (no text query)
-results = search_by_text(
-    "",  # Empty query for topic-only search
-    include_topics=['security%'],
-    min_confidence=0.8,
-    limit=20
-)
-
-# Check topic support and get statistics
-if supports_topics():
-    stats = get_topic_statistics()
-    print(f"Topic statistics: {stats}")
-
-    # Get topics for a specific element
-    topics = get_element_topics(123)
-    print(f"Element 123 topics: {topics}")
-else:
-    print("Topics not supported - falling back to regular search")
+print(f"Fast search returned {len(fast_results.results)} results")
+print(f"All results have scores: {all(hasattr(item, 'score') for item in fast_results.search_tree if hasattr(item, 'score'))}")
 """

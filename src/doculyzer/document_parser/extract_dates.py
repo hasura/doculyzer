@@ -376,7 +376,8 @@ class DateExtractor:
 
         return vague_dates
 
-    def _determine_specificity_level(self, original_text: str, date_obj: datetime) -> str:
+    @staticmethod
+    def _determine_specificity_level(original_text: str, date_obj: datetime) -> str:
         """Determine how specific the date is based on original text."""
         text_lower = original_text.lower()
 
@@ -413,7 +414,8 @@ class DateExtractor:
         else:
             return "vague"
 
-    def _get_season(self, month: int) -> str:
+    @staticmethod
+    def _get_season(month: int) -> str:
         """Determine the season based on month (Northern Hemisphere)."""
         if month in [12, 1, 2]:
             return "winter"
@@ -460,7 +462,8 @@ class DateExtractor:
 
         return fiscal_quarter, fiscal_year
 
-    def _get_academic_semester(self, month: int) -> Optional[str]:
+    @staticmethod
+    def _get_academic_semester(month: int) -> Optional[str]:
         """Determine academic semester based on month."""
         if month in [8, 9, 10, 11, 12]:
             return "fall"
@@ -470,7 +473,8 @@ class DateExtractor:
             return "summer"
         return None
 
-    def _get_academic_year(self, date_obj: datetime) -> Optional[str]:
+    @staticmethod
+    def _get_academic_year(date_obj: datetime) -> Optional[str]:
         """Get academic year string (e.g., '2023-2024')."""
         month = date_obj.month
         year = date_obj.year
@@ -480,7 +484,8 @@ class DateExtractor:
         else:
             return f"{year - 1}-{year}"
 
-    def _get_academic_semester_from_season(self, season: str) -> Optional[str]:
+    @staticmethod
+    def _get_academic_semester_from_season(season: str) -> Optional[str]:
         """Get academic semester from season."""
         season_to_semester = {
             "fall": "fall",
@@ -490,7 +495,8 @@ class DateExtractor:
         }
         return season_to_semester.get(season)
 
-    def _get_academic_year_from_season_year(self, season: str, year: int) -> Optional[str]:
+    @staticmethod
+    def _get_academic_year_from_season_year(season: str, year: int) -> Optional[str]:
         """Get academic year string from season and year."""
         if season in ["fall"]:
             return f"{year}-{year + 1}"
@@ -501,7 +507,8 @@ class DateExtractor:
             return f"{year - 1}-{year}"
         return None
 
-    def _get_time_of_day(self, hour: int) -> str:
+    @staticmethod
+    def _get_time_of_day(hour: int) -> str:
         """Categorize time of day."""
         if 5 <= hour < 12:
             return "morning"
@@ -512,14 +519,16 @@ class DateExtractor:
         else:
             return "night"
 
-    def _is_business_hours(self, date_obj: datetime) -> bool:
+    @staticmethod
+    def _is_business_hours(date_obj: datetime) -> bool:
         """Check if datetime falls within standard business hours."""
         # Monday = 0, Sunday = 6
         is_weekday = date_obj.weekday() < 5
         is_business_time = 9 <= date_obj.hour < 17
         return is_weekday and is_business_time
 
-    def _is_relative_date(self, text: str) -> bool:
+    @staticmethod
+    def _is_relative_date(text: str) -> bool:
         """Determine if a date expression is relative."""
         relative_indicators = [
             'yesterday', 'today', 'tomorrow', 'last', 'next', 'ago', 'from now',
@@ -529,14 +538,16 @@ class DateExtractor:
         text_lower = text.lower()
         return any(indicator in text_lower for indicator in relative_indicators)
 
-    def _is_partial_date(self, text: str, date_obj: datetime) -> bool:
+    @staticmethod
+    def _is_partial_date(text: str, date_obj: datetime) -> bool:
         """Determine if a date is partial (missing components)."""
         current_year = datetime.now().year
         return (date_obj.year == current_year and
                 str(current_year) not in text and
                 len(text.strip()) < 10)
 
-    def _classify_date_type(self, text: str, is_relative: bool, is_partial: bool) -> str:
+    @staticmethod
+    def _classify_date_type(text: str, is_relative: bool, is_partial: bool) -> str:
         """Classify the type of date."""
         if is_relative:
             return "relative"
@@ -545,7 +556,8 @@ class DateExtractor:
         else:
             return "absolute"
 
-    def _extract_relative_reference(self, original_text: str, context: str) -> str:
+    @staticmethod
+    def _extract_relative_reference(original_text: str, context: str) -> str:
         """Extract what a relative date is relative to."""
         relative_indicators = [
             "last", "next", "this", "yesterday", "today", "tomorrow",
@@ -562,7 +574,8 @@ class DateExtractor:
 
         return ", ".join(found_indicators) if found_indicators else ""
 
-    def _detect_date_format(self, text: str) -> str:
+    @staticmethod
+    def _detect_date_format(text: str) -> str:
         """Detect the likely date format from the original text."""
         # Common date format patterns
         if re.match(r'\d{1,2}/\d{1,2}/\d{4}', text):
