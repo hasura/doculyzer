@@ -49,3 +49,7 @@ from .server import search_endpoint
 from .server import simple_structured_search_endpoint
 from .server import structured_search_endpoint
 from .vendor import get_vendor_path
+
+configure_logging()
+
+__version__ = "0.40.0"
