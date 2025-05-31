@@ -720,7 +720,7 @@ class SolrDocumentDatabase(DocumentDatabase):
         return enriched_results
 
     @staticmethod
-    def _calculate_combined_score(scores: Dict[str, List[float]],
+    def _calculate_combined_score(scores: Dict[str, List[float] | float],
                                   combination_method: str,
                                   weights: Dict[str, float]) -> float:
         """Calculate final combined score from multiple score types."""
@@ -731,8 +731,10 @@ class SolrDocumentDatabase(DocumentDatabase):
         # Average scores of the same type
         avg_scores = {}
         for score_type, score_list in scores.items():
-            if score_list:
+            if isinstance(score_list, list) and len(score_list) > 0:
                 avg_scores[score_type] = sum(score_list) / len(score_list)
+            elif isinstance(score_list, float):
+                avg_scores[score_type] = score_list
 
         if not avg_scores:
             return 0.0

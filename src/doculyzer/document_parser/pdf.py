@@ -78,7 +78,7 @@ class PdfParser(DocumentParser):
                     fiscal_year_start_month=self.fiscal_year_start_month,
                     default_locale=self.default_locale
                 )
-                logger.debug("Date extraction enabled with comprehensive temporal analysis for PDF")
+                # logger.debug("Date extraction enabled with comprehensive temporal analysis for PDF")
             except ImportError as e:
                 logger.warning(f"Date extraction disabled: {e}")
                 self.extract_dates = False

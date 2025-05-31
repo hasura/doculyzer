@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime
 from enum import Enum
 from typing import List, Optional, Dict, Any, Literal
+import json
 
 import aiohttp
 from hasura_ndc import start
@@ -601,9 +602,127 @@ SEARCH_API_KEY = os.environ.get('SEARCH_API_KEY')  # Optional API key
 
 @connector.register_query
 async def search_structured_query(
-        structured_query: StructuredSearchRequest = Field(
+        structured_query: str = Field(
             ...,
-            description="Complete structured search configuration with criteria groups and logical operators"
+            description="""Complete structured search configuration as a dictionary with criteria groups and logical operators.
+
+Expected structure:
+{
+    "criteria_group": {
+        "operator": "AND" | "OR" | "NOT",  # Logical combination operator
+        "semantic_search": {  # Optional: Semantic text search
+            "query_text": "string",  # Natural language query (1-1000 chars)
+            "similarity_threshold": 0.7,  # Min similarity score (0.0-1.0)
+            "similarity_operator": ">=" | ">" | "<" | "<=" | "=",
+            "boost_factor": 1.0,  # Score multiplier (0.0-10.0)
+            "search_fields": ["field1", "field2"]  # Optional: specific fields
+        },
+        "vector_search": {  # Optional: Direct vector similarity search
+            "embedding_vector": [0.1, 0.2, ...],  # Pre-computed embedding
+            "similarity_threshold": 0.7,
+            "similarity_operator": ">=",
+            "distance_metric": "cosine" | "euclidean" | "dot_product",
+            "boost_factor": 1.0
+        },
+        "date_search": {  # Optional: Temporal filtering
+            "operator": "within" | "before" | "after" | "exactly" | "relative_days" | "relative_months" | "fiscal_year" | "calendar_year" | "quarter",
+            "start_date": "2024-01-01T00:00:00Z",  # For "within" operator
+            "end_date": "2024-12-31T23:59:59Z",    # For "within" operator
+            "exact_date": "2024-06-15T12:00:00Z",  # For "before"/"after"/"exactly"
+            "relative_value": 30,  # For "relative_days"/"relative_months" (1-3650)
+            "year": 2024,  # For year-based operators (1900-2100)
+            "quarter": 2,  # For "quarter" operator (1-4)
+            "include_partial_dates": true,
+            "specificity_levels": ["full", "date_only", "month_only", "quarter_only", "year_only"]
+        },
+        "topic_search": {  # Optional: Topic-based filtering
+            "include_topics": ["ai%", "machine-learning%"],  # Topic patterns to include (supports % wildcards)
+            "exclude_topics": ["deprecated%", "draft%"],     # Topic patterns to exclude
+            "require_all_included": false,  # true = AND logic, false = OR logic
+            "min_confidence": 0.7,  # Min topic confidence (0.0-1.0)
+            "boost_factor": 1.0
+        },
+        "metadata_search": {  # Optional: Document metadata filtering
+            "exact_matches": {"author": "john.doe", "status": "published"},
+            "like_patterns": {"title": "%report%", "department": "finance%"},
+            "range_filters": {"page_count": {"min": 10, "max": 100}},
+            "exists_filters": ["created_date", "last_modified"]
+        },
+        "element_search": {  # Optional: Document structure filtering
+            "element_types": ["paragraph", "header", "list_item"],
+            "doc_ids": ["doc1", "doc2"],  # Include specific documents
+            "exclude_doc_ids": ["draft_doc1"],  # Exclude specific documents
+            "doc_sources": ["system1%", "wiki%"],  # Source patterns
+            "parent_element_ids": ["section1", "chapter2"],
+            "content_length_min": 50,  # Min content length in characters
+            "content_length_max": 5000   # Max content length in characters
+        },
+        "sub_groups": [  # Optional: Nested criteria groups
+            {
+                "operator": "OR",
+                "semantic_search": {...},
+                "topic_search": {...}
+            }
+        ]
+    },
+    "limit": 10,  # Max results (1-1000)
+    "offset": 0,   # Pagination offset (>=0)
+    "include_element_dates": false,  # Include extracted date info
+    "include_metadata": true,        # Include document metadata
+    "include_topics": false,         # Include topic classifications
+    "include_similarity_scores": true,  # Include relevance scores
+    "include_highlighting": false,   # Include content highlighting
+    "score_combination": "weighted_avg" | "multiply" | "add" | "max",  # Score combination method
+    "custom_weights": {  # Score component weights
+        "text_similarity": 1.0,
+        "embedding_similarity": 1.0,
+        "topic_confidence": 0.5,
+        "date_relevance": 0.3
+    },
+    "query_id": "optional-unique-id"  # Query tracking ID
+}
+
+Example simple query:
+{
+    "criteria_group": {
+        "operator": "AND",
+        "semantic_search": {
+            "query_text": "machine learning algorithms",
+            "similarity_threshold": 0.7
+        },
+        "topic_search": {
+            "include_topics": ["ai%", "ml%"],
+            "exclude_topics": ["deprecated%"]
+        }
+    },
+    "limit": 20
+}
+
+Example complex query with date filtering:
+{
+    "criteria_group": {
+        "operator": "AND",
+        "sub_groups": [
+            {
+                "operator": "OR",
+                "semantic_search": {"query_text": "security policy"},
+                "topic_search": {"include_topics": ["security%"]}
+            },
+            {
+                "operator": "AND",
+                "date_search": {
+                    "operator": "relative_days",
+                    "relative_value": 90
+                },
+                "metadata_search": {
+                    "exact_matches": {"status": "active"}
+                }
+            }
+        ]
+    },
+    "limit": 15,
+    "include_topics": true
+}"""
         ),
         resolve_text: Optional[bool] = Field(
             default=False,
@@ -643,7 +762,7 @@ async def search_structured_query(
     - Complex nested: ((text_search OR topic_search) AND date_search) AND NOT exclude_criteria
 
     Parameters:
-    :param structured_query: Complete structured search configuration with criteria groups
+    :param structured_query: Complete structured search configuration dictionary with criteria groups
     :param resolve_text: Whether to materialize text content in the search tree
     :param resolve_content: Whether to materialize raw content in the search tree
     :param flat: Whether to return flat results instead of hierarchical document structure
@@ -657,6 +776,24 @@ async def search_structured_query(
 
     async def work(_structured_query, _resolve_text, _resolve_content, _flat, _include_parents) -> List[ElementFlat]:
         _span = get_current_span()
+
+        # Parse JSON string to dictionary
+        try:
+            if isinstance(_structured_query, str):
+                structured_query_dict = json.loads(_structured_query)
+            else:
+                raise ValueError("structured_query must be a JSON string")
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in structured_query: {str(e)}")
+        except Exception as e:
+            raise ValueError(f"Error parsing structured_query: {str(e)}")
+
+        # Basic validation of required structure
+        if not isinstance(structured_query_dict, dict):
+            raise ValueError("structured_query must be a JSON object")
+
+        if "criteria_group" not in structured_query_dict:
+            raise ValueError("structured_query must contain 'criteria_group' field")
 
         # Set defaults
         if not isinstance(_resolve_text, bool):
@@ -683,8 +820,12 @@ async def search_structured_query(
             'include_parents': str(_include_parents).lower()
         }
 
-        # Convert structured query to dict
-        payload = _structured_query.model_dump()
+        # Use the parsed structured query dict as payload
+        payload = structured_query_dict.copy()
+
+        # Add a query_id if not present
+        if 'query_id' not in payload:
+            payload['query_id'] = str(uuid.uuid4())
 
         try:
             # Make HTTP request to the structured search endpoint
@@ -733,7 +874,7 @@ async def search_structured_query(
             _include_parents=include_parents
         ),
         {
-            "query_id": structured_query.query_id,
+            "query_id": "extracted_from_parsed_json",
             "search_type": "structured",
             "resolve_text": str(resolve_text),
             "resolve_content": str(resolve_content),
@@ -826,30 +967,80 @@ async def search_simple_structured(
     List of ElementFlat objects representing search results with optional materialized content.
     """
 
+    def extract_value(param, default_value=None):
+        """Extract actual value from potential Field object"""
+        if hasattr(param, 'default'):
+            # This is a Field object, get its default value
+            return param.default if param.default is not ... else default_value
+        return param if param is not None else default_value
+
+    def safe_bool(value, default=False):
+        """Safely convert to boolean"""
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.lower() in ('true', '1', 'yes')
+        return bool(value)
+
+    def safe_int(value, default=None):
+        """Safely convert to integer"""
+        if value is None:
+            return default
+        if isinstance(value, int):
+            return value
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return default
+
+    def safe_float(value, default=None):
+        """Safely convert to float"""
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return default
+
+    def safe_list(value, default=None):
+        """Safely convert to list"""
+        if value is None:
+            return default or []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            # Try to parse JSON array or comma-separated values
+            try:
+                import json
+                return json.loads(value)
+            except:
+                return [item.strip() for item in value.split(',') if item.strip()]
+        return default or []
+
     async def work(_query_text, _limit, _similarity_threshold, _include_topics, _exclude_topics,
-                   _days_back, _element_types, _resolve_text, _resolve_content, _flat, _include_parents) -> List[
-        ElementFlat]:
+                   _days_back, _element_types, _resolve_text, _resolve_content, _flat, _include_parents) -> List[ElementFlat]:
         _span = get_current_span()
 
-        # Set defaults
-        if not isinstance(_limit, int):
-            _limit = 10
-        if not isinstance(_similarity_threshold, float):
-            _similarity_threshold = 0.7
-        if not isinstance(_include_topics, list):
-            _include_topics = _include_topics if _include_topics is not None else []
-        if not isinstance(_exclude_topics, list):
-            _exclude_topics = _exclude_topics if _exclude_topics is not None else []
-        if not isinstance(_element_types, list):
-            _element_types = _element_types if _element_types is not None else []
-        if not isinstance(_resolve_text, bool):
-            _resolve_text = False
-        if not isinstance(_resolve_content, bool):
-            _resolve_content = False
-        if not isinstance(_flat, bool):
-            _flat = False
-        if not isinstance(_include_parents, bool):
-            _include_parents = True
+        # Extract actual values from potential Field objects and apply defaults
+        _query_text = extract_value(_query_text, "")
+        _limit = safe_int(extract_value(_limit), 10)
+        _similarity_threshold = safe_float(extract_value(_similarity_threshold), 0.7)
+        _include_topics = safe_list(extract_value(_include_topics), [])
+        _exclude_topics = safe_list(extract_value(_exclude_topics), [])
+        _days_back = safe_int(extract_value(_days_back), None)
+        _element_types = safe_list(extract_value(_element_types), [])
+        _resolve_text = safe_bool(extract_value(_resolve_text), False)
+        _resolve_content = safe_bool(extract_value(_resolve_content), False)
+        _flat = safe_bool(extract_value(_flat), False)
+        _include_parents = safe_bool(extract_value(_include_parents), True)
+
+        # Validate required parameters
+        if not _query_text or not isinstance(_query_text, str):
+            raise ValueError("query_text is required and must be a non-empty string")
 
         # Prepare request headers
         headers = {
@@ -873,12 +1064,12 @@ async def search_simple_structured(
             'similarity_threshold': _similarity_threshold
         }
 
-        # Add optional filters
+        # Add optional filters only if they have values
         if _include_topics:
             payload['include_topics'] = _include_topics
         if _exclude_topics:
             payload['exclude_topics'] = _exclude_topics
-        if _days_back:
+        if _days_back is not None:
             payload['days_back'] = _days_back
         if _element_types:
             payload['element_types'] = _element_types
@@ -936,12 +1127,8 @@ async def search_simple_structured(
             _include_parents=include_parents
         ),
         {
-            "query_text": query_text,
-            "limit": str(limit),
-            "similarity_threshold": str(similarity_threshold),
-            "search_type": "simple_structured",
-            "resolve_text": str(resolve_text),
-            "resolve_content": str(resolve_content)
+            "query_text": str(query_text),
+            "search_type": "simple_structured"
         }
     )
 
@@ -1049,7 +1236,7 @@ async def search_recent_by_topics(
     )
 
     return await search_structured_query(
-        structured_query=structured_query,
+        structured_query=json.dumps(structured_query.model_dump()),
         resolve_text=True,
         flat=True
     )

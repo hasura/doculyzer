@@ -9,9 +9,9 @@ from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 from werkzeug.exceptions import BadRequest, InternalServerError
 
-from .adapter import create_content_resolver
-from .config import Config
-from .search import search_with_content, search_by_text, get_document_sources, SearchResult, search_structured, \
+from doculyzer.adapter import create_content_resolver
+from doculyzer.config import Config
+from doculyzer.search import search_with_content, search_by_text, get_document_sources, SearchResult, search_structured, \
     search_simple_structured
 
 # Configure logging

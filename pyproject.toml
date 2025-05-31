@@ -232,6 +232,7 @@ all = [
     "sqlite-vec>=0.1.0",
     "sqlite-vss>=0.1.0",
     "pysolr>=3.10.0",
+    "elasticsearch~=9.0.1",
 
     # Content Sources
     "atlassian-python-api~=3.41.9",

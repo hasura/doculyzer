@@ -4,7 +4,7 @@ import re
 from datetime import datetime, time
 from typing import Optional, Tuple, Union
 
-from doculyzer.document_parser.lru_cache import ttl_cache
+from ..document_parser.lru_cache import ttl_cache
 
 logger = logging.getLogger(__name__)
 

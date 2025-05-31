@@ -246,7 +246,8 @@ class Config:
             from .storage import get_document_database
             self._db_instance = get_document_database(self.config.get('storage', {}), )
         else:
-            logger.debug("Using existing database instance")
+            # logger.debug("Using existing database instance")
+            pass
 
         return self._db_instance
 

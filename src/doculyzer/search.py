@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import time
 from typing import List, Optional, Dict, Any, Tuple, Set, Union
 
 from pydantic import BaseModel, Field, PrivateAttr
@@ -91,8 +92,50 @@ class SearchResultItem(BaseModel):
         return None
 
 
+class DocumentMaterializationOptions(BaseModel):
+    """Configuration for document materialization in search results."""
+    include_full_document: bool = False
+    include_document_outline: bool = False
+    include_document_statistics: bool = False
+    document_format: Optional[str] = None  # 'text', 'markdown', 'html', 'json', 'yaml', 'xml'
+    include_full_text: bool = True  # Whether to include full text in documents
+    batch_documents: bool = True  # Whether to use batch loading for efficiency
+    max_document_length: Optional[int] = None  # Truncate document content if longer
+    join_elements: bool = True  # Whether to join elements in full text
+    element_separator: str = '\n\n'  # Separator for joining elements
+
+
+class MaterializedDocument(BaseModel):
+    """Container for materialized document content in various formats."""
+    doc_id: str
+    title: Optional[str] = None
+    source: Optional[str] = None
+    doc_type: Optional[str] = None
+
+    # Document structure
+    complete_document: Optional[Dict[str, Any]] = None
+    outline: Optional[Dict[str, Any]] = None
+    statistics: Optional[Dict[str, Any]] = None
+
+    # Formatted content
+    formatted_content: Optional[str] = None
+    format_type: Optional[str] = None
+
+    # Full text
+    full_text: Optional[str] = None
+
+    # Metadata
+    element_count: int = 0
+    relationship_count: int = 0
+    has_full_text: bool = False
+    text_length: int = 0
+
+    # Error information
+    materialization_error: Optional[str] = None
+
+
 class SearchResults(BaseModel):
-    """Pydantic model for search results collection."""
+    """Pydantic model for search results collection with document materialization."""
     results: List[SearchResultItem] = Field(default_factory=list)
     total_results: int = 0
     query: Optional[str] = None
@@ -115,6 +158,11 @@ class SearchResults(BaseModel):
     query_id: Optional[str] = None
     execution_time_ms: Optional[float] = None
 
+    # NEW: Document materialization fields
+    materialized_documents: Dict[str, MaterializedDocument] = Field(default_factory=dict)
+    materialization_options: Optional[DocumentMaterializationOptions] = None
+    materialization_time_ms: Optional[float] = None
+
     @classmethod
     def from_tuples(cls, tuples: List[Tuple[int, float]],
                     flat: bool = False,
@@ -133,16 +181,18 @@ class SearchResults(BaseModel):
                     supports_topics: bool = False,
                     topic_statistics: Optional[Dict[str, Any]] = None,
                     query_id: Optional[str] = None,
-                    execution_time_ms: Optional[float] = None) -> "SearchResults":
+                    execution_time_ms: Optional[float] = None,
+                    # NEW: Document materialization parameters
+                    materialized_documents: Optional[Dict[str, MaterializedDocument]] = None,
+                    materialization_options: Optional[DocumentMaterializationOptions] = None,
+                    materialization_time_ms: Optional[float] = None) -> "SearchResults":
         """
         Create a SearchResults object from a list of (element_pk, similarity) tuples.
 
         Args:
-            query_id
-            execution_time_ms
-            flat
-            include_parents
             tuples: List of (element_pk, similarity) tuples
+            flat: Whether to flatten hierarchy
+            include_parents: Whether to include parent elements
             query: Optional query string that produced these results
             filter_criteria: Optional dictionary of filter criteria
             include_topics: Topic patterns that were included
@@ -150,12 +200,17 @@ class SearchResults(BaseModel):
             min_confidence: Minimum confidence threshold for topic results
             search_type: Type of search performed
             min_score: Minimum score threshold used
-            documents: List of unique document sources
             search_tree: Optional tree structure representing the search results
+            documents: List of unique document sources
             content_resolved: Whether content was resolved during search
             text_resolved: Whether text was resolved during search
             supports_topics: Whether the backend supports topics
             topic_statistics: Topic distribution statistics
+            query_id: Unique query identifier
+            execution_time_ms: Query execution time
+            materialized_documents: Dictionary of materialized documents
+            materialization_options: Document materialization configuration
+            materialization_time_ms: Time spent on document materialization
 
         Returns:
             SearchResults object
@@ -184,7 +239,10 @@ class SearchResults(BaseModel):
             supports_topics=supports_topics,
             topic_statistics=topic_statistics,
             query_id=query_id,
-            execution_time_ms=execution_time_ms
+            execution_time_ms=execution_time_ms,
+            materialized_documents=materialized_documents or {},
+            materialization_options=materialization_options,
+            materialization_time_ms=materialization_time_ms
         )
 
 
@@ -290,6 +348,144 @@ class SearchHelper:
             cls._initialize_dependencies()
         return cls._content_resolver
 
+    # DOCUMENT MATERIALIZATION METHODS
+
+    @classmethod
+    def _materialize_documents(cls,
+                               doc_ids: List[str],
+                               options: DocumentMaterializationOptions) -> Dict[str, MaterializedDocument]:
+        """
+        Materialize documents according to the specified options.
+
+        Args:
+            doc_ids: List of document IDs to materialize
+            options: Materialization options
+
+        Returns:
+            Dictionary mapping doc_id to MaterializedDocument
+        """
+        if not doc_ids or not (options.include_full_document or options.document_format or
+                               options.include_document_outline or options.include_document_statistics):
+            return {}
+
+        db = cls.get_database()
+        materialized = {}
+
+        try:
+            if options.batch_documents and len(doc_ids) > 1:
+                # Use batch loading for efficiency
+                batch_documents = db.get_documents_batch(doc_ids, options.include_full_text)
+
+                for doc_id, complete_doc in batch_documents.items():
+                    materialized[doc_id] = cls._create_materialized_document(
+                        doc_id, complete_doc, options
+                    )
+            else:
+                # Load documents individually
+                for doc_id in doc_ids:
+                    complete_doc = db.get_complete_document(doc_id, options.include_full_text)
+                    if complete_doc:
+                        materialized[doc_id] = cls._create_materialized_document(
+                            doc_id, complete_doc, options
+                        )
+
+        except Exception as e:
+            logger.error(f"Error materializing documents: {str(e)}")
+            # Create error entries for failed documents
+            for doc_id in doc_ids:
+                if doc_id not in materialized:
+                    materialized[doc_id] = MaterializedDocument(
+                        doc_id=doc_id,
+                        materialization_error=str(e)
+                    )
+
+        return materialized
+
+    @classmethod
+    def _create_materialized_document(cls,
+                                      doc_id: str,
+                                      complete_doc: Dict[str, Any],
+                                      options: DocumentMaterializationOptions) -> MaterializedDocument:
+        """
+        Create a MaterializedDocument from complete document data.
+
+        Args:
+            doc_id: Document ID
+            complete_doc: Complete document structure from get_complete_document
+            options: Materialization options
+
+        Returns:
+            MaterializedDocument object
+        """
+        db = cls.get_database()
+        document_meta = complete_doc.get('document', {})
+
+        materialized = MaterializedDocument(
+            doc_id=doc_id,
+            title=document_meta.get('title'),
+            source=document_meta.get('source'),
+            doc_type=document_meta.get('doc_type'),
+            element_count=complete_doc.get('element_count', 0),
+            relationship_count=complete_doc.get('relationship_count', 0),
+            has_full_text=complete_doc.get('has_full_text', False)
+        )
+
+        try:
+            # Include complete document structure if requested
+            if options.include_full_document:
+                materialized.complete_document = complete_doc
+
+            # Include document outline if requested
+            if options.include_document_outline:
+                materialized.outline = db.get_document_outline(doc_id)
+
+            # Include document statistics if requested
+            if options.include_document_statistics:
+                materialized.statistics = db.get_document_statistics(doc_id)
+                if materialized.statistics:
+                    materialized.text_length = materialized.statistics.get('total_characters', 0)
+
+            # Generate formatted content if format is specified
+            if options.document_format:
+                formatted_content = db.extract_document_content(doc_id, options.document_format)
+                if formatted_content:
+                    # Apply length limit if specified
+                    if options.max_document_length and len(formatted_content) > options.max_document_length:
+                        formatted_content = formatted_content[
+                                            :options.max_document_length] + "\n[... content truncated ...]"
+
+                    materialized.formatted_content = formatted_content
+                    materialized.format_type = options.document_format
+
+            # Generate full text if not included in formatted content
+            if not options.document_format or options.document_format not in ['text', 'markdown']:
+                full_text = db.get_document_full_text(
+                    doc_id,
+                    join_elements=options.join_elements,
+                    element_separator=options.element_separator
+                )
+                if full_text:
+                    # Apply length limit if specified
+                    if options.max_document_length and len(full_text) > options.max_document_length:
+                        full_text = full_text[:options.max_document_length] + "\n[... content truncated ...]"
+
+                    materialized.full_text = full_text
+
+        except Exception as e:
+            logger.error(f"Error creating materialized document for {doc_id}: {str(e)}")
+            materialized.materialization_error = str(e)
+
+        return materialized
+
+    @classmethod
+    def _extract_document_ids_from_results(cls, results: List[SearchResultItem]) -> List[str]:
+        """Extract unique document IDs from search results."""
+        doc_ids = set()
+        for item in results:
+            if item.doc_id:
+                doc_ids.add(item.doc_id)
+        return list(doc_ids)
+
     # NEW STRUCTURED SEARCH METHODS
 
     @classmethod
@@ -297,7 +493,14 @@ class SearchHelper:
                                   text: bool = False,
                                   content: bool = False,
                                   flat: bool = False,
-                                  include_parents: bool = True) -> SearchResults:
+                                  include_parents: bool = True,
+                                  # NEW: Document materialization options
+                                  include_full_document: bool = False,
+                                  document_format: Optional[str] = None,
+                                  include_document_outline: bool = False,
+                                  include_document_statistics: bool = False,
+                                  max_document_length: Optional[int] = None,
+                                  batch_documents: bool = True) -> SearchResults:
         """
         Execute a structured search using Pydantic models with SearchHelper enhancements.
 
@@ -307,9 +510,15 @@ class SearchHelper:
             content: Whether to resolve content for results
             flat: Whether to return flat results
             include_parents: Whether to include parent elements
+            include_full_document: Whether to include complete document structure
+            document_format: Format for document content ('text', 'markdown', 'html', 'json', 'yaml', 'xml')
+            include_document_outline: Whether to include document outline/hierarchy
+            include_document_statistics: Whether to include document statistics
+            max_document_length: Maximum length for document content (truncate if longer)
+            batch_documents: Whether to use batch loading for efficiency
 
         Returns:
-            SearchResults object with results, search tree, and materialized content
+            SearchResults object with results, search tree, materialized content, and documents
         """
         # Ensure database is initialized
         db = cls.get_database()
@@ -317,9 +526,11 @@ class SearchHelper:
 
         logger.debug(f"Executing structured search with query ID: {query.query_id}")
 
+        start_time = time.time()
+
         try:
             # Import the execute_search function from pydantic_search
-            from .pydantic_search import execute_search
+            from .storage.search import execute_search
 
             # Execute the search using the existing structured search system
             pydantic_response = execute_search(query, db, validate_capabilities=True)
@@ -385,6 +596,32 @@ class SearchHelper:
             else:
                 final_search_tree = search_tree
 
+            # NEW: Handle document materialization
+            materialization_options = None
+            materialized_documents = {}
+            materialization_time_ms = None
+
+            if (include_full_document or document_format or include_document_outline or
+                    include_document_statistics):
+                mat_start = time.time()
+
+                materialization_options = DocumentMaterializationOptions(
+                    include_full_document=include_full_document,
+                    document_format=document_format,
+                    include_document_outline=include_document_outline,
+                    include_document_statistics=include_document_statistics,
+                    max_document_length=max_document_length,
+                    batch_documents=batch_documents
+                )
+
+                # Extract unique document IDs from search results
+                doc_ids = cls._extract_document_ids_from_results(search_result_items)
+
+                # Materialize the documents
+                materialized_documents = cls._materialize_documents(doc_ids, materialization_options)
+
+                materialization_time_ms = (time.time() - mat_start) * 1000
+
             return SearchResults(
                 results=search_result_items,
                 total_results=pydantic_response.total_results,
@@ -396,7 +633,10 @@ class SearchHelper:
                 execution_time_ms=pydantic_response.execution_time_ms,
                 content_resolved=content,
                 text_resolved=text,
-                supports_topics=db.supports_topics()
+                supports_topics=db.supports_topics(),
+                materialized_documents=materialized_documents,
+                materialization_options=materialization_options,
+                materialization_time_ms=materialization_time_ms
             )
 
         except ImportError:
@@ -425,7 +665,14 @@ class SearchHelper:
                           text: bool = False,
                           content: bool = False,
                           flat: bool = False,
-                          include_parents: bool = True) -> SearchResults:
+                          include_parents: bool = True,
+                          # NEW: Document materialization options
+                          include_full_document: bool = False,
+                          document_format: Optional[str] = None,
+                          include_document_outline: bool = False,
+                          include_document_statistics: bool = False,
+                          max_document_length: Optional[int] = None,
+                          batch_documents: bool = True) -> SearchResults:
         """
         Convenience method for structured search that accepts either Pydantic model or dict.
 
@@ -435,6 +682,12 @@ class SearchHelper:
             content: Whether to resolve content for results
             flat: Whether to return flat results
             include_parents: Whether to include parent elements
+            include_full_document: Whether to include complete document structure
+            document_format: Format for document content
+            include_document_outline: Whether to include document outline
+            include_document_statistics: Whether to include document statistics
+            max_document_length: Maximum length for document content
+            batch_documents: Whether to use batch loading
 
         Returns:
             SearchResults object
@@ -442,8 +695,19 @@ class SearchHelper:
         if isinstance(query, dict):
             query = SearchQueryRequest.model_validate(query)
 
-        return cls.execute_structured_search(query, text=text, content=content,
-                                             flat=flat, include_parents=include_parents)
+        return cls.execute_structured_search(
+            query,
+            text=text,
+            content=content,
+            flat=flat,
+            include_parents=include_parents,
+            include_full_document=include_full_document,
+            document_format=document_format,
+            include_document_outline=include_document_outline,
+            include_document_statistics=include_document_statistics,
+            max_document_length=max_document_length,
+            batch_documents=batch_documents
+        )
 
     @classmethod
     def search_simple_structured(cls,
@@ -457,7 +721,14 @@ class SearchHelper:
                                  text: bool = False,
                                  content: bool = False,
                                  flat: bool = False,
-                                 include_parents: bool = True) -> SearchResults:
+                                 include_parents: bool = True,
+                                 # NEW: Document materialization options
+                                 include_full_document: bool = False,
+                                 document_format: Optional[str] = None,
+                                 include_document_outline: bool = False,
+                                 include_document_statistics: bool = False,
+                                 max_document_length: Optional[int] = None,
+                                 batch_documents: bool = True) -> SearchResults:
         """
         Create and execute a simple structured search query with content materialization.
 
@@ -473,6 +744,12 @@ class SearchHelper:
             content: Whether to resolve content for results
             flat: Whether to return flat results
             include_parents: Whether to include parent elements
+            include_full_document: Whether to include complete document structure
+            document_format: Format for document content
+            include_document_outline: Whether to include document outline
+            include_document_statistics: Whether to include document statistics
+            max_document_length: Maximum length for document content
+            batch_documents: Whether to use batch loading
 
         Returns:
             SearchResults object with materialized content and search tree
@@ -506,15 +783,28 @@ class SearchHelper:
                 element_types=element_types
             )
 
-        # Create and execute query
+        # Configure result options
         query = SearchQueryRequest(
             criteria_group=criteria_group,
             limit=limit,
-            include_similarity_scores=True
+            include_similarity_scores=True,
+            include_element_dates=bool(days_back)
         )
 
-        return cls.execute_structured_search(query, text=text, content=content,
-                                             flat=flat, include_parents=include_parents)
+        # Build and execute query
+        return cls.execute_structured_search(
+            query,
+            text=text,
+            content=content,
+            flat=flat,
+            include_parents=include_parents,
+            include_full_document=include_full_document,
+            document_format=document_format,
+            include_document_outline=include_document_outline,
+            include_document_statistics=include_document_statistics,
+            max_document_length=max_document_length,
+            batch_documents=batch_documents
+        )
 
     @classmethod
     def _extract_query_text_from_request(cls, query: SearchQueryRequest) -> Optional[str]:
@@ -533,6 +823,111 @@ class SearchHelper:
                 return text
 
         return None
+
+    # ENHANCED SEARCH WITH DOCUMENTS
+
+    @classmethod
+    def search_with_documents(cls,
+                              query_text: str,
+                              limit: int = 10,
+                              filter_criteria: Dict[str, Any] = None,
+                              include_topics: Optional[List[str]] = None,
+                              exclude_topics: Optional[List[str]] = None,
+                              min_confidence: Optional[float] = None,
+                              min_score: float = 0.0,
+                              text: bool = False,
+                              content: bool = False,
+                              flat: bool = False,
+                              include_parents: bool = True,
+                              # NEW: Document materialization options
+                              include_full_document: bool = False,
+                              document_format: Optional[str] = None,
+                              include_document_outline: bool = False,
+                              include_document_statistics: bool = False,
+                              max_document_length: Optional[int] = None,
+                              batch_documents: bool = True) -> SearchResults:
+        """
+        Enhanced search with document materialization capabilities.
+
+        Args:
+            # Standard search parameters
+            query_text: The text to search for
+            limit: Maximum number of results to return
+            filter_criteria: Optional filtering criteria for the search
+            include_topics: Topic LIKE patterns to include
+            exclude_topics: Topic LIKE patterns to exclude
+            min_confidence: Minimum confidence threshold for topic results
+            min_score: Minimum similarity score threshold
+            text: Whether to resolve text content for results
+            content: Whether to resolve content for results
+            flat: Whether to return flat results
+            include_parents: Whether to include parent elements
+
+            # NEW: Document materialization parameters
+            include_full_document: Whether to include complete document structure
+            document_format: Format for document content ('text', 'markdown', 'html', 'json', 'yaml', 'xml')
+            include_document_outline: Whether to include document outline/hierarchy
+            include_document_statistics: Whether to include document statistics
+            max_document_length: Maximum length for document content (truncate if longer)
+            batch_documents: Whether to use batch loading for efficiency
+
+        Returns:
+            SearchResults with materialized documents
+        """
+        start_time = time.time()
+
+        # Perform the standard search
+        search_results = cls.search_by_text(
+            query_text=query_text,
+            limit=limit,
+            filter_criteria=filter_criteria,
+            include_topics=include_topics,
+            exclude_topics=exclude_topics,
+            min_confidence=min_confidence,
+            min_score=min_score,
+            text=text,
+            content=content,
+            flat=flat,
+            include_parents=include_parents
+        )
+
+        # Create materialization options
+        materialization_options = DocumentMaterializationOptions(
+            include_full_document=include_full_document,
+            document_format=document_format,
+            include_document_outline=include_document_outline,
+            include_document_statistics=include_document_statistics,
+            max_document_length=max_document_length,
+            batch_documents=batch_documents
+        )
+
+        # Materialize documents if requested
+        materialized_documents = {}
+        materialization_time_ms = None
+
+        if (include_full_document or document_format or include_document_outline or
+                include_document_statistics):
+            mat_start = time.time()
+
+            # Extract unique document IDs from search results
+            doc_ids = cls._extract_document_ids_from_results(search_results.results)
+
+            # Materialize the documents
+            materialized_documents = cls._materialize_documents(doc_ids, materialization_options)
+
+            materialization_time_ms = (time.time() - mat_start) * 1000
+
+        # Update the search results with materialization data
+        search_results.materialized_documents = materialized_documents
+        search_results.materialization_options = materialization_options
+        search_results.materialization_time_ms = materialization_time_ms
+
+        total_time = (time.time() - start_time) * 1000
+        logger.info(f"Enhanced search completed in {total_time:.2f}ms "
+                    f"(search: {search_results.execution_time_ms or 0:.2f}ms, "
+                    f"materialization: {materialization_time_ms or 0:.2f}ms)")
+
+        return search_results
 
     # ORIGINAL METHODS (kept for backward compatibility)
 
@@ -601,10 +996,16 @@ class SearchHelper:
                 for item in items:
                     if item.child_elements:
                         resolve_elements(item.child_elements)
-                    if text:
-                        item.text = resolver.resolve_content(item.content_location, text=True)
-                    if content:
-                        item.content = resolver.resolve_content(item.content_location, text=False)
+                    if text and item.content_location:
+                        try:
+                            item.text = resolver.resolve_content(item.content_location, text=True)
+                        except Exception as e:
+                            logger.warning(f"Failed to resolve text for {item.content_location}: {e}")
+                    if content and item.content_location:
+                        try:
+                            item.content = resolver.resolve_content(item.content_location, text=False)
+                        except Exception as e:
+                            logger.warning(f"Failed to resolve content for {item.content_location}: {e}")
 
             search_tree = db.get_results_outline(filtered_elements)
             resolve_elements(search_tree)
@@ -665,10 +1066,16 @@ class SearchHelper:
                 for item in items:
                     if item.child_elements:
                         resolve_elements(item.child_elements)
-                    if text:
-                        item.text = resolver.resolve_content(item.content_location, text=True)
-                    if content:
-                        item.content = resolver.resolve_content(item.content_location, text=False)
+                    if text and item.content_location:
+                        try:
+                            item.text = resolver.resolve_content(item.content_location, text=True)
+                        except Exception as e:
+                            logger.warning(f"Failed to resolve text for {item.content_location}: {e}")
+                    if content and item.content_location:
+                        try:
+                            item.content = resolver.resolve_content(item.content_location, text=False)
+                        except Exception as e:
+                            logger.warning(f"Failed to resolve content for {item.content_location}: {e}")
 
             search_tree = db.get_results_outline(filtered_elements)
             resolve_elements(search_tree)
@@ -860,7 +1267,14 @@ def search_structured(query: Union[SearchQueryRequest, Dict[str, Any]],
                       text: bool = False,
                       content: bool = False,
                       flat: bool = False,
-                      include_parents: bool = True) -> SearchResults:
+                      include_parents: bool = True,
+                      # NEW: Document materialization options
+                      include_full_document: bool = False,
+                      document_format: Optional[str] = None,
+                      include_document_outline: bool = False,
+                      include_document_statistics: bool = False,
+                      max_document_length: Optional[int] = None,
+                      batch_documents: bool = True) -> SearchResults:
     """
     Execute a structured search using Pydantic models.
     Uses singleton instances of database and content resolver.
@@ -871,12 +1285,29 @@ def search_structured(query: Union[SearchQueryRequest, Dict[str, Any]],
         content: Whether to resolve content for results
         flat: Whether to return flat results
         include_parents: Whether to include parent elements
+        include_full_document: Whether to include complete document structure
+        document_format: Format for document content
+        include_document_outline: Whether to include document outline
+        include_document_statistics: Whether to include document statistics
+        max_document_length: Maximum length for document content
+        batch_documents: Whether to use batch loading
 
     Returns:
         SearchResults object with materialized content and search tree
     """
-    return SearchHelper.search_structured(query, text=text, content=content,
-                                          flat=flat, include_parents=include_parents)
+    return SearchHelper.search_structured(
+        query,
+        text=text,
+        content=content,
+        flat=flat,
+        include_parents=include_parents,
+        include_full_document=include_full_document,
+        document_format=document_format,
+        include_document_outline=include_document_outline,
+        include_document_statistics=include_document_statistics,
+        max_document_length=max_document_length,
+        batch_documents=batch_documents
+    )
 
 
 def search_simple_structured(query_text: str,
@@ -889,7 +1320,14 @@ def search_simple_structured(query_text: str,
                              text: bool = False,
                              content: bool = False,
                              flat: bool = False,
-                             include_parents: bool = True) -> SearchResults:
+                             include_parents: bool = True,
+                             # NEW: Document materialization options
+                             include_full_document: bool = False,
+                             document_format: Optional[str] = None,
+                             include_document_outline: bool = False,
+                             include_document_statistics: bool = False,
+                             max_document_length: Optional[int] = None,
+                             batch_documents: bool = True) -> SearchResults:
     """
     Create and execute a simple structured search query with content materialization.
     Uses singleton instances of database.
@@ -906,6 +1344,12 @@ def search_simple_structured(query_text: str,
         content: Whether to resolve content for results
         flat: Whether to return flat results
         include_parents: Whether to include parent elements
+        include_full_document: Whether to include complete document structure
+        document_format: Format for document content
+        include_document_outline: Whether to include document outline
+        include_document_statistics: Whether to include document statistics
+        max_document_length: Maximum length for document content
+        batch_documents: Whether to use batch loading
 
     Returns:
         SearchResults object with materialized content and search tree
@@ -921,8 +1365,176 @@ def search_simple_structured(query_text: str,
         text=text,
         content=content,
         flat=flat,
-        include_parents=include_parents
+        include_parents=include_parents,
+        include_full_document=include_full_document,
+        document_format=document_format,
+        include_document_outline=include_document_outline,
+        include_document_statistics=include_document_statistics,
+        max_document_length=max_document_length,
+        batch_documents=batch_documents
     )
+
+
+def search_with_documents(query_text: str,
+                          limit: int = 10,
+                          filter_criteria: Dict[str, Any] = None,
+                          include_topics: Optional[List[str]] = None,
+                          exclude_topics: Optional[List[str]] = None,
+                          min_confidence: Optional[float] = None,
+                          min_score: float = 0.0,
+                          text: bool = False,
+                          content: bool = False,
+                          flat: bool = False,
+                          include_parents: bool = True,
+                          # Document materialization options
+                          include_full_document: bool = False,
+                          document_format: Optional[str] = None,
+                          include_document_outline: bool = False,
+                          include_document_statistics: bool = False,
+                          max_document_length: Optional[int] = None,
+                          batch_documents: bool = True) -> SearchResults:
+    """
+    Search with complete document materialization capabilities.
+
+    This function combines semantic search with full document materialization,
+    allowing you to get search results along with complete document content
+    in various formats.
+
+    Example:
+        # Get search results with documents as formatted markdown
+        results = search_with_documents(
+            query_text="machine learning algorithms",
+            limit=10,
+            document_format="markdown",
+            include_document_statistics=True,
+            max_document_length=5000
+        )
+
+        # Access materialized documents
+        for doc_id, doc in results.materialized_documents.items():
+            print(f"Document: {doc.title}")
+            print(f"Markdown content: {doc.formatted_content}")
+            print(f"Statistics: {doc.statistics}")
+    """
+    return SearchHelper.search_with_documents(
+        query_text=query_text,
+        limit=limit,
+        filter_criteria=filter_criteria,
+        include_topics=include_topics,
+        exclude_topics=exclude_topics,
+        min_confidence=min_confidence,
+        min_score=min_score,
+        text=text,
+        content=content,
+        flat=flat,
+        include_parents=include_parents,
+        include_full_document=include_full_document,
+        document_format=document_format,
+        include_document_outline=include_document_outline,
+        include_document_statistics=include_document_statistics,
+        max_document_length=max_document_length,
+        batch_documents=batch_documents
+    )
+
+
+def get_document_in_format(doc_id: str,
+                           format_type: str = 'text',
+                           include_outline: bool = False,
+                           include_statistics: bool = False,
+                           include_full_text: bool = True,
+                           max_length: Optional[int] = None) -> MaterializedDocument:
+    """
+    Get a single document in the specified format.
+
+    This is a convenience function for getting formatted document content
+    without performing a search.
+
+    Args:
+        doc_id: Document ID to retrieve
+        format_type: Output format ('text', 'markdown', 'html', 'json', 'yaml', 'xml')
+        include_outline: Whether to include document outline
+        include_statistics: Whether to include document statistics
+        include_full_text: Whether to include full text content
+        max_length: Maximum length for content (truncate if longer)
+
+    Returns:
+        MaterializedDocument with formatted content
+
+    Example:
+        # Get document as markdown with outline
+        doc = get_document_in_format(
+            doc_id="doc_123",
+            format_type="markdown",
+            include_outline=True,
+            max_length=5000
+        )
+
+        print(f"Markdown: {doc.formatted_content}")
+        print(f"Outline: {doc.outline}")
+    """
+    db = SearchHelper.get_database()
+
+    options = DocumentMaterializationOptions(
+        include_full_document=True,
+        document_format=format_type,
+        include_document_outline=include_outline,
+        include_document_statistics=include_statistics,
+        include_full_text=include_full_text,
+        max_document_length=max_length
+    )
+
+    complete_doc = db.get_complete_document(doc_id, include_full_text)
+    if not complete_doc:
+        return MaterializedDocument(
+            doc_id=doc_id,
+            materialization_error=f"Document {doc_id} not found"
+        )
+
+    return SearchHelper._create_materialized_document(doc_id, complete_doc, options)
+
+
+def get_documents_batch_formatted(doc_ids: List[str],
+                                  format_type: str = 'text',
+                                  include_outline: bool = False,
+                                  include_statistics: bool = False,
+                                  include_full_text: bool = True,
+                                  max_length: Optional[int] = None) -> Dict[str, MaterializedDocument]:
+    """
+    Get multiple documents in the specified format using batch loading.
+
+    Args:
+        doc_ids: List of document IDs to retrieve
+        format_type: Output format for all documents
+        include_outline: Whether to include document outlines
+        include_statistics: Whether to include document statistics
+        include_full_text: Whether to include full text content
+        max_length: Maximum length for content
+
+    Returns:
+        Dictionary mapping doc_id to MaterializedDocument
+
+    Example:
+        # Get multiple documents as HTML
+        docs = get_documents_batch_formatted(
+            doc_ids=["doc_1", "doc_2", "doc_3"],
+            format_type="html",
+            include_statistics=True
+        )
+
+        for doc_id, doc in docs.items():
+            print(f"Document {doc_id}: {doc.statistics['total_words']} words")
+    """
+    options = DocumentMaterializationOptions(
+        include_full_document=True,
+        document_format=format_type,
+        include_document_outline=include_outline,
+        include_document_statistics=include_statistics,
+        include_full_text=include_full_text,
+        max_document_length=max_length,
+        batch_documents=True
+    )
+
+    return SearchHelper._materialize_documents(doc_ids, options)
 
 
 def create_simple_search_query(query_text: str,
@@ -1128,170 +1740,98 @@ def supports_topics() -> bool:
 
 # EXAMPLE USAGE:
 """
-# Example 1: Using the new structured search methods with content materialization
+# Example 1: Search with document materialization as markdown
+results = search_with_documents(
+    query_text="machine learning best practices",
+    limit=10,
+    document_format="markdown",
+    include_document_statistics=True,
+    max_document_length=5000
+)
 
-# Create a structured query using Pydantic models
+print(f"Found {results.total_results} results")
+print(f"Materialized {len(results.materialized_documents)} documents")
+
+for doc_id, doc in results.materialized_documents.items():
+    print(f"\nDocument: {doc.title}")
+    print(f"Words: {doc.statistics.get('total_words', 0) if doc.statistics else 'N/A'}")
+    print(f"Markdown preview: {doc.formatted_content[:200]}...")
+
+# Example 2: Structured search with HTML document materialization
 query = SearchQueryRequest(
     criteria_group=SearchCriteriaGroupRequest(
         operator=LogicalOperatorEnum.AND,
         semantic_search=SemanticSearchRequest(
-            query_text="machine learning algorithms",
-            similarity_threshold=0.8,
-            boost_factor=2.0
+            query_text="quarterly financial results",
+            similarity_threshold=0.8
         ),
-        topic_search=TopicSearchRequest(
-            include_topics=['ai%', 'ml%'],
-            exclude_topics=['deprecated%'],
-            min_confidence=0.8
-        ),
-        date_search=DateSearchRequest(
-            operator=DateRangeOperatorEnum.RELATIVE_DAYS,
-            relative_value=30
-        )
-    ),
-    limit=20,
-    include_similarity_scores=True,
-    include_topics=True
-)
-
-# Execute the structured search with content materialization
-results = search_structured(query, text=True, content=True)
-print(f"Found {results.total_results} results in {results.execution_time_ms}ms")
-print(f"Search tree has {len(results.search_tree)} top-level elements")
-
-# Access materialized content in the search tree
-for tree_item in results.search_tree:
-    if hasattr(tree_item, 'text') and tree_item.text:
-        print(f"Materialized text: {tree_item.text[:100]}...")
-    if hasattr(tree_item, 'content') and tree_item.content:
-        print(f"Materialized content available: {len(tree_item.content)} chars")
-
-# Example 2: Using the simple structured search with content materialization
-results = search_simple_structured(
-    query_text="data science methodologies",
-    limit=15,
-    similarity_threshold=0.75,
-    include_topics=['data-science%', 'analytics%'],
-    exclude_topics=['draft%'],
-    days_back=60,
-    element_types=['paragraph', 'header'],
-    text=True,        # Materialize text content
-    content=False,    # Don't materialize raw content
-    flat=True,        # Return flat results
-    include_parents=True
-)
-
-print(f"Text was resolved: {results.text_resolved}")
-print(f"Content was resolved: {results.content_resolved}")
-print(f"Search tree is flat: {all(hasattr(item, 'score') for item in results.search_tree)}")
-
-# Example 3: Creating queries programmatically
-simple_query = create_simple_search_query(
-    query_text="artificial intelligence trends",
-    days_back=7,
-    element_types=['paragraph'],
-    similarity_threshold=0.8
-)
-
-# Execute with document hierarchy (not flat)
-ai_results = search_structured(simple_query, text=True, flat=False, include_parents=True)
-
-# Navigate the hierarchical search tree
-for tree_item in ai_results.search_tree:
-    print(f"Top-level element: {tree_item.element_type}")
-    if hasattr(tree_item, 'child_elements'):
-        for child in tree_item.child_elements:
-            print(f"  Child: {child.element_type}")
-            if hasattr(child, 'text') and child.text:
-                print(f"    Text: {child.text[:50]}...")
-
-# Example 4: Working with dictionaries (useful for API integrations)
-query_dict = {
-    "criteria_group": {
-        "operator": "AND",
-        "semantic_search": {
-            "query_text": "quarterly financial analysis",
-            "similarity_threshold": 0.8
-        },
-        "metadata_search": {
-            "exact_matches": {"department": "finance"},
-            "exists_filters": ["approval_date"]
-        }
-    },
-    "limit": 25,
-    "include_metadata": True
-}
-
-# Execute with both text and content materialization
-results = search_structured(query_dict, text=True, content=True)
-
-# Access both the search results and the search tree
-for result_item in results.results:
-    print(f"Result: {result_item.element_pk} (score: {result_item.similarity})")
-    
-    # Access materialized content via the SearchResultItem properties
-    if result_item.text:
-        print(f"  Text: {result_item.text[:100]}...")
-    if result_item.content:
-        print(f"  Content: {result_item.content[:100]}...")
-
-# Example 5: Complex nested query with content materialization
-complex_query = SearchQueryRequest(
-    criteria_group=SearchCriteriaGroupRequest(
-        operator=LogicalOperatorEnum.AND,
-        sub_groups=[
-            SearchCriteriaGroupRequest(
-                operator=LogicalOperatorEnum.OR,
-                semantic_search=SemanticSearchRequest(
-                    query_text="machine learning",
-                    similarity_threshold=0.7
-                ),
-                topic_search=TopicSearchRequest(
-                    include_topics=['ai%', 'ml%', 'deep-learning%']
-                )
-            ),
-            SearchCriteriaGroupRequest(
-                operator=LogicalOperatorEnum.NOT,
-                topic_search=TopicSearchRequest(
-                    include_topics=['deprecated%', 'obsolete%']
-                )
-            )
-        ],
         date_search=DateSearchRequest(
             operator=DateRangeOperatorEnum.QUARTER,
             year=2024,
             quarter=3
         )
     ),
-    limit=50,
-    include_element_dates=True,
-    include_topics=True,
-    include_similarity_scores=True
+    limit=15
 )
 
-# Execute complex query with selective content materialization
-complex_results = search_structured(complex_query, 
-                                  text=True,          # Get text for display
-                                  content=False,      # Skip raw content for performance
-                                  flat=False,         # Keep hierarchical structure
-                                  include_parents=True)
-
-print(f"Complex search found {complex_results.total_results} results")
-print(f"Document sources: {complex_results.documents}")
-print(f"Supports topics: {complex_results.supports_topics}")
-
-# Example 6: Performance-conscious search (flat results, no content materialization)
-fast_results = search_simple_structured(
-    query_text="security vulnerabilities",
-    limit=100,
-    similarity_threshold=0.6,
-    include_topics=['security%'],
-    flat=True,              # Faster flat results
-    include_parents=False,  # Only scored elements
-    text=False,             # No content materialization for speed
-    content=False
+results = search_structured(
+    query=query,
+    document_format="html",
+    include_document_outline=True,
+    include_document_statistics=True,
+    text=True  # Also get element text
 )
 
-print(f"Fast search returned {len(fast_results.results)} results")
-print(f"All results have scores: {all(hasattr(item, 'score') for item in fast_results.search_tree if hasattr(item, 'score'))}")
+for doc_id, doc in results.materialized_documents.items():
+    print(f"\nDocument: {doc.title}")
+    print(f"Format: {doc.format_type}")
+    print(f"HTML length: {len(doc.formatted_content) if doc.formatted_content else 0}")
+    if doc.outline:
+        print(f"Outline elements: {doc.outline.get('total_elements', 0)}")
+
+# Example 3: Get single document in multiple formats
+doc_markdown = get_document_in_format("doc_123", "markdown", include_outline=True)
+doc_html = get_document_in_format("doc_123", "html", include_statistics=True)
+doc_text = get_document_in_format("doc_123", "text", max_length=1000)
+
+print(f"Markdown: {len(doc_markdown.formatted_content or '')} chars")
+print(f"HTML: {len(doc_html.formatted_content or '')} chars") 
+print(f"Text (truncated): {len(doc_text.formatted_content or '')} chars")
+
+# Example 4: Batch load documents in JSON format
+doc_ids = ["doc_1", "doc_2", "doc_3", "doc_4"]
+docs_json = get_documents_batch_formatted(
+    doc_ids=doc_ids,
+    format_type="json",
+    include_statistics=True
+)
+
+for doc_id, doc in docs_json.items():
+    print(f"Document {doc_id}: {doc.element_count} elements")
+    if doc.statistics:
+        print(f"  Characters: {doc.statistics.get('total_characters', 0)}")
+        print(f"  Element types: {list(doc.statistics.get('element_types', {}).keys())}")
+
+# Example 5: Performance comparison - search with and without documents
+import time
+
+# Fast search (no document materialization)
+start = time.time()
+fast_results = search_by_text("data analysis", limit=20)
+fast_time = time.time() - start
+
+# Search with document materialization
+start = time.time()
+rich_results = search_with_documents(
+    query_text="data analysis",
+    limit=20,
+    document_format="markdown",
+    include_document_statistics=True,
+    batch_documents=True
+)
+rich_time = time.time() - start
+
+print(f"Fast search: {fast_time:.3f}s")
+print(f"Rich search: {rich_time:.3f}s (materialization: {rich_results.materialization_time_ms:.1f}ms)")
+print(f"Documents materialized: {len(rich_results.materialized_documents)}")
 """

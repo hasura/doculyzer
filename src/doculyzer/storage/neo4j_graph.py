@@ -1,9 +1,10 @@
 """
-Neo4j Implementation with Structured Search Support
+Neo4j Implementation with Comprehensive Full Text and Structured Search Support
 
 This module provides a complete Neo4j implementation of the DocumentDatabase
-with full structured search capabilities. It leverages Neo4j's graph database features
-including Cypher queries, graph relationships, and JSON properties to provide comprehensive search.
+with full structured search capabilities and comprehensive full text support.
+It leverages Neo4j's graph database features including Cypher queries, full text indexes,
+graph relationships, and JSON properties to provide comprehensive search.
 """
 
 import datetime
@@ -90,29 +91,245 @@ class DateTimeEncoder(json.JSONEncoder):
 
 
 class Neo4jDocumentDatabase(DocumentDatabase):
-    """Neo4j implementation of document database with structured search support."""
+    """Neo4j implementation with comprehensive full text and structured search support."""
 
-    def __init__(self, uri: str, user: str, password: str, database: str = "neo4j"):
+    def __init__(self, conn_params: Dict[str, Any]):
         """
-        Initialize Neo4j document database.
+        Initialize Neo4j document database with full text configuration support.
 
         Args:
-            uri: Neo4j connection URI (e.g., 'bolt://localhost:7687')
-            user: Neo4j username
-            password: Neo4j password
-            database: Neo4j database name (default is 'neo4j')
+            conn_params: Connection parameters including:
+                Core connection:
+                - uri: Neo4j connection URI (e.g., 'bolt://localhost:7687')
+                - user: Neo4j username
+                - password: Neo4j password
+                - database: Neo4j database name (default: 'neo4j')
+
+                Text storage and indexing options:
+                - store_full_text: Whether to store full text for retrieval (default: True)
+                - index_full_text: Whether to index full text for search (default: True)
+                - compress_full_text: Whether to enable compression for stored text (default: False)
+                - full_text_max_length: Maximum length for full text, truncate if longer (default: None)
+
+                Common configuration patterns:
+                - Search + Storage: store_full_text=True, index_full_text=True (default, best search quality)
+                - Search only: store_full_text=False, index_full_text=True (saves storage space)
+                - Storage only: store_full_text=True, index_full_text=False (for retrieval without search)
+                - Neither: store_full_text=False, index_full_text=False (minimal storage, preview only)
         """
-        self.uri = uri
-        self.user = user
-        self.password = password
-        self.database = database
+        # Call parent constructor for full text configuration
+        super().__init__(conn_params)
+
+        # Extract Neo4j connection parameters
+        self.uri = conn_params.get('uri', 'bolt://localhost:7687')
+        self.user = conn_params.get('user', 'neo4j')
+        self.password = conn_params.get('password', 'password')
+        self.database = conn_params.get('database', 'neo4j')
+
         self.driver: Neo4jDriverType = None
         self.embedding_generator = None
         self.vector_dimension = None
+
         if config:
             self.vector_dimension = config.config.get('embedding', {}).get('dimensions', 384)
         else:
             self.vector_dimension = 384  # Default if config not available
+
+        # Log configuration
+        logger.info(f"Neo4j database initialized with URI: {self.uri}")
+        config_info = self.get_text_storage_config()
+        logger.info(f"Text storage config - Store: {config_info['store_full_text']}, "
+                    f"Index: {config_info['index_full_text']}, "
+                    f"Compress: {config_info['compress_full_text']}")
+        if config_info['full_text_max_length']:
+            logger.info(f"Full text will be truncated to {config_info['full_text_max_length']} characters")
+
+    # ========================================
+    # FULL TEXT CONFIGURATION METHODS
+    # ========================================
+
+    def supports_full_text_search(self) -> bool:
+        """
+        Indicate whether this backend supports full-text search capabilities.
+
+        For Neo4j implementation, we support full-text search when index_full_text is enabled
+        and Neo4j full text indexes are available.
+        """
+        return self.index_full_text
+
+    def get_text_storage_config(self) -> Dict[str, Any]:
+        """
+        Get current text storage and indexing configuration.
+
+        Returns:
+            Dictionary with current text storage settings
+        """
+        return {
+            'store_full_text': self.store_full_text,
+            'index_full_text': self.index_full_text,
+            'compress_full_text': self.compress_full_text,
+            'full_text_max_length': self.full_text_max_length,
+            'search_capabilities': {
+                'can_search_full_text': self.index_full_text,
+                'can_retrieve_full_text': self.store_full_text,
+                'search_fields': self._get_available_search_fields()
+            }
+        }
+
+    def get_storage_size_estimate(self) -> Dict[str, str]:
+        """
+        Get estimated storage usage based on current configuration.
+
+        Returns:
+            Dictionary with storage estimates
+        """
+        estimates = {
+            'full_text_storage': 'High' if self.store_full_text else 'None',
+            'full_text_index': 'High' if self.index_full_text else 'None',
+            'compression_enabled': self.compress_full_text
+        }
+
+        # Calculate overall storage impact
+        if not self.store_full_text and not self.index_full_text:
+            estimates['overall_storage'] = 'Minimal (preview only)'
+        elif not self.store_full_text:
+            estimates['overall_storage'] = 'Medium (search index only)'
+        elif not self.index_full_text:
+            estimates['overall_storage'] = 'Medium (storage only)'
+        elif self.compress_full_text:
+            estimates['overall_storage'] = 'High (compressed full text)'
+        else:
+            estimates['overall_storage'] = 'High (full text + search)'
+
+        return estimates
+
+    def get_full_text_usage_recommendations(self) -> Dict[str, Any]:
+        """
+        Get recommendations for optimizing full-text usage based on current configuration.
+
+        Returns:
+            Dictionary with optimization recommendations
+        """
+        config = self.get_text_storage_config()
+        storage = self.get_storage_size_estimate()
+
+        recommendations = {
+            'current_config': 'optimal',
+            'suggestions': [],
+            'warnings': []
+        }
+
+        # Check for configuration issues
+        if not self.store_full_text and not self.index_full_text:
+            recommendations['suggestions'].append(
+                "Minimal configuration detected. Consider enabling store_full_text=True "
+                "if you need to retrieve original content."
+            )
+
+        if self.store_full_text and not self.index_full_text:
+            recommendations['suggestions'].append(
+                "Consider enabling index_full_text=True to enable full-text search capabilities."
+            )
+
+        if storage['overall_storage'] == 'High' and not self.compress_full_text:
+            recommendations['suggestions'].append(
+                "High storage usage detected. Consider enabling compress_full_text=True "
+                "to reduce storage requirements."
+            )
+
+        if self.full_text_max_length is None:
+            recommendations['suggestions'].append(
+                "No length limit set for full text. Consider setting full_text_max_length "
+                "to prevent very large documents from consuming excessive storage."
+            )
+
+        # Neo4j-specific recommendations
+        recommendations['suggestions'].append(
+            "Neo4j full text search requires proper index configuration. "
+            "Ensure full text indexes are created for optimal performance."
+        )
+
+        return recommendations
+
+    def _get_available_search_fields(self) -> List[str]:
+        """
+        Get list of fields available for text search based on configuration.
+
+        Returns:
+            List of field names that can be searched
+        """
+        fields = ['content_preview']  # Always available
+
+        if self.index_full_text:
+            fields.append('full_text')
+
+        return fields
+
+    def _process_full_content(self, element: Dict[str, Any]) -> None:
+        """
+        Process full_content field based on configuration settings.
+
+        Args:
+            element: Element dictionary to process (modified in place)
+        """
+        if "full_content" not in element:
+            return
+
+        full_content = element["full_content"]
+
+        # Apply length limit if configured
+        if self.full_text_max_length and len(full_content) > self.full_text_max_length:
+            full_content = full_content[:self.full_text_max_length] + "..."
+            logger.debug(f"Truncated full_text for element {element.get('element_id')} "
+                         f"to {self.full_text_max_length} characters")
+
+        # Store/index full text based on configuration
+        if self.store_full_text or self.index_full_text:
+            # Apply compression if enabled
+            if self.compress_full_text:
+                try:
+                    import gzip
+                    import base64
+                    compressed = gzip.compress(full_content.encode('utf-8'))
+                    element["full_text"] = base64.b64encode(compressed).decode('ascii')
+                    element["full_text_compressed"] = True
+                except ImportError:
+                    logger.warning("gzip not available for compression, storing uncompressed")
+                    element["full_text"] = full_content
+                    element["full_text_compressed"] = False
+            else:
+                element["full_text"] = full_content
+                element["full_text_compressed"] = False
+
+        # Always remove the original full_content field to avoid duplication
+        del element["full_content"]
+
+    def _get_element_full_text(self, element: Dict[str, Any]) -> str:
+        """
+        Get full text content from element, handling compression.
+
+        Args:
+            element: Element dictionary
+
+        Returns:
+            Full text content (decompressed if necessary)
+        """
+        full_text = element.get("full_text", "")
+        if not full_text:
+            return ""
+
+        # Check if content is compressed
+        if element.get("full_text_compressed", False):
+            try:
+                import gzip
+                import base64
+                compressed_data = base64.b64decode(full_text.encode('ascii'))
+                return gzip.decompress(compressed_data).decode('utf-8')
+            except Exception as e:
+                logger.error(f"Error decompressing full text: {str(e)}")
+                return ""
+
+        return full_text
 
     # ========================================
     # STRUCTURED SEARCH IMPLEMENTATION
@@ -126,7 +343,6 @@ class Neo4jDocumentDatabase(DocumentDatabase):
             # Core search types
             SearchCapability.TEXT_SIMILARITY,
             SearchCapability.EMBEDDING_SIMILARITY,
-            SearchCapability.FULL_TEXT_SEARCH,
 
             # Date capabilities
             SearchCapability.DATE_FILTERING,
@@ -166,8 +382,11 @@ class Neo4jDocumentDatabase(DocumentDatabase):
 
             # Advanced features
             SearchCapability.FACETED_SEARCH,
-            # Note: Neo4j doesn't have built-in result highlighting like PostgreSQL full-text search
         }
+
+        # Add full text search capability if enabled
+        if self.index_full_text:
+            supported.add(SearchCapability.FULL_TEXT_SEARCH)
 
         return BackendCapabilities(supported)
 
@@ -191,7 +410,7 @@ class Neo4jDocumentDatabase(DocumentDatabase):
             final_results = self._process_search_results(raw_results, query)
 
             # Apply pagination
-            start_idx = query.offset
+            start_idx = query.offset or 0
             end_idx = start_idx + query.limit
 
             return final_results[start_idx:end_idx]
@@ -240,7 +459,101 @@ class Neo4jDocumentDatabase(DocumentDatabase):
         return self._combine_results(all_results, group.operator)
 
     def _execute_text_criteria(self, criteria: TextSearchCriteria) -> List[Dict[str, Any]]:
-        """Execute text similarity search using embeddings."""
+        """Execute text similarity search using embeddings or full text search."""
+        try:
+            # Use full text search if available and enabled
+            if self.index_full_text and self.supports_full_text_search():
+                return self._execute_full_text_search(criteria)
+            else:
+                # Fall back to embedding-based search
+                return self._execute_embedding_text_search(criteria)
+
+        except Exception as e:
+            logger.error(f"Error executing text criteria: {str(e)}")
+            return []
+
+    def _execute_full_text_search(self, criteria: TextSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute full text search using Neo4j's full text indexes."""
+        if not self.driver:
+            raise ValueError("Database not initialized")
+
+        with self.driver.session(database=self.database) as session:
+            # Use Neo4j's full text search
+            # Note: This requires that full text indexes have been created
+            try:
+                # Try to use full text index search
+                result = session.run("""
+                    CALL db.index.fulltext.queryNodes("elementFullText", $search_text)
+                    YIELD node, score
+                    RETURN id(node) AS element_pk, score
+                    ORDER BY score DESC
+                    LIMIT 1000
+                """, search_text=criteria.query_text)
+
+                filtered_results = []
+                for record in result:
+                    element_pk = record["element_pk"]
+                    score = record["score"]
+
+                    # Apply similarity threshold filtering
+                    if self._compare_similarity(score, criteria.similarity_threshold, criteria.similarity_operator):
+                        filtered_results.append({
+                            'element_pk': element_pk,
+                            'scores': {
+                                'full_text_score': score * criteria.boost_factor
+                            }
+                        })
+
+                return filtered_results
+
+            except Exception as e:
+                logger.warning(f"Full text index search failed, falling back to CONTAINS: {str(e)}")
+                # Fall back to basic text search using CONTAINS
+                return self._execute_basic_text_search(criteria)
+
+    def _execute_basic_text_search(self, criteria: TextSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute basic text search using CONTAINS operator."""
+        if not self.driver:
+            raise ValueError("Database not initialized")
+
+        with self.driver.session(database=self.database) as session:
+            # Build search query using CONTAINS
+            search_fields = []
+
+            # Search in content_preview (always available)
+            search_fields.append("e.content_preview CONTAINS $search_text")
+
+            # Also search in full_text if indexing is enabled
+            if self.index_full_text:
+                search_fields.append("e.full_text CONTAINS $search_text")
+
+            cypher_query = f"""
+                MATCH (e:Element)
+                WHERE {' OR '.join(search_fields)}
+                RETURN id(e) AS element_pk
+                LIMIT 1000
+            """
+
+            result = session.run(cypher_query, search_text=criteria.query_text)
+
+            results = []
+            for record in result:
+                element_pk = record["element_pk"]
+                # Basic text search gets a fixed relevance score
+                score = 0.8  # Default relevance for text matches
+
+                if self._compare_similarity(score, criteria.similarity_threshold, criteria.similarity_operator):
+                    results.append({
+                        'element_pk': element_pk,
+                        'scores': {
+                            'text_match_score': score * criteria.boost_factor
+                        }
+                    })
+
+            return results
+
+    def _execute_embedding_text_search(self, criteria: TextSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute text search using embedding similarity."""
         try:
             # Generate embedding for the query text
             query_embedding = self._generate_embedding(criteria.query_text)
@@ -266,7 +579,7 @@ class Neo4jDocumentDatabase(DocumentDatabase):
             return filtered_results
 
         except Exception as e:
-            logger.error(f"Error executing text criteria: {str(e)}")
+            logger.error(f"Error executing embedding text search: {str(e)}")
             return []
 
     def _execute_embedding_criteria(self, criteria: EmbeddingSearchCriteria) -> List[Dict[str, Any]]:
@@ -344,6 +657,9 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                 start_date = datetime.datetime(criteria.year, start_month, start_day)
                 end_date = datetime.datetime(criteria.year, end_month, end_day, 23, 59, 59)
                 element_pks = self._get_element_pks_in_date_range(start_date, end_date)
+
+            else:
+                return []
 
             # Also filter by specificity levels if needed
             if criteria.specificity_levels:
@@ -687,7 +1003,7 @@ class Neo4jDocumentDatabase(DocumentDatabase):
         return enriched_results
 
     @staticmethod
-    def _calculate_combined_score(scores: Dict[str, List[float]],
+    def _calculate_combined_score(scores: Dict[str, List[float] | float],
                                   combination_method: str,
                                   weights: Dict[str, float]) -> float:
         """Calculate final combined score from multiple score types."""
@@ -698,8 +1014,10 @@ class Neo4jDocumentDatabase(DocumentDatabase):
         # Average scores of the same type
         avg_scores = {}
         for score_type, score_list in scores.items():
-            if score_list:
+            if isinstance(score_list, list) and len(score_list) > 0:
                 avg_scores[score_type] = sum(score_list) / len(score_list)
+            elif isinstance(score_list, float):
+                avg_scores[score_type] = score_list
 
         if not avg_scores:
             return 0.0
@@ -823,7 +1141,7 @@ class Neo4jDocumentDatabase(DocumentDatabase):
             return [record["element_pk"] for record in result]
 
     # ========================================
-    # ALL EXISTING METHODS (unchanged from previous implementation)
+    # CORE DATABASE OPERATIONS
     # ========================================
 
     def initialize(self) -> None:
@@ -843,6 +1161,11 @@ class Neo4jDocumentDatabase(DocumentDatabase):
 
             # Create constraints and indexes
             self._create_constraints_and_indexes()
+
+            # Create full text indexes if enabled
+            if self.index_full_text:
+                self._create_full_text_indexes()
+
             logger.info(f"Successfully connected to Neo4j at {self.uri}")
 
         except (ServiceUnavailable, AuthError) as e:
@@ -877,7 +1200,10 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                 # Enhanced search indexes
                 "CREATE INDEX IF NOT EXISTS FOR (e:Element) ON (e.content_preview)",
                 "CREATE INDEX IF NOT EXISTS FOR (d:Document) ON (d.source)",
-                "CREATE INDEX IF NOT EXISTS FOR (d:Document) ON (d.doc_type)"
+                "CREATE INDEX IF NOT EXISTS FOR (d:Document) ON (d.doc_type)",
+                # Date search indexes
+                "CREATE INDEX IF NOT EXISTS FOR (d:ExtractedDate) ON (d.timestamp_value)",
+                "CREATE INDEX IF NOT EXISTS FOR (d:ExtractedDate) ON (d.specificity_level)"
             ]
 
             # Execute all constraints and indexes
@@ -886,6 +1212,33 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                     session.run(query)
                 except Exception as e:
                     logger.warning(f"Error creating constraint or index: {str(e)}")
+
+    def _create_full_text_indexes(self) -> None:
+        """Create full text indexes if full text indexing is enabled."""
+        if not self.index_full_text:
+            return
+
+        with self.driver.session(database=self.database) as session:
+            try:
+                # Create full text index for elements
+                session.run("""
+                    CREATE FULLTEXT INDEX elementFullText IF NOT EXISTS
+                    FOR (e:Element)
+                    ON EACH [e.content_preview, e.full_text]
+                """)
+
+                # Create full text index for documents
+                session.run("""
+                    CREATE FULLTEXT INDEX documentFullText IF NOT EXISTS
+                    FOR (d:Document)
+                    ON EACH [d.source, d.doc_type]
+                """)
+
+                logger.info("Created full text indexes for Neo4j")
+
+            except Exception as e:
+                logger.warning(f"Could not create full text indexes: {str(e)}")
+                logger.warning("Full text search will fall back to CONTAINS operations")
 
     def get_last_processed_info(self, source_id: str) -> Optional[Dict[str, Any]]:
         """Get information about when a document was last processed."""
@@ -1035,16 +1388,24 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                 updated_at=document.get("updated_at", time.time())
             )
 
-            # Store elements and create relationships to document
+            # Store elements with full text processing and create relationships to document
             element_pk_map = {}  # Maps element_id to Neo4j node id
 
             for element in elements:
                 element_id = element["element_id"]
+
+                # Process full text content based on configuration
+                self._process_full_content(element)
+
                 metadata_json = json.dumps(element.get("metadata", {}))
                 content_preview = element.get("content_preview", "")
 
                 if len(content_preview) > 100:
                     content_preview = content_preview[:100] + "..."
+
+                # Prepare full text field
+                full_text = element.get("full_text", "")
+                full_text_compressed = element.get("full_text_compressed", False)
 
                 # Create the element node and link to document
                 result = session.run(
@@ -1056,6 +1417,8 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                         element_type: $element_type,
                         parent_id: $parent_id,
                         content_preview: $content_preview,
+                        full_text: $full_text,
+                        full_text_compressed: $full_text_compressed,
                         content_location: $content_location,
                         content_hash: $content_hash,
                         metadata: $metadata
@@ -1068,6 +1431,8 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                     element_type=element.get("element_type", ""),
                     parent_id=element.get("parent_id", ""),
                     content_preview=content_preview,
+                    full_text=full_text,
+                    full_text_compressed=full_text_compressed,
                     content_location=element.get("content_location", ""),
                     content_hash=element.get("content_hash", ""),
                     metadata=metadata_json
@@ -1206,6 +1571,10 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                 except (json.JSONDecodeError, TypeError):
                     element["metadata"] = {}
 
+                # Handle full text decompression if needed
+                if element.get("full_text_compressed", False):
+                    element["full_text"] = self._get_element_full_text(element)
+
                 elements.append(element)
 
             return elements
@@ -1287,6 +1656,10 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                 element["metadata"] = json.loads(element["metadata"])
             except (json.JSONDecodeError, TypeError):
                 element["metadata"] = {}
+
+            # Handle full text decompression if needed
+            if element.get("full_text_compressed", False):
+                element["full_text"] = self._get_element_full_text(element)
 
             return element
 
@@ -1380,18 +1753,17 @@ class Neo4jDocumentDatabase(DocumentDatabase):
 
     def find_documents(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
         """
-        Find documents matching query with support for pattern matching.
+        Find documents matching query with support for pattern matching and full text search.
 
         Args:
             limit: Maximum number of results
             query: Query parameters. Use '_like' suffix for pattern matching.
-                   Examples:
-                   - {"doc_type": "pdf"} - exact match
-                   - {"source_like": "%reports%"} - pattern match (uses CONTAINS)
-                   - {"source_starts": "annual"} - starts with pattern
-                   - {"source_ends": ".pdf"} - ends with pattern
-                   - {"metadata": {"author": "John"}} - metadata exact match
-                   - {"metadata_like": {"title": "%annual%"}} - metadata pattern match
+                   Enhanced syntax supports:
+                   - Exact matches: {"doc_type": "pdf"}
+                   - LIKE patterns: {"source_like": "%reports%"} (uses CONTAINS)
+                   - Full text search: {"_full_text": "search terms"} (if enabled)
+                   - Metadata exact: {"metadata": {"author": "John"}}
+                   - Metadata LIKE: {"metadata_like": {"title": "%annual%"}}
 
         Returns:
             List of matching documents
@@ -1408,7 +1780,21 @@ class Neo4jDocumentDatabase(DocumentDatabase):
             # Apply filters if provided
             if query:
                 for key, value in query.items():
-                    if key == "metadata":
+                    if key == "_full_text" and self.index_full_text:
+                        # Full text search on documents
+                        try:
+                            # Try to use full text index
+                            cypher_query = """
+                                CALL db.index.fulltext.queryNodes("documentFullText", $full_text_query)
+                                YIELD node, score
+                                WITH node AS d, score
+                            """
+                            params["full_text_query"] = value
+                        except Exception:
+                            # Fall back to CONTAINS
+                            conditions.append("(d.source CONTAINS $full_text_query OR d.doc_type CONTAINS $full_text_query)")
+                            params["full_text_query"] = value
+                    elif key == "metadata":
                         # Metadata filters require special handling
                         for meta_key, meta_value in value.items():
                             # For simplicity, we'll check if the JSON contains this key/value
@@ -1492,7 +1878,7 @@ class Neo4jDocumentDatabase(DocumentDatabase):
 
     def find_elements(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
         """
-        Find elements matching query with support for pattern matching and ElementType enums.
+        Find elements matching query with support for pattern matching, ElementType enums, and full text search.
         """
         if not self.driver:
             raise ValueError("Database not initialized")
@@ -1506,7 +1892,24 @@ class Neo4jDocumentDatabase(DocumentDatabase):
             # Apply filters if provided
             if query:
                 for key, value in query.items():
-                    if key == "metadata":
+                    if key == "_full_text" and self.index_full_text:
+                        # Full text search on elements
+                        try:
+                            # Try to use full text index
+                            cypher_query = """
+                                CALL db.index.fulltext.queryNodes("elementFullText", $full_text_query)
+                                YIELD node, score
+                                WITH node AS e, score
+                            """
+                            params["full_text_query"] = value
+                        except Exception:
+                            # Fall back to CONTAINS on available fields
+                            text_conditions = ["e.content_preview CONTAINS $full_text_query"]
+                            if self.store_full_text:
+                                text_conditions.append("e.full_text CONTAINS $full_text_query")
+                            conditions.append(f"({' OR '.join(text_conditions)})")
+                            params["full_text_query"] = value
+                    elif key == "metadata":
                         # Metadata filters require special handling
                         for meta_key, meta_value in value.items():
                             conditions.append(f"e.metadata CONTAINS ${meta_key}_value")
@@ -1594,37 +1997,94 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                 except (json.JSONDecodeError, TypeError):
                     element["metadata"] = {}
 
+                # Handle full text decompression if needed
+                if element.get("full_text_compressed", False):
+                    element["full_text"] = self._get_element_full_text(element)
+
                 elements.append(element)
 
             return elements
 
     def search_elements_by_content(self, search_text: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Search elements by content preview."""
+        """
+        Search elements by content preview and optionally full text based on configuration.
+
+        Implementation Notes:
+            - Always searches content_preview
+            - Also searches full_text field if index_full_text=True
+            - Uses Neo4j full text indexes if available, otherwise falls back to CONTAINS
+        """
         if not self.driver:
             raise ValueError("Database not initialized")
 
         with self.driver.session(database=self.database) as session:
-            result = session.run(
-                """
+            # Try full text search first if indexing is enabled
+            if self.index_full_text:
+                try:
+                    # Use Neo4j full text index
+                    result = session.run("""
+                        CALL db.index.fulltext.queryNodes("elementFullText", $search_text)
+                        YIELD node, score
+                        RETURN node AS e, id(node) AS element_pk, score
+                        ORDER BY score DESC
+                        LIMIT $limit
+                    """, search_text=search_text, limit=limit)
+
+                    elements = []
+                    for record in result:
+                        element = dict(record["e"])
+                        element["element_pk"] = record["element_pk"]
+                        element["_score"] = record["score"]
+
+                        # Convert metadata from JSON
+                        try:
+                            element["metadata"] = json.loads(element.get("metadata", "{}"))
+                        except (json.JSONDecodeError, TypeError):
+                            element["metadata"] = {}
+
+                        # Handle full text decompression if needed
+                        if element.get("full_text_compressed", False):
+                            element["full_text"] = self._get_element_full_text(element)
+
+                        elements.append(element)
+
+                    if elements:  # If full text search returned results, use them
+                        return elements
+
+                except Exception as e:
+                    logger.warning(f"Full text search failed, falling back to CONTAINS: {str(e)}")
+
+            # Fall back to CONTAINS search
+            search_fields = ["e.content_preview CONTAINS $search_text"]
+
+            # Also search in full_text if stored (regardless of indexing)
+            if self.store_full_text:
+                search_fields.append("e.full_text CONTAINS $search_text")
+
+            cypher_query = f"""
                 MATCH (e:Element)
-                WHERE e.content_preview CONTAINS $search_text
+                WHERE {' OR '.join(search_fields)}
                 RETURN e, id(e) AS element_pk
                 LIMIT $limit
-                """,
-                search_text=search_text,
-                limit=limit
-            )
+            """
+
+            result = session.run(cypher_query, search_text=search_text, limit=limit)
 
             elements = []
             for record in result:
                 element = dict(record["e"])
                 element["element_pk"] = record["element_pk"]
+                element["_score"] = 0.8  # Default score for CONTAINS matches
 
                 # Convert metadata from JSON
                 try:
-                    element["metadata"] = json.loads(element["metadata"])
+                    element["metadata"] = json.loads(element.get("metadata", "{}"))
                 except (json.JSONDecodeError, TypeError):
                     element["metadata"] = {}
+
+                # Handle full text decompression if needed
+                if element.get("full_text_compressed", False):
+                    element["full_text"] = self._get_element_full_text(element)
 
                 elements.append(element)
 
@@ -1659,7 +2119,8 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                 OPTIONAL MATCH ()-[r4:CHILD_OF]->(e)
                 OPTIONAL MATCH (e)-[r5:BELONGS_TO]->()
                 OPTIONAL MATCH (emb:Embedding)-[r6:EMBEDDING_OF]->(e)
-                DELETE r, r2, r3, r4, r5, r6, emb, e, d
+                OPTIONAL MATCH (e)-[r7:HAS_DATE]->(date:ExtractedDate)
+                DELETE r, r2, r3, r4, r5, r6, r7, emb, date, e, d
                 """,
                 doc_id=doc_id
             )
@@ -2247,7 +2708,7 @@ class Neo4jDocumentDatabase(DocumentDatabase):
             return []
 
     # ========================================
-    # NEW: TOPIC SUPPORT METHODS
+    # TOPIC SUPPORT METHODS
     # ========================================
 
     def supports_topics(self) -> bool:
@@ -2642,7 +3103,7 @@ class Neo4jDocumentDatabase(DocumentDatabase):
         return float(dot_product / (magnitude1 * magnitude2))
 
     # ========================================
-    # EXISTING HIERARCHY METHODS (adapted for Neo4j)
+    # HIERARCHY METHODS (adapted for Neo4j)
     # ========================================
 
     def get_results_outline(self, elements: List[Tuple[int, float]]) -> List["ElementHierarchical"]:
@@ -2932,6 +3393,10 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                 except (json.JSONDecodeError, TypeError):
                     element["metadata"] = {}
 
+                # Handle full text decompression if needed
+                if element.get("full_text_compressed", False):
+                    element["full_text"] = self._get_element_full_text(element)
+
                 elements.append(element)
 
             return elements
@@ -3077,6 +3542,10 @@ class Neo4jDocumentDatabase(DocumentDatabase):
                 except (json.JSONDecodeError, TypeError):
                     element["metadata"] = {}
 
+                # Handle full text decompression if needed
+                if element.get("full_text_compressed", False):
+                    element["full_text"] = self._get_element_full_text(element)
+
                 elements.append(element)
 
             return elements
@@ -3149,10 +3618,113 @@ class Neo4jDocumentDatabase(DocumentDatabase):
             logger.error(f"Error getting date statistics: {str(e)}")
             return {}
 
+    # ========================================
+    # DATE UTILITY METHODS
+    # ========================================
+
+    def supports_date_storage(self) -> bool:
+        """
+        Indicate whether this backend supports date storage.
+
+        Returns:
+            True since Neo4j implementation supports date storage
+        """
+        return True
+
+    def get_date_range_for_element(self, element_id: str) -> Optional[Tuple[datetime.datetime, datetime.datetime]]:
+        """
+        Get the date range (earliest, latest) for an element.
+
+        Args:
+            element_id: Element ID
+
+        Returns:
+            Tuple of (earliest_date, latest_date) or None if no dates
+        """
+        dates = self.get_element_dates(element_id)
+        if not dates:
+            return None
+
+        timestamps = [d['timestamp'] for d in dates if 'timestamp' in d and d['timestamp'] is not None]
+        if not timestamps:
+            return None
+
+        earliest = datetime.datetime.fromtimestamp(min(timestamps))
+        latest = datetime.datetime.fromtimestamp(max(timestamps))
+        return earliest, latest
+
+    def count_dates_for_element(self, element_id: str) -> int:
+        """
+        Count the number of dates associated with an element.
+
+        Args:
+            element_id: Element ID
+
+        Returns:
+            Number of dates associated with the element
+        """
+        dates = self.get_element_dates(element_id)
+        return len(dates)
+
+    def get_elements_by_year(self, year: int, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Get elements that contain dates from a specific year.
+
+        Args:
+            year: Year to search for
+            limit: Maximum number of results
+
+        Returns:
+            List of element dictionaries
+        """
+        start_date = datetime.datetime(year, 1, 1)
+        end_date = datetime.datetime(year, 12, 31, 23, 59, 59)
+        return self.search_elements_by_date_range(start_date, end_date, limit)
+
+    def get_elements_by_month(self, year: int, month: int, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Get elements that contain dates from a specific month.
+
+        Args:
+            year: Year
+            month: Month (1-12)
+            limit: Maximum number of results
+
+        Returns:
+            List of element dictionaries
+        """
+        import calendar
+        start_date = datetime.datetime(year, month, 1)
+        last_day = calendar.monthrange(year, month)[1]
+        end_date = datetime.datetime(year, month, last_day, 23, 59, 59)
+        return self.search_elements_by_date_range(start_date, end_date, limit)
+
+    def update_element_dates(self, element_id: str, dates: List[Dict[str, Any]]) -> None:
+        """
+        Update dates for an element (delete old, store new).
+
+        Args:
+            element_id: Element ID
+            dates: New list of date dictionaries
+        """
+        self.delete_element_dates(element_id)
+        self.store_element_dates(element_id, dates)
+
 
 if __name__ == "__main__":
-    # Example demonstrating structured search with Neo4j
-    db = Neo4jDocumentDatabase("bolt://localhost:7687", "neo4j", "password")
+    # Example demonstrating structured search with Neo4j and full text support
+    conn_params = {
+        'uri': 'bolt://localhost:7687',
+        'user': 'neo4j',
+        'password': 'password',
+        'database': 'neo4j',
+        'store_full_text': True,
+        'index_full_text': True,
+        'compress_full_text': True,
+        'full_text_max_length': 50000
+    }
+
+    db = Neo4jDocumentDatabase(conn_params)
     db.initialize()
 
     # Show backend capabilities
@@ -3160,6 +3732,15 @@ if __name__ == "__main__":
     print(f"Neo4j supports {len(capabilities.supported)} capabilities:")
     for cap in sorted(capabilities.get_supported_list()):
         print(f"  ✓ {cap}")
+
+    # Show text storage configuration
+    config_info = db.get_text_storage_config()
+    print(f"\nText storage configuration:")
+    print(f"  Store full text: {config_info['store_full_text']}")
+    print(f"  Index full text: {config_info['index_full_text']}")
+    print(f"  Compress full text: {config_info['compress_full_text']}")
+    print(f"  Max length: {config_info['full_text_max_length']}")
+    print(f"  Search fields: {config_info['search_capabilities']['search_fields']}")
 
     # Example structured search
     from .structured_search import SearchQueryBuilder, LogicalOperator
@@ -3190,3 +3771,26 @@ if __name__ == "__main__":
 
         for result in results[:3]:  # Show first 3 results
             print(f"  - {result['element_id']}: {result['final_score']:.3f}")
+
+    # Example full text searches
+    print(f"\nTesting full text search capabilities...")
+
+    # Test basic text search
+    text_results = db.search_elements_by_content("artificial intelligence", limit=5)
+    print(f"Basic text search found {len(text_results)} results")
+
+    # Test full text search with special syntax
+    if db.index_full_text:
+        full_text_docs = db.find_documents({"_full_text": "machine learning"}, limit=5)
+        print(f"Full text document search found {len(full_text_docs)} results")
+
+        full_text_elements = db.find_elements({"_full_text": "neural networks"}, limit=5)
+        print(f"Full text element search found {len(full_text_elements)} results")
+
+    # Show storage recommendations
+    recommendations = db.get_full_text_usage_recommendations()
+    print(f"\nFull text recommendations:")
+    for suggestion in recommendations['suggestions']:
+        print(f"  • {suggestion}")
+
+    db.close()

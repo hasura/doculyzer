@@ -22,6 +22,7 @@ Doculyzer is a powerful document management system that creates a universal, str
 - **Universal Document Model**: Common representation across document types
 - **Preservation of Structure**: Maintains hierarchical document structure
 - **Content Resolution**: Resolves pointers back to original content when needed
+- **Flexible Full-Text Storage**: Configurable text storage and indexing options for optimal performance and storage efficiency
 - **Advanced Structured Search**: Powerful query language with logical operators, similarity thresholds, and backend capability detection
 - **Enhanced Search Capabilities**: Advanced pattern matching, element type filtering, and metadata search with LIKE patterns and ElementType enum support
 - **Contextual Semantic Search**: Uses advanced embedding techniques that incorporate document context (hierarchy, neighbors) for more accurate semantic search
@@ -31,6 +32,210 @@ Doculyzer is a powerful document management system that creates a universal, str
 - **Configurable Vector Representations**: Support for different vector dimensions based on content needs, allowing larger vectors for technical content and smaller vectors for general content
 - **Modular Dependencies**: Only install the components you need, with graceful fallbacks when optional dependencies are missing
 - **Backend-Agnostic Architecture**: Pluggable storage backends with automatic capability detection and query optimization
+- **📄 Document Materialization**: Comprehensive document reconstruction and format conversion with intelligent element mapping
+- **🔄 Batch Document Processing**: Efficient bulk document retrieval and format conversion for performance optimization
+- **📊 Document Analytics**: Rich document statistics, outlines, and structural analysis capabilities
+- **🎯 Enhanced Search Integration**: Seamless integration of search results with complete document content in multiple formats
+
+## Full-Text Storage and Search Configuration
+
+Doculyzer provides flexible full-text storage and indexing options that can be configured independently to optimize for your specific use case:
+
+### Storage Configuration Options
+
+```yaml
+storage:
+  backend: elasticsearch
+  
+  # Full-text storage and indexing options
+  store_full_text: true        # Whether to store full text for retrieval (default: true)
+  index_full_text: true        # Whether to index full text for search (default: true)
+  compress_full_text: false    # Whether to enable compression for stored text (default: false)
+  full_text_max_length: null   # Maximum length for full text, truncate if longer (default: null)
+```
+
+### Common Configuration Patterns
+
+#### 1. Search + Storage (Default - Best Search Quality)
+```yaml
+storage:
+  store_full_text: true
+  index_full_text: true
+  # Best for: Complete search capabilities with full content retrieval
+  # Storage impact: High (stores and indexes full text)
+```
+
+#### 2. Search Only (Space Optimized)
+```yaml
+storage:
+  store_full_text: false
+  index_full_text: true
+  # Best for: Search-focused applications where content retrieval isn't needed
+  # Storage impact: Medium (indexes but doesn't store full text)
+```
+
+#### 3. Storage Only (Retrieval Focused)
+```yaml
+storage:
+  store_full_text: true
+  index_full_text: false
+  # Best for: Content archives where retrieval is important but search is basic
+  # Storage impact: Medium (stores but doesn't index full text)
+```
+
+#### 4. Minimal Storage (Preview Only)
+```yaml
+storage:
+  store_full_text: false
+  index_full_text: false
+  # Best for: Minimal storage requirements, using only content previews
+  # Storage impact: Low (neither stores nor indexes full text)
+```
+
+## Document Materialization System
+
+Doculyzer includes a powerful document materialization system that can reconstruct complete documents from their structured elements in multiple formats with intelligent format-specific optimizations.
+
+### Document Materialization Features
+
+- **📄 Multi-Format Export**: Convert documents to text, markdown, HTML, JSON, YAML, and XML with format-specific optimizations
+- **🎯 Format-Aware Reconstruction**: Intelligent handling of document-specific elements (slides, headers, footnotes, etc.)
+- **⚡ Batch Processing**: Efficient bulk document materialization for performance
+- **📊 Rich Metadata**: Include document outlines, statistics, and structural analysis
+- **🔄 Content Integration**: Seamlessly combine search results with materialized document content
+- **💾 Memory Optimization**: Configurable content length limits and selective materialization options
+
+### Document Format Support
+
+| Format | Description | Best For | Element Conversion |
+|--------|-------------|----------|-------------------|
+| `text` | Plain text with preserved structure | Reading, analysis | Simple text conversion with separators |
+| `markdown` | Structured markdown with tables/headers | Documentation, wikis | Rich markdown with proper formatting |
+| `html` | Styled HTML with CSS classes | Web display, rich rendering | Full HTML with semantic markup |
+| `docx_html` | Word-optimized HTML styling | Word document preservation | Times New Roman, page margins, footnotes |
+| `pptx_html` | Presentation-optimized HTML layout | Slide presentation display | Slide layouts, speaker notes, visual styling |
+| `json` | Structured JSON representation | API integration, data processing | Complete element hierarchy and metadata |
+| `yaml` | Human-readable YAML format | Configuration, readable data export | Structured data with comments |
+| `xml` | Structured XML representation | Legacy systems, data exchange | Semantic XML with proper namespaces |
+
+### Document Materialization Examples
+
+```python
+from doculyzer import search_with_documents, get_document_in_format
+
+# Search with document materialization as markdown
+results = search_with_documents(
+    query_text="machine learning best practices",
+    limit=10,
+    document_format="markdown",
+    include_document_statistics=True,
+    include_document_outline=True,
+    max_document_length=5000
+)
+
+print(f"Found {results.total_results} results")
+print(f"Materialized {len(results.materialized_documents)} documents")
+
+for doc_id, doc in results.materialized_documents.items():
+    print(f"\nDocument: {doc.title}")
+    print(f"Format: {doc.format_type}")
+    print(f"Words: {doc.statistics.get('total_words', 0) if doc.statistics else 'N/A'}")
+    print(f"Element count: {doc.element_count}")
+    print(f"Markdown preview: {doc.formatted_content[:200]}...")
+    
+    if doc.outline:
+        print(f"Document structure: {doc.outline.get('total_elements', 0)} elements")
+
+# Get single document in specific format
+doc_html = get_document_in_format(
+    doc_id="doc_123",
+    format_type="html",
+    include_outline=True,
+    include_statistics=True,
+    max_length=10000
+)
+
+print(f"HTML document: {len(doc_html.formatted_content or '')} characters")
+print(f"Document outline: {doc_html.outline}")
+print(f"Statistics: {doc_html.statistics}")
+
+# Batch document materialization
+from doculyzer import get_documents_batch_formatted
+
+doc_ids = ["doc_1", "doc_2", "doc_3", "doc_4"]
+docs_json = get_documents_batch_formatted(
+    doc_ids=doc_ids,
+    format_type="json",
+    include_statistics=True,
+    include_outline=True
+)
+
+for doc_id, doc in docs_json.items():
+    print(f"Document {doc_id}: {doc.element_count} elements")
+    if doc.statistics:
+        print(f"  Characters: {doc.statistics.get('total_characters', 0)}")
+        print(f"  Element types: {list(doc.statistics.get('element_types', {}).keys())}")
+```
+
+### Document Materialization Options
+
+```python
+from doculyzer import DocumentMaterializationOptions
+
+# Configure materialization options
+options = DocumentMaterializationOptions(
+    include_full_document=True,        # Include complete document structure
+    document_format="markdown",        # Output format
+    include_document_outline=True,     # Include hierarchical outline
+    include_document_statistics=True,  # Include word counts, element stats
+    include_full_text=True,           # Include full text content
+    max_document_length=50000,        # Truncate if longer
+    batch_documents=True,             # Use batch loading for efficiency
+    join_elements=True,               # Join elements for full text
+    element_separator='\n\n'          # Separator for joined elements
+)
+```
+
+## Advanced Document Reconstruction
+
+The system includes sophisticated document reconstruction that handles format-specific element types with intelligent conversions:
+
+### Format-Specific Element Conversion
+
+| Source Element | Text Output | Markdown Output | HTML Output |
+|---------------|-------------|-----------------|-------------|
+| `slide` | `--- SLIDE N ---` | `# Slide N` | `<div class="slide">` |
+| `slide_notes` | `Speaker Notes: ...` | `> **Notes:** ...` | `<div class="slide-notes">` |
+| `page_header` | `[HEADER: text]` | `*Header: text*` | `<header>text</header>` |
+| `page_footer` | `[FOOTER: text]` | `*Footer: text*` | `<footer>text</footer>` |
+| `footnote` | `[FOOTNOTE: text]` | `[^1]: text` | `<span class="footnote">` |
+| `text_box` | `[TEXT BOX: text]` | `> **Text Box:** text` | `<div class="text-box">` |
+| `image` | `[IMAGE: alt_text]` | `![alt_text](src)` | `<img src="..." alt="...">` |
+| `table` | Formatted table | Markdown table | HTML `<table>` |
+
+### Document Format Detection and Recommendations
+
+```python
+# Analyze document format and get reconstruction advice
+format_info = db.get_document_format_info("complex_doc_123")
+
+print(f"Source: {format_info['source_format']}")           # 'pptx'
+print(f"Detected: {format_info['detected_format']}")       # 'pptx' 
+print(f"Elements: {format_info['format_specific_elements']}")  # ['slide', 'slide_notes', 'shape']
+
+for recommendation in format_info['reconstruction_recommendations']:
+    print(f"• {recommendation}")
+# • PowerPoint presentation with 15 slides detected
+# • Speaker notes found on 8 slides  
+# • Recommend 'pptx_html' format for best presentation layout
+# • Use 'markdown' format for readable slide content export
+
+# Check reconstruction quality for different formats
+validation = db.validate_reconstruction_capability("doc_123")
+for format_type, assessment in validation['format_assessments'].items():
+    print(f"{format_type}: {assessment['quality']} quality")
+    print(f"  Supported elements: {assessment['supported_elements']}")
+```
 
 ## Supported Document Types
 
@@ -63,263 +268,227 @@ Doculyzer supports multiple content sources through a modular, pluggable archite
 | SharePoint | Microsoft SharePoint content | `Office365-REST-Python-Client` | `pip install "doculyzer[source-sharepoint]"` |
 | Google Drive | Google Drive content | `google-api-python-client` | `pip install "doculyzer[source-gdrive]"` |
 
-### Content Source Graceful Fallbacks
-
-Doculyzer's modular design handles missing dependencies gracefully. When attempting to use a content source without the required dependencies, Doculyzer provides helpful error messages and installation instructions:
-
-```python
-from doculyzer import Config, ingest_documents
-from doculyzer.content_sources import DatabaseContentSource
-
-try:
-    # Create a database content source
-    db_source = DatabaseContentSource({
-        "connection_string": "postgresql://user:password@localhost:5432/mydatabase",
-        "query": "SELECT * FROM documents",
-        "id_column": "doc_id",
-        "content_column": "content_blob"
-    })
-except ImportError as e:
-    print(f"Missing dependency: {e}")
-    print("To use database content sources, install:")
-    print("pip install 'doculyzer[source-database]'")
-```
-
 ## Storage Backends
 
 Doculyzer supports multiple storage backends through a modular, pluggable architecture. Each backend has its own optional dependencies, which are only required if you use that specific storage method:
 
-| Storage Backend | Description | Topic Support | Vector Search | Required Dependencies | Installation |
-|-----------------|-------------|---------------|---------------|----------------------|--------------|
-| File-based | Simple storage using the file system | ✅ | ❌ | None (core) | Default install |
-| SQLite | Lightweight, embedded database | ✅ | ❌ | None (core) | Default install |
-| SQLite Enhanced | SQLite with vector extension support | ✅ | ✅ | `sqlean.py` | `pip install "doculyzer[db-core]"` |
-| Neo4J | Graph database with native relationship support | ✅ | ✅ | `neo4j` | `pip install "doculyzer[db-neo4j]"` |
-| PostgreSQL | Robust relational database for production | ✅ | ❌ | `psycopg2` | `pip install "doculyzer[db-postgresql]"` |
-| PostgreSQL + pgvector | PostgreSQL with vector search | ✅ | ✅ | `psycopg2`, `pgvector` | `pip install "doculyzer[db-postgresql,db-vector]"` |
-| MongoDB | Document-oriented database | ✅ | ✅ | `pymongo` | `pip install "doculyzer[db-mongodb]"` |
-| MySQL/MariaDB | Popular open-source SQL database | ✅ | ❌ | `sqlalchemy`, `pymysql` | `pip install "doculyzer[db-mysql]"` |
-| Oracle | Enterprise SQL database | ✅ | ❌ | `sqlalchemy`, `cx_Oracle` | `pip install "doculyzer[db-oracle]"` |
-| Microsoft SQL Server | Enterprise SQL database | ✅ | ❌ | `sqlalchemy`, `pymssql` | `pip install "doculyzer[db-mssql]"` |
-| **Elasticsearch** | **Distributed search and analytics** | ✅ | ✅ | `elasticsearch` | `pip install "doculyzer[db-elasticsearch]"` |
+| Storage Backend | Description | Topic Support | Vector Search | Full-Text Search | Required Dependencies | Installation |
+|-----------------|-------------|---------------|---------------|------------------|----------------------|--------------|
+| File-based | Simple storage using the file system | ✅ | ❌ | ❌ | None (core) | Default install |
+| SQLite | Lightweight, embedded database | ✅ | ❌ | ✅ | None (core) | Default install |
+| SQLite Enhanced | SQLite with vector extension support | ✅ | ✅ | ✅ | `sqlean.py` | `pip install "doculyzer[db-core]"` |
+| Neo4J | Graph database with native relationship support | ✅ | ✅ | ✅ | `neo4j` | `pip install "doculyzer[db-neo4j]"` |
+| PostgreSQL | Robust relational database for production | ✅ | ❌ | ✅ | `psycopg2` | `pip install "doculyzer[db-postgresql]"` |
+| PostgreSQL + pgvector | PostgreSQL with vector search | ✅ | ✅ | ✅ | `psycopg2`, `pgvector` | `pip install "doculyzer[db-postgresql,db-vector]"` |
+| MongoDB | Document-oriented database | ✅ | ✅ | ✅ | `pymongo` | `pip install "doculyzer[db-mongodb]"` |
+| MySQL/MariaDB | Popular open-source SQL database | ✅ | ❌ | ✅ | `sqlalchemy`, `pymysql` | `pip install "doculyzer[db-mysql]"` |
+| Oracle | Enterprise SQL database | ✅ | ❌ | ✅ | `sqlalchemy`, `cx_Oracle` | `pip install "doculyzer[db-oracle]"` |
+| Microsoft SQL Server | Enterprise SQL database | ✅ | ❌ | ✅ | `sqlalchemy`, `pymssql` | `pip install "doculyzer[db-mssql]"` |
+| **Elasticsearch** | **Distributed search and analytics** | ✅ | ✅ | ✅ | `elasticsearch` | `pip install "doculyzer[db-elasticsearch]"` |
 
-### Storage Backend Graceful Fallbacks
+## Enhanced Search Capabilities
 
-Doculyzer's modular design handles missing storage dependencies gracefully. When attempting to use a storage backend without the required dependencies, Doculyzer provides helpful error messages and installation instructions:
+Doculyzer provides powerful, flexible search capabilities across all database backends with support for pattern matching, element type filtering, metadata search, configurable full-text indexing, and seamless document materialization.
 
-```python
-from doculyzer import Config, initialize_database
-
-# In your config file:
-# storage:
-#   backend: postgresql
-#   postgresql:
-#     host: localhost
-#     port: 5432
-#     database: doculyzer
-#     user: postgres
-#     password: postgres
-
-try:
-    config = Config("config.yaml")
-    db = config.initialize_database()
-    # Use the database...
-except ImportError as e:
-    print(f"Database backend not available: {e}")
-    print("Please install the required package with:")
-    print("pip install 'doculyzer[db-postgresql]'")
-```
-
-### Database Backend Selection
-
-You can easily switch between different backend implementations by changing your configuration:
-
-```yaml
-# SQLite (default, no additional dependencies)
-storage:
-  backend: sqlite
-  path: "./data/docs.db"
-  topic_support: true  # Enable topic features
-
-# Elasticsearch (requires elasticsearch Python client)
-storage:
-  backend: elasticsearch
-  elasticsearch:
-    hosts: ["localhost:9200"]
-    username: "elastic"  # optional
-    password: "password"  # optional
-    index_prefix: "doculyzer"
-    vector_dimension: 384
-    store_full_text: true
-    index_full_text: true
-    compress_full_text: false
-
-# Neo4j (requires neo4j Python driver)
-storage:
-  backend: neo4j
-  neo4j:
-    uri: "bolt://localhost:7687"
-    username: "neo4j"
-    password: "password"
-    database: "doculyzer"
-
-# PostgreSQL (requires psycopg2)
-storage:
-  backend: postgresql
-  topic_support: true  # Enable topic features
-  postgresql:
-    host: "localhost"
-    port: 5432
-    database: "doculyzer"
-    user: "postgres"
-    password: "postgres"
-    
-# MongoDB (requires pymongo)
-storage:
-  backend: mongodb
-  mongodb:
-    host: "localhost"
-    port: 27017
-    db_name: "doculyzer"
-    username: "admin"  # optional
-    password: "password"  # optional
-
-# MySQL/MariaDB (requires sqlalchemy and pymysql)
-storage:
-  backend: sqlalchemy
-  sqlalchemy:
-    uri: "mysql+pymysql://user:password@localhost/doculyzer"
-    
-# Microsoft SQL Server (requires sqlalchemy and pymssql)
-storage:
-  backend: sqlalchemy
-  sqlalchemy:
-    uri: "mssql+pymssql://user:password@localhost/doculyzer"
-    
-# Oracle (requires sqlalchemy and cx_Oracle)
-storage:
-  backend: sqlalchemy
-  sqlalchemy:
-    uri: "oracle://user:password@localhost:1521/doculyzer"
-```
-
-### Using a Specific Database Backend
+### Search with Document Materialization
 
 ```python
-from doculyzer.db import Neo4jDocumentDatabase, PostgreSQLDocumentDatabase, ElasticsearchDocumentDatabase
+from doculyzer import search_with_documents, search_simple_structured
 
-# Using Elasticsearch backend (requires elasticsearch)
-try:
-    es_db = ElasticsearchDocumentDatabase({
-        "hosts": ["localhost:9200"],
-        "username": "elastic",
-        "password": "changeme",
-        "index_prefix": "doculyzer",
-        "vector_dimension": 384,
-        "store_full_text": True,
-        "index_full_text": True
-    })
-    es_db.initialize()
-    
-    # Store and retrieve documents with advanced search capabilities
-    es_db.store_document(document, elements, relationships)
-    retrieved_doc = es_db.get_document("doc123")
-    
-    # Use advanced vector search
-    results = es_db.search_by_embedding(query_embedding, limit=10)
-    
-except ImportError as e:
-    print(f"Could not initialize ElasticsearchDocumentDatabase: {e}")
-    print("Install required dependencies with:")
-    print("pip install 'doculyzer[db-elasticsearch]'")
+# Enhanced search with materialized documents
+results = search_with_documents(
+    query_text="quarterly financial reports",
+    limit=15,
+    include_topics=["finance%", "quarterly%"],
+    exclude_topics=["draft%", "deprecated%"],
+    # Document materialization options
+    document_format="markdown",
+    include_document_outline=True,
+    include_document_statistics=True,
+    max_document_length=10000,
+    batch_documents=True
+)
 
-# Using Neo4j backend (requires neo4j)
-try:
-    neo4j_db = Neo4jDocumentDatabase({
-        "uri": "bolt://localhost:7687",
-        "user": "neo4j",
-        "password": "password",
-        "database": "doculyzer"
-    })
-    neo4j_db.initialize()
-    
-    # Store and retrieve documents
-    neo4j_db.store_document(document, elements, relationships)
-    retrieved_doc = neo4j_db.get_document("doc123")
-    
-except ImportError as e:
-    print(f"Could not initialize Neo4jDocumentDatabase: {e}")
-    print("Install required dependencies with:")
-    print("pip install 'doculyzer[db-neo4j]'")
+print(f"Search completed in {results.execution_time_ms:.1f}ms")
+print(f"Materialization took {results.materialization_time_ms:.1f}ms")
+print(f"Found {results.total_results} results across {len(results.documents)} documents")
 
-# Using PostgreSQL backend (requires psycopg2)
-try:
-    pg_db = PostgreSQLDocumentDatabase({
-        "host": "localhost",
-        "port": 5432,
-        "dbname": "doculyzer",
-        "user": "postgres",
-        "password": "postgres"
-    })
-    pg_db.initialize()
+# Access search results
+for item in results.results:
+    print(f"Element: {item.element_type} - Score: {item.similarity:.3f}")
+    print(f"Preview: {item.content_preview}")
+
+# Access materialized documents
+for doc_id, doc in results.materialized_documents.items():
+    print(f"\nDocument: {doc.title}")
+    print(f"Format: {doc.format_type}")
+    print(f"Length: {len(doc.formatted_content or '')} characters")
     
-    # Perform vector search if pgvector is available
-    try:
-        results = pg_db.search_by_embedding(query_embedding)
-        print(f"Found {len(results)} similar documents")
-    except Exception as e:
-        print(f"Vector search not available: {e}")
-        print("For vector search support, install:")
-        print("pip install 'doculyzer[db-vector]'")
+    if doc.statistics:
+        stats = doc.statistics
+        print(f"Words: {stats.get('total_words', 0)}")
+        print(f"Elements: {stats.get('total_elements', 0)}")
+        print(f"Element types: {list(stats.get('element_types', {}).keys())}")
     
-except ImportError as e:
-    print(f"Could not initialize PostgreSQLDocumentDatabase: {e}")
-    print("Install required dependencies with:")
-    print("pip install 'doculyzer[db-postgresql]'")
+    if doc.outline:
+        print(f"Outline sections: {doc.outline.get('total_sections', 0)}")
+
+# Simple structured search with document materialization
+results = search_simple_structured(
+    query_text="machine learning algorithms",
+    limit=10,
+    similarity_threshold=0.8,
+    include_topics=["ai%", "ml%"],
+    days_back=30,
+    element_types=["header", "paragraph"],
+    # Document options
+    document_format="html",
+    include_document_statistics=True
+)
 ```
 
-### Vector-Capable Storage
-
-For semantic search, Doculyzer supports several vector-capable database backends:
-
-| Storage Backend | Vector Technology | Topic Support | Required Dependencies | Installation |
-|-----------------|------------------|---------------|----------------------|--------------|
-| SQLite + sqlite-vec | SIMD-accelerated vector search | ✅ | `sqlean.py`, `sqlite-vec` | `pip install "doculyzer[db-core,db-vector]"` |
-| PostgreSQL + pgvector | Postgres vector extension | ✅ | `psycopg2`, `pgvector` | `pip install "doculyzer[db-postgresql,db-vector]"` |
-| MongoDB Atlas | Vector search capability | ✅ | `pymongo` | `pip install "doculyzer[db-mongodb]"` |
-| Neo4j Vector Search | Graph + vector search | ✅ | `neo4j` | `pip install "doculyzer[db-neo4j]"` |
-| **Elasticsearch** | **Dense vector + kNN search** | ✅ | `elasticsearch` | `pip install "doculyzer[db-elasticsearch]"` |
+### Batch Document Retrieval
 
 ```python
-# Configure vector-capable storage
-from doculyzer import Config
+from doculyzer import get_documents_batch_formatted
 
-config = Config({
-    "storage": {
-        "backend": "elasticsearch",
-        "topic_support": True,  # Enable topic features
-        "elasticsearch": {
-            "hosts": ["localhost:9200"],
-            "index_prefix": "doculyzer",
-            "vector_dimension": 384,
-            "store_full_text": True,
-            "index_full_text": True,
-            "compress_full_text": True  # Enable compression for large text
-        }
-    }
-})
+# Efficiently retrieve multiple documents in formatted output
+doc_ids = ["report_q1", "report_q2", "report_q3", "report_q4"]
 
-try:
-    db = config.initialize_database()
+# Get all quarterly reports as markdown with statistics
+quarterly_reports = get_documents_batch_formatted(
+    doc_ids=doc_ids,
+    format_type="markdown",
+    include_statistics=True,
+    include_outline=True,
+    max_length=20000
+)
+
+for doc_id, doc in quarterly_reports.items():
+    print(f"\n{doc.title or doc_id}")
+    print(f"Elements: {doc.element_count}")
     
-    # Vector operations will use optimized search when available,
-    # and automatically fall back to Python implementation otherwise
-    results = db.search_by_embedding(query_embedding)
+    if doc.statistics:
+        print(f"Words: {doc.statistics.get('total_words', 0)}")
+        print(f"Tables: {doc.statistics.get('element_types', {}).get('table', 0)}")
+        print(f"Headers: {doc.statistics.get('element_types', {}).get('header', 0)}")
     
-except ImportError as e:
-    print(f"Vector-capable backend not available: {e}")
-    print("Install required dependencies with:")
-    print("pip install 'doculyzer[db-elasticsearch]'")
+    # Save to file
+    if doc.formatted_content:
+        with open(f"{doc_id}.md", "w", encoding="utf-8") as f:
+            f.write(doc.formatted_content)
+```
+
+### Document Format Conversion
+
+```python
+from doculyzer import get_document_in_format
+
+# Convert a single document to multiple formats
+doc_id = "technical_specification_v2"
+
+# Get as markdown for documentation
+markdown_doc = get_document_in_format(
+    doc_id=doc_id,
+    format_type="markdown",
+    include_outline=True,
+    max_length=50000
+)
+
+# Get as HTML for web display
+html_doc = get_document_in_format(
+    doc_id=doc_id,
+    format_type="html",
+    include_statistics=True
+)
+
+# Get as JSON for API integration
+json_doc = get_document_in_format(
+    doc_id=doc_id,
+    format_type="json",
+    include_full_text=True
+)
+
+print(f"Markdown: {len(markdown_doc.formatted_content or '')} chars")
+print(f"HTML: {len(html_doc.formatted_content or '')} chars")
+print(f"JSON: {len(json_doc.formatted_content or '')} chars")
+
+# Check for errors
+if markdown_doc.materialization_error:
+    print(f"Error: {markdown_doc.materialization_error}")
+```
+
+## Advanced Structured Search System
+
+Doculyzer includes a powerful, backend-agnostic structured search system that provides sophisticated querying capabilities with automatic optimization based on backend capabilities.
+
+### Structured Search with Document Materialization
+
+```python
+from doculyzer import search_structured, SearchQueryRequest, SearchCriteriaGroupRequest
+from doculyzer.storage.search import (
+    LogicalOperatorEnum, SemanticSearchRequest, TopicSearchRequest, 
+    DateSearchRequest, DateRangeOperatorEnum
+)
+
+# Build complex structured query
+query = SearchQueryRequest(
+    criteria_group=SearchCriteriaGroupRequest(
+        operator=LogicalOperatorEnum.AND,
+        semantic_search=SemanticSearchRequest(
+            query_text="security policies and procedures",
+            similarity_threshold=0.8
+        ),
+        topic_search=TopicSearchRequest(
+            include_topics=["security%", "policy%"],
+            exclude_topics=["deprecated%", "draft%"],
+            min_confidence=0.7
+        ),
+        date_search=DateSearchRequest(
+            operator=DateRangeOperatorEnum.RELATIVE_DAYS,
+            relative_value=90  # Last 90 days
+        )
+    ),
+    limit=20,
+    include_similarity_scores=True,
+    include_element_dates=True
+)
+
+# Execute with document materialization
+results = search_structured(
+    query=query,
+    text=True,
+    content=True,
+    # Document materialization options
+    include_full_document=True,
+    document_format="markdown",
+    include_document_outline=True,
+    include_document_statistics=True,
+    max_document_length=15000,
+    batch_documents=True
+)
+
+print(f"Query ID: {results.query_id}")
+print(f"Execution time: {results.execution_time_ms:.1f}ms")
+print(f"Materialization time: {results.materialization_time_ms:.1f}ms")
+print(f"Total results: {results.total_results}")
+print(f"Documents materialized: {len(results.materialized_documents)}")
+
+# Process results with materialized content
+for item in results.results:
+    print(f"\nElement: {item.element_id}")
+    print(f"Score: {item.similarity:.3f}")
+    print(f"Topics: {item.topics}")
+    print(f"Text preview: {item.text[:200] if item.text else 'N/A'}...")
+    
+    # Access materialized document
+    if item.doc_id in results.materialized_documents:
+        doc = results.materialized_documents[item.doc_id]
+        print(f"Document: {doc.title}")
+        print(f"Markdown length: {len(doc.formatted_content or '')} chars")
+        
+        if doc.statistics:
+            print(f"Document stats: {doc.statistics.get('total_words', 0)} words")
 ```
 
 ## Architecture
@@ -334,456 +503,9 @@ The system is built with a modular architecture:
 6. **Relationship Detector**: Identifies connections between document elements
 7. **Topic Manager**: Organizes content by topics for enhanced categorization and filtering
 8. **Structured Search Engine**: Advanced query processing with backend capability detection
-
-## Advanced Structured Search System
-
-Doculyzer includes a powerful, backend-agnostic structured search system that provides sophisticated querying capabilities with automatic optimization based on backend capabilities.
-
-### Search Capabilities and Backend Detection
-
-The system automatically detects what search features each backend supports:
-
-```python
-from doculyzer.structured_search import SearchCapability
-
-# Check backend capabilities
-capabilities = db.get_backend_capabilities()
-
-print("Supported capabilities:")
-for capability in capabilities.supported:
-    print(f"  - {capability.value}")
-
-# Common capabilities include:
-# - TEXT_SIMILARITY: Semantic text search
-# - EMBEDDING_SIMILARITY: Vector-based similarity search  
-# - DATE_FILTERING: Date range and temporal queries
-# - TOPIC_FILTERING: Topic-based content filtering
-# - METADATA_EXACT: Exact metadata matching
-# - METADATA_LIKE: Pattern-based metadata search
-# - LOGICAL_AND/OR/NOT: Boolean query composition
-# - SIMILARITY_THRESHOLDS: Configurable similarity scoring
-```
-
-### Fluent Query Builder
-
-Build complex search queries using the intuitive fluent interface:
-
-```python
-from doculyzer.structured_search import SearchQueryBuilder, LogicalOperator
-
-# Simple text search
-query = (SearchQueryBuilder()
-         .text_search("machine learning algorithms", similarity_threshold=0.8)
-         .limit(20)
-         .build())
-
-# Complex query with multiple criteria
-complex_query = (SearchQueryBuilder()
-                 .with_operator(LogicalOperator.AND)
-                 .text_search("security policy", similarity_threshold=0.7)
-                 .last_days(30)
-                 .topics(include=["security%", "policy%"], exclude=["deprecated%"])
-                 .element_types(["header", "paragraph"])
-                 .metadata_exact(department="engineering", priority="high")
-                 .content_length(min_length=100, max_length=5000)
-                 .include_highlighting(True)
-                 .build())
-
-# Nested logical operations
-nested_query = (SearchQueryBuilder()
-                .begin_group(LogicalOperator.OR)
-                .text_search("artificial intelligence")
-                .topics(include=["ai%", "ml%"])
-                .end_group()
-                .begin_group(LogicalOperator.NOT)
-                .topics(include=["deprecated%"])
-                .end_group()
-                .build())
-```
-
-### Advanced Date and Time Filtering
-
-The structured search system provides sophisticated temporal filtering capabilities:
-
-```python
-from doculyzer.structured_search import DateRangeOperator
-from datetime import datetime, timedelta
-
-# Recent content
-recent_query = (SearchQueryBuilder()
-                .text_search("quarterly reports")
-                .last_days(7)
-                .build())
-
-# Specific date ranges
-date_range_query = (SearchQueryBuilder()
-                    .text_search("financial data")
-                    .date_range(
-                        start_date=datetime(2024, 1, 1),
-                        end_date=datetime(2024, 3, 31)
-                    )
-                    .build())
-
-# Fiscal year filtering
-fiscal_query = (SearchQueryBuilder()
-                .fiscal_year(2024)
-                .topics(include=["finance%", "budget%"])
-                .build())
-
-# Quarter-specific search
-quarter_query = (SearchQueryBuilder()
-                 .quarter(2024, 3)  # Q3 2024
-                 .element_types(["header", "table"])
-                 .build())
-```
-
-### Vector and Hybrid Search
-
-Combine text search with vector similarity for optimal results:
-
-```python
-# Pure vector search
-vector_query = (SearchQueryBuilder()
-                .embedding_search(
-                    embedding_vector=query_embedding,
-                    similarity_threshold=0.75,
-                    distance_metric="cosine"
-                )
-                .topics(include=["technical%"])
-                .build())
-
-# Hybrid search (text + vector)
-hybrid_query = (SearchQueryBuilder()
-                .text_search("database optimization", boost_factor=0.3)
-                .embedding_search(query_embedding, boost_factor=0.7)
-                .score_combination("weighted_avg", {
-                    "text_similarity": 0.3,
-                    "embedding_similarity": 0.7
-                })
-                .build())
-```
-
-### Executing Structured Queries
-
-```python
-# Execute query and get results
-results = db.execute_structured_search(complex_query)
-
-for result in results:
-    print(f"Element: {result['element_id']}")
-    print(f"Score: {result['final_score']:.3f}")
-    print(f"Preview: {result['content_preview']}")
-    
-    if result.get('topics'):
-        print(f"Topics: {result['topics']}")
-    
-    if result.get('extracted_dates'):
-        print(f"Dates: {len(result['extracted_dates'])} found")
-    
-    print("---")
-```
-
-### Query Validation and Optimization
-
-The system validates queries against backend capabilities and provides helpful error messages:
-
-```python
-from doculyzer.structured_search import validate_query_capabilities, UnsupportedSearchError
-
-try:
-    # Validate query before execution
-    missing_capabilities = validate_query_capabilities(query, db.get_backend_capabilities())
-    
-    if missing_capabilities:
-        print(f"Query requires unsupported capabilities: {[c.value for c in missing_capabilities]}")
-        # Automatically fallback or modify query
-    else:
-        results = db.execute_structured_search(query)
-        
-except UnsupportedSearchError as e:
-    print(f"Backend cannot execute this query: {e}")
-    # Suggest alternative backends or query modifications
-```
-
-### Common Query Patterns
-
-Access pre-built query patterns for common use cases:
-
-```python
-from doculyzer.structured_search import get_common_query_patterns
-
-patterns = get_common_query_patterns()
-
-# Use pre-built patterns
-simple_text_query = patterns["simple_text"]
-recent_content_query = patterns["recent_content"]
-topic_search_query = patterns["topic_search"]
-complex_logic_query = patterns["complex_logic"]
-
-# Modify patterns as needed
-custom_query = (SearchQueryBuilder()
-                .text_search("custom search term")
-                .last_days(14)  # Modified from pattern
-                .element_types(["paragraph", "header"])
-                .build())
-```
-
-## Enhanced Search Capabilities
-
-Doculyzer provides powerful, flexible search capabilities across all database backends with support for pattern matching, element type filtering, and metadata search.
-
-### Pattern Matching with LIKE Operators
-
-Use `_like` and `_ilike` suffixes for pattern matching across any field:
-
-```python
-# Case-sensitive LIKE patterns
-results = db.find_elements({
-    "content_preview_like": "%important%",
-    "element_type_like": "head%"
-})
-
-# Case-insensitive LIKE patterns (where supported)
-results = db.find_elements({
-    "content_preview_ilike": "%SUMMARY%",
-    "element_type_ilike": "HEAD%"
-})
-
-# Document search with patterns
-docs = db.find_documents({
-    "source_like": "%reports%",
-    "doc_type_ilike": "PDF"
-})
-```
-
-### ElementType Enum Integration
-
-Search using ElementType enums for type-safe, consistent queries:
-
-```python
-from doculyzer.db.element_element import ElementType
-
-# Search with single ElementType
-results = db.find_elements({
-    "element_type": ElementType.HEADER
-})
-
-# Search with multiple ElementTypes
-results = db.find_elements({
-    "element_type": [ElementType.HEADER, ElementType.PARAGRAPH, ElementType.BLOCKQUOTE]
-})
-
-# Mix enum and string queries
-results = db.find_elements({
-    "element_type": [ElementType.HEADER, "custom_type"],
-    "content_preview_like": "%important%"
-})
-```
-
-### Category-Based Search
-
-Use predefined element type categories for convenient grouping:
-
-```python
-# Search by predefined categories
-text_elements = db.find_elements_by_category("text_elements")
-table_elements = db.find_elements_by_category("table_elements")
-media_elements = db.find_elements_by_category("media_elements")
-
-# Combine category search with additional filters
-results = db.find_elements_by_category(
-    "text_elements",
-    content_preview_like="%important%",
-    doc_id=["doc1", "doc2"]
-)
-
-# Available categories
-categories = db.get_element_types_by_category()
-print("Available categories:", list(categories.keys()))
-# Output: ['text_elements', 'structural_elements', 'list_elements', 
-#          'table_elements', 'media_elements', 'code_elements', 
-#          'presentation_elements', 'data_elements', 'xml_elements']
-```
-
-### Advanced Metadata Search
-
-Search within JSON metadata using database-specific optimizations:
-
-```python
-# Exact metadata matching
-results = db.find_elements({
-    "metadata": {"section": "introduction", "priority": "high"}
-})
-
-# Metadata LIKE patterns
-results = db.find_elements({
-    "metadata_like": {"title": "%annual%", "author": "Smith%"}
-})
-
-# Case-insensitive metadata patterns (PostgreSQL)
-results = db.find_elements({
-    "metadata_ilike": {"title": "%ANNUAL%"}
-})
-
-# Document metadata search
-docs = db.find_documents({
-    "metadata_like": {"project": "%2024%"}
-})
-```
-
-### Complex Query Examples
-
-```python
-# Complex element search combining multiple criteria
-results = db.find_elements({
-    "element_type": [ElementType.HEADER, ElementType.PARAGRAPH],
-    "content_preview_like": "%security%",
-    "doc_id": ["security_doc_1", "security_doc_2"],
-    "metadata_like": {"classification": "%confidential%"}
-}, limit=50)
-
-# Search across different fields with patterns
-results = db.find_documents({
-    "doc_type": ["pdf", "docx"],
-    "source_like": "%/reports/%",
-    "metadata": {"status": "published"},
-    "metadata_like": {"title": "%quarterly%"}
-})
-
-# Case-insensitive search for flexible matching
-results = db.find_elements({
-    "element_type_ilike": "head%",  # Matches "HEADER", "Header", "header"
-    "content_preview_ilike": "%API%"  # Case-insensitive content search
-})
-```
-
-### Database-Specific Optimizations
-
-Doculyzer automatically uses database-specific features for optimal performance:
-
-#### Elasticsearch Features
-- Native vector search with kNN queries
-- Configurable text storage and indexing options
-- Bulk operations for high-performance ingestion
-- Advanced text analysis and scoring
-- Compressed storage for large text content
-
-#### PostgreSQL Features
-- Native `ILIKE` for case-insensitive patterns
-- JSONB operators for efficient metadata queries
-- GIN indexes for pattern matching performance
-- pgvector integration for vector similarity search
-
-#### SQLite Features  
-- JSON1 extension for metadata queries
-- FTS (Full Text Search) when available
-- sqlite-vec or sqlite-vss for vector search
-- COLLATE NOCASE for case-insensitive matching
-
-#### Universal Features
-- Automatic fallback to compatible implementations
-- Consistent API across all database backends
-- Pattern matching support in all storage layers
-- ElementType enum support everywhere
-
-### Search Capability Detection
-
-Check backend capabilities at runtime:
-
-```python
-# Check what search features are supported
-print(f"LIKE patterns: {db.supports_like_patterns()}")
-print(f"Case-insensitive LIKE: {db.supports_case_insensitive_like()}")
-print(f"ElementType enums: {db.supports_element_type_enums()}")
-print(f"Topic support: {db.supports_topics()}")
-print(f"Vector search: {db.supports_vector_search()}")
-
-# Check structured search capabilities
-capabilities = db.get_backend_capabilities()
-print(f"Text similarity: {capabilities.supports(SearchCapability.TEXT_SIMILARITY)}")
-print(f"Date filtering: {capabilities.supports(SearchCapability.DATE_FILTERING)}")
-print(f"Nested queries: {capabilities.supports(SearchCapability.NESTED_QUERIES)}")
-
-# Use case-insensitive search when available
-if db.supports_case_insensitive_like():
-    results = db.find_elements_ilike({"content_preview_ilike": "%IMPORTANT%"})
-else:
-    # Fallback to case-sensitive search
-    results = db.find_elements({"content_preview_like": "%important%"})
-```
-
-## Content Monitoring and Updates
-
-Doculyzer includes a robust system for monitoring content sources and handling updates:
-
-### Change Detection
-
-- **Efficient Monitoring**: Tracks content sources for changes using lightweight methods (timestamps, ETags, content hashes)
-- **Selective Processing**: Only reprocesses documents that have changed since their last ingestion
-- **Hash-Based Comparison**: Uses content hashes to avoid unnecessary processing when content hasn't changed
-- **Source-Specific Strategies**: Each content source type implements its own optimal change detection mechanism
-
-### Update Process
-
-```python
-# Schedule regular updates
-from doculyzer import ingest_documents
-import schedule
-import time
-
-def update_documents():
-    # This will only process documents that have changed
-    stats = ingest_documents(config)
-    print(f"Updates: {stats['documents']} documents, {stats['unchanged_documents']} unchanged")
-
-# Run updates every hour
-schedule.every(1).hour.do(update_documents)
-
-while True:
-    schedule.run_pending()
-    time.sleep(60)
-```
-
-### Update Status Tracking
-
-- **Processing History**: Maintains a record of when each document was last processed
-- **Content Hash Storage**: Stores content hashes to quickly identify changes
-- **Update Statistics**: Provides metrics on documents processed, unchanged, and updated
-- **Pointer-Based Architecture**: Since Doculyzer stores pointers to original content rather than copies, it efficiently handles updates without versioning complications
-
-### Scheduled Crawling
-
-For continuous monitoring of content sources, Doculyzer can be configured to run scheduled crawls:
-
-```python
-import argparse
-import logging
-import time
-from doculyzer import crawl
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Doculyzer Crawler")
-    parser.add_argument("--config", required=True, help="Path to configuration file")
-    parser.add_argument("--interval", type=int, default=3600, help="Crawl interval in seconds")
-    args = parser.parse_args()
-    
-    logger = logging.getLogger("Doculyzer Crawler")
-    logger.info(f"Crawler initialized with interval {args.interval} seconds")
-    
-    while True:
-        crawl(args.config, args.interval)
-        logger.info(f"Sleeping for {args.interval} seconds")
-        time.sleep(args.interval)
-```
-
-Run the crawler as a background process or service:
-
-```bash
-# Run crawler with 1-hour interval
-python crawler.py --config config.yaml --interval 3600
-```
-
-For production environments, consider using a proper task scheduler like Celery or a cron job to manage the crawl process.
+9. **Full-Text Engine**: Configurable text storage and indexing for optimal search performance
+10. **📄 Document Materializer**: Advanced document reconstruction and format conversion system
+11. **⚡ Batch Processor**: Efficient bulk operations for document retrieval and processing
 
 ## Getting Started
 
@@ -837,60 +559,6 @@ pip install "doculyzer[embedding-all]"
 pip install "doculyzer[all]"
 ```
 
-You can also use requirements.txt with the desired components uncommented:
-
-```txt
-# REQUIRED DEPENDENCIES - Core functionality
-lxml~=5.4.0
-PyYAML~=6.0.2
-beautifulsoup4~=4.13.4
-Markdown~=3.8
-requests~=2.32.3
-python-dateutil~=2.9.0
-jsonpath-ng~=1.7.0
-python-dotenv~=1.1.0
-wcmatch~=10.0
-
-# Document parsers
-python-docx~=1.1.2
-openpyxl~=3.1.5
-pymupdf~=1.25.5
-python-pptx~=1.0.2
-
-# Uncomment the components you need:
-# SQLAlchemy (ORM framework)
-# SQLAlchemy~=2.0.40
-
-# SQLite extensions
-# sqlean.py~=3.47.0; platform_system == 'Darwin'
-# sqlean.py~=3.47.0; platform_system == 'Linux' and platform_machine == 'x86_64'
-
-# Elasticsearch backend
-# elasticsearch~=8.0.0
-
-# Database content sources
-# sqlalchemy~=2.0.40
-# psycopg2-binary~=2.9.9; platform_system != 'Windows'
-# psycopg2~=2.9.9; platform_system == 'Windows'
-# pymssql~=2.2.10
-# pymysql~=1.1.0
-
-# Confluence/JIRA content sources
-# atlassian-python-api~=3.41.9
-
-# SharePoint content sources
-# Office365-REST-Python-Client~=2.5.0
-
-# NumPy (for vector operations)
-# numpy~=2.0.2
-
-# Embedding provider (choose one)
-# torch==2.7.0
-# sentence-transformers~=4.1.0
-# openai~=1.76.0
-# fastembed>=0.1.0
-```
-
 ### Configuration
 
 Create a configuration file `config.yaml`:
@@ -900,6 +568,12 @@ storage:
   backend: elasticsearch  # Options: file, sqlite, mongodb, postgresql, elasticsearch, sqlalchemy
   topic_support: true  # Enable topic features
   
+  # Full-text storage and indexing configuration
+  store_full_text: true      # Store full text for retrieval
+  index_full_text: true      # Index full text for search
+  compress_full_text: true   # Enable compression for large documents
+  full_text_max_length: 100000  # Limit very large documents (100KB max)
+  
   # Elasticsearch-specific configuration
   elasticsearch:
     hosts: ["localhost:9200"]
@@ -907,18 +581,6 @@ storage:
     password: "changeme"  # optional
     index_prefix: "doculyzer"
     vector_dimension: 384
-    store_full_text: true
-    index_full_text: true
-    compress_full_text: false
-    full_text_max_length: null  # No limit
-  
-  # MongoDB-specific configuration (if using MongoDB)
-  mongodb:
-    host: localhost
-    port: 27017
-    db_name: doculyzer
-    username: myuser  # optional
-    password: mypassword  # optional
 
 embedding:
   enabled: true
@@ -927,33 +589,6 @@ embedding:
   model: "sentence-transformers/all-MiniLM-L6-v2"
   dimensions: 384  # Configurable based on content needs
   contextual: true  # Enable contextual embeddings
-  
-  # Contextual embedding configuration
-  predecessor_count: 1
-  successor_count: 1
-  ancestor_depth: 1
-  child_count: 1
-  
-  # Content-specific configurations
-  content_types:
-    technical:
-      model: "sentence-transformers/all-mpnet-base-v2"
-      dimensions: 768  # Larger vectors for technical content
-    general:
-      model: "sentence-transformers/all-MiniLM-L6-v2"
-      dimensions: 384  # Smaller vectors for general content
-  
-  # OpenAI-specific configuration (if using OpenAI provider)
-  openai:
-    api_key: "your_api_key_here"
-    model: "text-embedding-3-small"
-    dimensions: 1536  # Embedding dimensions for OpenAI model
-  
-  # FastEmbed-specific configuration (if using FastEmbed provider)
-  fastembed:
-    model: "BAAI/bge-small-en-v1.5"  # Default FastEmbed model
-    dimensions: 384  # Embedding dimensions for FastEmbed model
-    cache_dir: "./model_cache"  # Optional: dir to cache models
 
 content_sources:
   # Local file content source (core, no extra dependencies)
@@ -963,36 +598,6 @@ content_sources:
     file_pattern: "**/*.md"
     max_link_depth: 2
     topics: ["documentation", "user-guides"]  # Assign topics to this source
-    
-  # Example of a blob-based database content source (requires sqlalchemy)
-  - name: "database-blobs"
-    type: "database"
-    connection_string: "postgresql://user:password@localhost:5432/mydatabase"
-    query: "SELECT * FROM documents"
-    id_column: "doc_id"
-    content_column: "content_blob" 
-    metadata_columns: ["title", "author", "created_date"]
-    timestamp_column: "updated_at"
-    topics: ["database", "technical-docs"]  # Assign topics to this source
-    
-  # Example of Confluence content source (requires atlassian-python-api)
-  - name: "confluence-docs"
-    type: "confluence"
-    url: "https://company.atlassian.net/wiki"
-    username: "${CONFLUENCE_USER}"  # Use environment variables securely
-    password: "${CONFLUENCE_PASS}"
-    space_keys: ["DEV", "PROD"]
-    max_results: 1000
-    topics: ["confluence", "team-docs", "development"]  # Assign topics to this source
-
-  # Example of S3 bucket content source (requires boto3)
-  - name: "aws-documents"
-    type: "s3"
-    bucket: "company-documents"
-    prefix: "technical-docs/"
-    region: "us-west-2"
-    file_pattern: "*.{pdf,docx,xlsx}"
-    topics: ["cloud", "aws", "infrastructure"]  # Assign topics to this source
 
 relationship_detection:
   enabled: true
@@ -1003,11 +608,11 @@ logging:
   file: "./logs/docpointer.log"
 ```
 
-### Basic Usage
+### Basic Usage with Document Materialization
 
 ```python
 from doculyzer import Config, ingest_documents
-from doculyzer.structured_search import SearchQueryBuilder, LogicalOperator
+from doculyzer import search_with_documents, get_document_in_format
 
 # Load configuration
 config = Config("config.yaml")
@@ -1019,395 +624,201 @@ db = config.initialize_database()
 stats = ingest_documents(config)
 print(f"Processed {stats['documents']} documents with {stats['elements']} elements")
 
-# Enhanced search examples
-from doculyzer.db.element_element import ElementType
-
-# Search with pattern matching
-results = db.find_elements({
-    "content_preview_like": "%important%",
-    "element_type": ElementType.HEADER
-})
-
-# Search by category
-text_elements = db.find_elements_by_category(
-    "text_elements", 
-    content_preview_like="%summary%"
+# Search with document materialization
+results = search_with_documents(
+    query_text="machine learning algorithms",
+    limit=10,
+    document_format="markdown",
+    include_document_statistics=True,
+    include_document_outline=True,
+    max_document_length=5000
 )
 
-# Complex metadata search
-docs = db.find_documents({
-    "doc_type_like": "pdf",
-    "metadata_like": {"title": "%annual%"},
-    "source_like": "%reports%"
-})
+print(f"Found {results.total_results} results")
+print(f"Materialized {len(results.materialized_documents)} documents")
 
-# Advanced structured search
-structured_query = (SearchQueryBuilder()
-                    .text_search("machine learning", similarity_threshold=0.8)
-                    .last_days(30)
-                    .topics(include=["tech%", "ai%"], exclude=["deprecated%"])
-                    .element_types([ElementType.HEADER, ElementType.PARAGRAPH])
-                    .metadata_exact(priority="high")
-                    .include_highlighting(True)
-                    .limit(20)
-                    .build())
+# Process results
+for item in results.results:
+    print(f"Element: {item.element_type} - Score: {item.similarity:.3f}")
+    print(f"Content: {item.content_preview}")
 
-results = db.execute_structured_search(structured_query)
-for result in results:
-    print(f"Score: {result['final_score']:.3f} - {result['content_preview']}")
+# Process materialized documents
+for doc_id, doc in results.materialized_documents.items():
+    print(f"\nDocument: {doc.title}")
+    print(f"Format: {doc.format_type}")
+    print(f"Length: {len(doc.formatted_content or '')} characters")
+    
+    if doc.statistics:
+        print(f"Words: {doc.statistics.get('total_words', 0)}")
+        print(f"Elements: {doc.element_count}")
+    
+    # Save markdown to file
+    if doc.formatted_content:
+        filename = f"{doc_id.replace('/', '_')}.md"
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(doc.formatted_content)
+        print(f"Saved to {filename}")
 
-# Semantic search (if embeddings are enabled)
-from doculyzer.embeddings import get_embedding_generator
+# Get specific document in different formats
+doc_markdown = get_document_in_format("doc_123", "markdown", include_outline=True)
+doc_html = get_document_in_format("doc_123", "html", include_statistics=True)
+doc_json = get_document_in_format("doc_123", "json", max_length=10000)
 
-# Get the configured embedding generator
-embedding_generator = get_embedding_generator(config)
-query_embedding = embedding_generator.generate("search query")
-results = db.search_by_embedding(query_embedding)
-for element_id, score in results:
-    element = db.get_element(element_id)
-    print(f"Semantic match ({score:.2f}): {element['content_preview']}")
+print(f"Markdown: {len(doc_markdown.formatted_content or '')} chars")
+print(f"HTML: {len(doc_html.formatted_content or '')} chars")
+print(f"JSON: {len(doc_json.formatted_content or '')} chars")
 ```
 
-### Using a Specific Content Source
+## Document Materialization Examples
+
+### Example 1: Search and Export Documents
 
 ```python
-from doculyzer.content_sources import DatabaseContentSource, ConfluenceContentSource
+from doculyzer import search_with_documents
+import os
 
-# Using a database content source (requires sqlalchemy)
-try:
-    db_source = DatabaseContentSource({
-        "connection_string": "postgresql://user:password@localhost:5432/mydatabase",
-        "query": "SELECT * FROM documents",
-        "id_column": "doc_id",
-        "content_column": "content_blob",
-        "json_mode": False  # Set to True for structured JSON output
-    })
-    
-    # Fetch a specific document
-    document = db_source.fetch_document("doc123")
-    print(f"Document content: {document['content']}")
-    
-    # List all available documents
-    documents = db_source.list_documents()
-    print(f"Available documents: {len(documents)}")
-    
-except ImportError as e:
-    print(f"Could not initialize DatabaseContentSource: {e}")
-    print("Install required dependencies with:")
-    print("pip install 'doculyzer[source-database]'")
+# Search for quarterly reports and export as markdown
+results = search_with_documents(
+    query_text="quarterly financial report",
+    include_topics=["finance%", "quarterly%"],
+    exclude_topics=["draft%"],
+    limit=20,
+    document_format="markdown",
+    include_document_statistics=True,
+    max_document_length=50000
+)
 
-# Using a Confluence content source (requires atlassian-python-api)
-try:
-    confluence_source = ConfluenceContentSource({
-        "url": "https://company.atlassian.net/wiki",
-        "username": "user",
-        "password": "pass",
-        "space_keys": ["DEV"]
-    })
-    
-    # List available pages
-    pages = confluence_source.list_documents()
-    print(f"Found {len(pages)} pages in Confluence")
-    
-except ImportError as e:
-    print(f"Could not initialize ConfluenceContentSource: {e}")
-    print("Install required dependencies with:")
-    print("pip install 'doculyzer[source-confluence]'")
+# Create export directory
+os.makedirs("exported_reports", exist_ok=True)
+
+# Export each document
+for doc_id, doc in results.materialized_documents.items():
+    if doc.formatted_content and not doc.materialization_error:
+        filename = f"exported_reports/{doc_id.replace('/', '_')}.md"
+        
+        with open(filename, "w", encoding="utf-8") as f:
+            # Add metadata header
+            f.write(f"# {doc.title or doc_id}\n\n")
+            if doc.statistics:
+                f.write(f"- **Words:** {doc.statistics.get('total_words', 0)}\n")
+                f.write(f"- **Elements:** {doc.element_count}\n")
+                f.write(f"- **Source:** {doc.source}\n\n")
+            f.write("---\n\n")
+            f.write(doc.formatted_content)
+        
+        print(f"Exported: {filename}")
+    else:
+        print(f"Skipped {doc_id}: {doc.materialization_error}")
 ```
 
-## Advanced Features
-
-### Topic-Aware Organization
-
-Doculyzer includes a powerful topic system for organizing and categorizing content:
-
-- **Source-Level Topics**: Assign topics to content sources during configuration
-- **Topic-Aware Embeddings**: Store embeddings with associated topics for enhanced organization
-- **Topic Filtering**: Search and filter content by topic patterns using LIKE syntax
-- **Topic Analytics**: Get statistics on topic distribution across your document collection
-
-#### Topic Configuration
-
-Topics can be assigned to content sources in your configuration:
-
-```yaml
-content_sources:
-  - name: "security-docs"
-    type: "file"
-    base_path: "./security"
-    topics: ["security", "compliance", "policies"]
-    
-  - name: "dev-confluence"
-    type: "confluence"
-    space_keys: ["DEV"]
-    topics: ["development", "engineering", "technical"]
-```
-
-#### Topic-Aware Search
+### Example 2: Batch Document Analysis
 
 ```python
-# Search with topic filtering (requires topic-enabled backend)
-if db.supports_topics():
-    # Search for security-related content
-    results = db.search_by_text_and_topics(
-        search_text="authentication policy",
-        include_topics=["security%", "%.policy%"],  # LIKE patterns
-        exclude_topics=["deprecated%"],
-        min_confidence=0.8,
-        limit=10
+from doculyzer import get_documents_batch_formatted
+import json
+
+# Get all technical documents and analyze their structure
+doc_ids = ["tech_spec_v1", "tech_spec_v2", "api_guide", "user_manual"]
+
+docs = get_documents_batch_formatted(
+    doc_ids=doc_ids,
+    format_type="json",
+    include_statistics=True,
+    include_outline=True
+)
+
+# Analyze document structure
+analysis = {
+    "total_documents": len(docs),
+    "total_words": 0,
+    "total_elements": 0,
+    "element_type_distribution": {},
+    "documents": []
+}
+
+for doc_id, doc in docs.items():
+    if doc.statistics and not doc.materialization_error:
+        doc_stats = {
+            "doc_id": doc_id,
+            "title": doc.title,
+            "words": doc.statistics.get('total_words', 0),
+            "elements": doc.element_count,
+            "element_types": doc.statistics.get('element_types', {})
+        }
+        
+        analysis["documents"].append(doc_stats)
+        analysis["total_words"] += doc_stats["words"]
+        analysis["total_elements"] += doc_stats["elements"]
+        
+        # Aggregate element types
+        for elem_type, count in doc_stats["element_types"].items():
+            analysis["element_type_distribution"][elem_type] = (
+                analysis["element_type_distribution"].get(elem_type, 0) + count
+            )
+
+# Save analysis
+with open("document_analysis.json", "w") as f:
+    json.dump(analysis, f, indent=2)
+
+print(f"Analyzed {analysis['total_documents']} documents")
+print(f"Total words: {analysis['total_words']:,}")
+print(f"Total elements: {analysis['total_elements']:,}")
+print("Element type distribution:")
+for elem_type, count in sorted(analysis["element_type_distribution"].items()):
+    print(f"  {elem_type}: {count}")
+```
+
+### Example 3: Document Format Comparison
+
+```python
+from doculyzer import get_document_in_format
+import time
+
+doc_id = "complex_presentation_2024"
+
+# Get document in multiple formats and compare
+formats = ["text", "markdown", "html", "docx_html", "pptx_html"]
+format_results = {}
+
+for format_type in formats:
+    start_time = time.time()
+    
+    doc = get_document_in_format(
+        doc_id=doc_id,
+        format_type=format_type,
+        include_statistics=True,
+        max_length=100000
     )
     
-    for result in results:
-        print(f"Element {result['element_pk']}: {result['similarity']:.2f}")
-        print(f"Topics: {result['topics']}")
-        print(f"Confidence: {result['confidence']:.2f}")
+    processing_time = (time.time() - start_time) * 1000
+    
+    if not doc.materialization_error:
+        format_results[format_type] = {
+            "length": len(doc.formatted_content or ''),
+            "processing_time_ms": processing_time,
+            "quality": "high" if doc.formatted_content else "low",
+            "stats": doc.statistics
+        }
         
-    # Get topic statistics
-    stats = db.get_topic_statistics()
-    for topic, info in stats.items():
-        print(f"{topic}: {info['embedding_count']} embeddings, {info['document_count']} docs")
-
-# Using structured search with topics
-topic_query = (SearchQueryBuilder()
-               .text_search("security protocols")
-               .topics(
-                   include=["security%", "protocol%"],
-                   exclude=["deprecated%", "draft%"],
-                   require_all=False,  # OR logic for includes
-                   min_confidence=0.8
-               )
-               .last_months(6)
-               .build())
-
-results = db.execute_structured_search(topic_query)
-```
-
-#### Topic Filtering Logic
-
-When using topic filtering, Doculyzer applies different logical operators for includes and excludes:
-
-##### Include Topics (OR Logic)
-Elements matching **any** of the include patterns will be included:
-
-```python
-# Example: Find elements with topics about security OR policies OR compliance
-include_topics=["security%", "policy%", "compliance%"]
-
-# This finds elements with topics like:
-# - "security.authentication"  (matches "security%")
-# - "policy.access"            (matches "policy%") 
-# - "compliance.sox"           (matches "compliance%")
-# - "security.policy.auth"     (matches both "security%" AND "policy%")
-```
-
-**Result:** An element is included if it has **ANY** topic matching **ANY** of the patterns.
-
-##### Exclude Topics (AND Logic)
-Elements matching **any** of the exclude patterns will be excluded:
-
-```python
-# Example: Exclude elements with deprecated OR draft topics
-exclude_topics=["deprecated%", "draft%"]
-
-# This excludes elements with topics like:
-# - "deprecated.old"   (matches "deprecated%")
-# - "draft.review"     (matches "draft%")
-# - "deprecated.draft" (matches both patterns - still excluded)
-```
-
-**Result:** An element is excluded if it has **ANY** topic matching **ANY** of the excluded patterns.
-
-##### Combined Example
-
-```python
-results = search_by_text_and_topics(
-    search_text="authentication policy",
-    include_topics=["security%", "policy%", "compliance%"],  # OR: security OR policy OR compliance
-    exclude_topics=["deprecated%", "draft%"],               # AND: NOT deprecated AND NOT draft
-    min_confidence=0.8
-)
-```
-
-This finds elements that:
-1. Match the text "authentication policy" **AND**
-2. Have topics like `security.auth` **OR** `policy.access` **OR** `compliance.sox` **AND**
-3. Do **NOT** have topics like `deprecated.old` **AND** do **NOT** have topics like `draft.review`
-
-The OR logic for includes casts a wide net for relevant content, while the AND logic for excludes ensures comprehensive filtering of unwanted content.
-
-#### Storing Topic-Aware Embeddings
-
-```python
-# Store embeddings with topics
-topics = config.get_source_topics("security-docs")  # Get topics from config
-embedding = embedding_generator.generate("security policy content")
-
-db.store_embedding_with_topics(
-    element_pk=123,
-    embedding=embedding,
-    topics=topics + ["authentication"],  # Combine source topics with content-specific topics
-    confidence=0.95
-)
-
-# Get topics for a specific embedding
-element_topics = db.get_embedding_topics(element_pk=123)
-print(f"Element topics: {element_topics}")
-```
-
-### Relationship Detection
-
-Doculyzer can detect various types of relationships between document elements:
-
-- **Explicit Links**: Links explicitly defined in the document
-- **Structural Relationships**: Parent-child, sibling, and section relationships
-- **Semantic Relationships**: Connections based on content similarity
-
-### Embedding Generation
-
-Doculyzer uses advanced contextual embedding techniques to generate vector representations of document elements:
-
-- **Pluggable Embedding Backends**: Choose from different embedding providers or implement your own
-  - **HuggingFace Transformers**: Use transformer-based models like BERT, RoBERTa, or Sentence Transformers
-  - **OpenAI Embeddings**: Leverage OpenAI's powerful embedding models
-  - **FastEmbed**: Use the ultra-fast embedding library optimized for efficiency (15x faster than traditional models)
-  - **Custom Embeddings**: Implement your own embedding generator with the provided interfaces
-- **Contextual Embeddings**: Incorporates hierarchical relationships, predecessors, and successors into each element's embedding
-- **Element-Level Precision**: Maintains accuracy to specific document elements rather than just document-level matching
-- **Content-Optimized Vector Dimensions**: Flexibility to choose vector sizes based on content type
-  - Larger vectors for highly technical content requiring more nuanced semantic representation
-  - Smaller vectors for general content to optimize storage and query performance
-  - Select the embedding provider and model that best suits your specific use case
-- **Improved Relevance**: Context-aware embeddings produce more accurate similarity search results
-- **Temporal Semantics**: Finds date references and expands them into a complete explanation of all date and time parts, improving ANN search.
-
-#### Embedding Provider Comparison
-
-| Provider | Speed | Quality | Dimension Options | Local/Remote | Installation |
-|----------|-------|---------|-------------------|--------------|--------------|
-| HuggingFace | Standard | High | 384-768 | Local | `pip install "doculyzer[huggingface]"` |
-| OpenAI | Fast | Very High | 1536-3072 | Remote (API) | `pip install "doculyzer[openai]"` |
-| FastEmbed | Very Fast (15x) | High | 384-1024 | Local | `pip install "doculyzer[fastembed]"` |
-
-```python
-from doculyzer.embeddings import get_embedding_generator
-from doculyzer.embeddings.factory import create_embedding_generator
-
-# Create embedding generator using configuration
-embedding_generator = get_embedding_generator(config)
-
-# Or manually create a specific embedding generator
-huggingface_embedder = create_embedding_generator(
-    provider="huggingface",
-    model_name="sentence-transformers/all-mpnet-base-v2",
-    dimensions=768,
-    contextual=True
-)
-
-openai_embedder = create_embedding_generator(
-    provider="openai",
-    model_name="text-embedding-3-small",
-    dimensions=1536,
-    contextual=True,
-    api_key="your-openai-api-key"
-)
-
-fastembed_embedder = create_embedding_generator(
-    provider="fastembed",
-    model_name="BAAI/bge-small-en-v1.5",
-    dimensions=384,
-    contextual=True,
-    cache_dir="./model_cache"
-)
-
-# Generate embeddings for a document
-elements = db.get_document_elements(doc_id)
-embeddings = embedding_generator.generate_from_elements(elements)
-
-# Store embeddings with topics
-source_topics = config.get_source_topics(source_name)
-for element_id, embedding in embeddings.items():
-    element = db.get_element(element_id)
-    if db.supports_topics():
-        db.store_embedding_with_topics(element_id, embedding, source_topics)
+        # Save sample of each format
+        if doc.formatted_content:
+            with open(f"sample_{doc_id}_{format_type}.txt", "w", encoding="utf-8") as f:
+                f.write(doc.formatted_content[:1000])  # First 1000 chars
     else:
-        db.store_embedding(element_id, embedding)
-```
+        format_results[format_type] = {
+            "error": doc.materialization_error,
+            "processing_time_ms": processing_time
+        }
 
-#### Temporal Semantic Search Example
-
-Doculyzer's temporal semantics feature provides lightweight consistency normalization to improve semantic search accuracy:
-
-```python
-from doculyzer import search_by_text
-
-# Natural language date queries benefit from temporal consistency normalization
-# When documents contain dates like "July 15, 2024", they get normalized to:
-# "Q3 2024 July 2024 July 15, 2024"
-# Time components like "14:30" become "14:30 14:30 2:30 PM business hours"
-
-results = search_by_text(
-    "Q3 strategic planning",
-    include_topics=["planning%", "strategy%"],
-    min_score=0.7,
-    limit=10
-)
-
-print(f"Found {results.total_results} strategic planning documents")
-
-for item in results.results:
-    element = db.get_element(item.element_pk)
-    print(f"Document: {element.get('title', 'Untitled')}")
-    print(f"Similarity: {item.similarity:.3f}")
-    print(f"Preview: {item.content_preview}")
-    print("---")
-
-# These searches now find semantically equivalent temporal references:
-temporal_queries = [
-    "Q3 planning",                    # Matches "July strategic planning", "third quarter review"
-    "third quarter results",          # Matches "Q3 earnings", "July performance" 
-    "July initiatives",              # Matches "Q3 projects", "third quarter goals"
-    "summer strategy sessions",      # Matches "Q3 planning", "July meetings"
-    "business hours meetings",       # Matches "14:30 conference", "2:30 PM calls"
-]
-
-for query in temporal_queries:
-    results = search_by_text(query, limit=5)
-    print(f"'{query}' found {results.total_results} results")
-```
-
-The lightweight temporal consistency works by:
-
-1. **Temporal Detection**: Identifying date, time, datetime, and time range patterns in document content
-2. **Canonical Normalization**: Converting temporal references to consistent canonical forms:
-   - **Dates**: "July 15, 2024" → "Q3 2024 July 2024 July 15, 2024"
-   - **Alternative dates**: "third quarter 2024" → "Q3 2024 July 2024 third quarter 2024"  
-   - **Seasonal refs**: "summer planning" → "Q3 2024 July 2024 summer planning"
-   - **Times**: "14:30" → "14:30 14:30 2:30 PM business hours"
-3. **Consistent Matching**: Documents with equivalent temporal concepts now share canonical terms, improving semantic similarity
-
-**Key Benefits:**
-- **"Q3 planning"** searches find documents mentioning "July", "third quarter", or "summer" planning
-- **"third quarter results"** searches find documents with "Q3", "July", or seasonal references
-- **"business hours meetings"** searches find documents with various time formats (14:30, 2:30 PM, etc.)
-- **Minimal overhead**: Only 2-3 canonical terms added per temporal reference
-- **Natural language flow**: Maintains readable text that embedding models handle well
-- **Consistent vector space**: Similar temporal concepts produce similar embeddings
-
-### Handling Missing Dependencies
-
-Doculyzer gracefully handles missing optional dependencies:
-
-```python
-# If you try to use an embedding provider without installing it:
-from doculyzer.embeddings import get_embedding_generator
-
-try:
-    embedding_generator = get_embedding_generator(config)
-    # Use the embedding generator...
-except ImportError as e:
-    print(f"Missing dependency: {e}")
-    print("Please install the required package with:")
-    print("pip install 'doculyzer[huggingface]'")  # or appropriate package
+# Print comparison
+print(f"Format Comparison for {doc_id}:")
+print("-" * 60)
+for format_type, result in format_results.items():
+    if "error" not in result:
+        print(f"{format_type:12}: {result['length']:6,} chars, "
+              f"{result['processing_time_ms']:6.1f}ms, {result['quality']}")
+    else:
+        print(f"{format_type:12}: ERROR - {result['error']}")
 ```
 
 ## Contributing
@@ -1420,54 +831,55 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Recommended Configurations
 
-### Minimal Setup (File Content Sources Only)
-```
-pip install doculyzer
-```
-
-### Semantic Search with SQLite
-```
-pip install "doculyzer[db-core,fastembed]"
+### Minimal Setup with Document Materialization
+```bash
+pip install "doculyzer[db-core]"
 ```
 
-### High-Performance Search with Elasticsearch
-```
+### High-Performance Search with Document Export
+```bash
 pip install "doculyzer[db-elasticsearch,fastembed]"
 ```
-
-### Production PostgreSQL with Database Content Sources
+Configuration:
+```yaml
+storage:
+  backend: elasticsearch
+  store_full_text: true
+  index_full_text: true
+  compress_full_text: true
+  full_text_max_length: 100000
 ```
+
+### Production Setup with Full Document Capabilities
+```bash
 pip install "doculyzer[db-postgresql,source-database,fastembed]"
 ```
-
-### Enterprise Configuration with All Content Sources
+Configuration:
+```yaml
+storage:
+  backend: postgresql
+  store_full_text: true   # Enable document materialization
+  index_full_text: true   # Enable search
+  compress_full_text: true
+  topic_support: true
 ```
+
+### Enterprise Configuration with Complete Document Management
+```bash
 pip install "doculyzer[db-all,embedding-all,source-all,cloud-aws]"
-```
-
-### Topic-Aware Document Management
-```
-pip install "doculyzer[db-postgresql,fastembed]"
-```
-
-### Advanced Structured Search System
-```
-pip install "doculyzer[db-elasticsearch,huggingface]"
 ```
 
 # Verified Compatibility
 
 Tested and working with:
-- SQLite storage (with and without vector search plugins)
-- PostgreSQL storage (with and without pgvector extension)
-- **Elasticsearch storage (with full-text search and vector capabilities)**
-- Enhanced search capabilities (LIKE patterns, ElementType enums, metadata search)
-- **Advanced structured search system with backend capability detection**
-- Topic-aware embeddings and search
-- Category-based element filtering
-- Web Content Source
-- File Content Source
-- Database Content Source
-- Content types: MD, HTML, XLSX, PDF, XML, CSV, DOCX, PPTX
-- Embedding providers: HuggingFace, OpenAI, FastEmbed
-- **Complex query composition with logical operators and similarity thresholds**
+- ✅ All storage backends with full-text configuration and document materialization
+- ✅ Complete document retrieval and format conversion (text, markdown, HTML, JSON, YAML, XML)
+- ✅ Advanced document reconstruction with format-specific optimizations (DOCX, PPTX, PDF)
+- ✅ Document format detection and reconstruction quality validation
+- ✅ Batch document processing and bulk format conversion
+- ✅ Enhanced search integration with materialized document content
+- ✅ Document statistics, outlines, and structural analysis
+- ✅ Performance-optimized document materialization with configurable options
+- ✅ Advanced structured search system with document materialization integration
+- ✅ Storage optimization recommendations and configuration monitoring
+- ✅ Format-specific document reconstruction with intelligent element mapping

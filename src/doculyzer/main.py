@@ -3,8 +3,8 @@ import os
 
 from dotenv import load_dotenv
 
-from .config import Config
-from .embeddings import EmbeddingGenerator
+from doculyzer.config import Config
+from doculyzer.embeddings import EmbeddingGenerator
 
 # Load environment variables from .env file
 load_dotenv()

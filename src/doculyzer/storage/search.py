@@ -52,35 +52,19 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Import the core structured search components for conversion
-# Note: These imports should be updated to match your actual module structure
-try:
-    from .structured_search import (
-        StructuredSearchQuery as CoreStructuredSearchQuery,
-        SearchCriteriaGroup as CoreSearchCriteriaGroup,
-        TextSearchCriteria as CoreTextSearchCriteria,
-        EmbeddingSearchCriteria as CoreEmbeddingSearchCriteria,
-        DateSearchCriteria as CoreDateSearchCriteria,
-        TopicSearchCriteria as CoreTopicSearchCriteria,
-        MetadataSearchCriteria as CoreMetadataSearchCriteria,
-        ElementSearchCriteria as CoreElementSearchCriteria,
-        LogicalOperator,
-        DateRangeOperator,
-        SimilarityOperator
-    )
-except ImportError:
-    # Fallback for when core modules are not available
-    CoreStructuredSearchQuery = None
-    CoreSearchCriteriaGroup = None
-    CoreTextSearchCriteria = None
-    CoreEmbeddingSearchCriteria = None
-    CoreDateSearchCriteria = None
-    CoreTopicSearchCriteria = None
-    CoreMetadataSearchCriteria = None
-    CoreElementSearchCriteria = None
-    LogicalOperator = None
-    DateRangeOperator = None
-    SimilarityOperator = None
+from .structured_search import (
+    StructuredSearchQuery as CoreStructuredSearchQuery,
+    SearchCriteriaGroup as CoreSearchCriteriaGroup,
+    TextSearchCriteria as CoreTextSearchCriteria,
+    EmbeddingSearchCriteria as CoreEmbeddingSearchCriteria,
+    DateSearchCriteria as CoreDateSearchCriteria,
+    TopicSearchCriteria as CoreTopicSearchCriteria,
+    MetadataSearchCriteria as CoreMetadataSearchCriteria,
+    ElementSearchCriteria as CoreElementSearchCriteria,
+    LogicalOperator,
+    DateRangeOperator,
+    SimilarityOperator
+)
 
 
 # ============================================================================
@@ -677,7 +661,8 @@ class ElementSearchRequest(BaseModel):
     )
 
     @field_validator('content_length_max')
-    def validate_content_length_range(self, v, info):
+    @classmethod
+    def validate_content_length_range(cls, v, info):
         """Validate that max length is not less than min length."""
         min_length = info.data.get('content_length_min')
         if min_length is not None and v is not None and v < min_length:
@@ -1123,8 +1108,8 @@ class SearchResultItem(BaseModel):
                     "content_preview": "Quarterly Performance Analysis - Q3 2024",
                     "final_score": 0.78,
                     "scores": {
-                        "text_similarity": 0.72,
-                        "date_relevance": 0.95
+                        "text_similarity": [0.72],
+                        "date_relevance": [0.95]
                     },
                     "metadata": {
                         "section": "executive_summary",
@@ -1199,16 +1184,16 @@ class SearchResultItem(BaseModel):
     )
 
     # Optional enriched data
-    scores: Optional[Dict[str, float]] = Field(
+    scores: Optional[Dict[str, List[float] | float]] = Field(
         default=None,
         title="Individual Score Components",
         description="Breakdown of relevance scores by search criteria type. "
                    "Shows contribution of text_similarity, topic_confidence, date_relevance, etc. "
                    "Useful for understanding why a result ranked highly and tuning search parameters",
         examples=[
-            {"text_similarity": 0.85, "topic_confidence": 0.92, "date_relevance": 0.75},
-            {"text_similarity": 0.72, "embedding_similarity": 0.89},
-            {"topic_confidence": 0.95, "metadata_relevance": 0.88}
+            {"text_similarity": [0.85], "topic_confidence": [0.92], "date_relevance": [0.75]},
+            {"text_similarity": [0.72], "embedding_similarity": [0.89]},
+            {"topic_confidence": [0.95], "metadata_relevance": [0.88]}
         ]
     )
 
@@ -1313,85 +1298,140 @@ def pydantic_to_core_query(pydantic_query: SearchQueryRequest):
         if not CoreSearchCriteriaGroup:
             raise ImportError("CoreSearchCriteriaGroup not available")
 
-        core_group = CoreSearchCriteriaGroup(
-            operator=LogicalOperator(pydantic_group.operator.value)
-        )
+        # FIXED: Prepare all criteria BEFORE creating the core group
+        # This prevents premature validation during construction
 
-        # Convert individual criteria (map new Pydantic names to existing core names)
-        if pydantic_group.semantic_search:
+        operator = LogicalOperator(pydantic_group.operator.value)
+
+        # Prepare all criteria
+        text_criteria = None
+        if pydantic_group.semantic_search and CoreTextSearchCriteria:
             ts = pydantic_group.semantic_search
-            if CoreTextSearchCriteria:
-                core_group.text_criteria = CoreTextSearchCriteria(
-                    query_text=ts.query_text,
-                    similarity_threshold=ts.similarity_threshold,
-                    similarity_operator=SimilarityOperator(ts.similarity_operator.value),
-                    boost_factor=ts.boost_factor,
-                    search_fields=ts.search_fields
-                )
+            text_criteria = CoreTextSearchCriteria(
+                query_text=ts.query_text,
+                similarity_threshold=ts.similarity_threshold,
+                similarity_operator=SimilarityOperator(ts.similarity_operator.value),
+                boost_factor=ts.boost_factor,
+                search_fields=ts.search_fields
+            )
 
-        if pydantic_group.vector_search:
+        embedding_criteria = None
+        if pydantic_group.vector_search and CoreEmbeddingSearchCriteria:
             es = pydantic_group.vector_search
-            if CoreEmbeddingSearchCriteria:
-                core_group.embedding_criteria = CoreEmbeddingSearchCriteria(
-                    embedding_vector=es.embedding_vector,
-                    similarity_threshold=es.similarity_threshold,
-                    similarity_operator=SimilarityOperator(es.similarity_operator.value),
-                    distance_metric=es.distance_metric,
-                    boost_factor=es.boost_factor
-                )
+            embedding_criteria = CoreEmbeddingSearchCriteria(
+                embedding_vector=es.embedding_vector,
+                similarity_threshold=es.similarity_threshold,
+                similarity_operator=SimilarityOperator(es.similarity_operator.value),
+                distance_metric=es.distance_metric,
+                boost_factor=es.boost_factor
+            )
 
-        if pydantic_group.date_search:
+        date_criteria = None
+        if pydantic_group.date_search and CoreDateSearchCriteria:
             ds = pydantic_group.date_search
-            if CoreDateSearchCriteria:
-                core_group.date_criteria = CoreDateSearchCriteria(
-                    operator=DateRangeOperator(ds.operator.value),
-                    start_date=ds.start_date,
-                    end_date=ds.end_date,
-                    exact_date=ds.exact_date,
-                    relative_value=ds.relative_value,
-                    year=ds.year,
-                    quarter=ds.quarter,
-                    include_partial_dates=ds.include_partial_dates,
-                    specificity_levels=ds.specificity_levels
-                )
+            date_criteria = CoreDateSearchCriteria(
+                operator=DateRangeOperator(ds.operator.value),
+                start_date=ds.start_date,
+                end_date=ds.end_date,
+                exact_date=ds.exact_date,
+                relative_value=ds.relative_value,
+                year=ds.year,
+                quarter=ds.quarter,
+                include_partial_dates=ds.include_partial_dates,
+                specificity_levels=ds.specificity_levels
+            )
 
-        if pydantic_group.topic_search:
+        topic_criteria = None
+        if pydantic_group.topic_search and CoreTopicSearchCriteria:
             tops = pydantic_group.topic_search
-            if CoreTopicSearchCriteria:
-                core_group.topic_criteria = CoreTopicSearchCriteria(
-                    include_topics=tops.include_topics,
-                    exclude_topics=tops.exclude_topics,
-                    require_all_included=tops.require_all_included,
-                    min_confidence=tops.min_confidence,
-                    boost_factor=tops.boost_factor
-                )
+            topic_criteria = CoreTopicSearchCriteria(
+                include_topics=tops.include_topics,
+                exclude_topics=tops.exclude_topics,
+                require_all_included=tops.require_all_included,
+                min_confidence=tops.min_confidence,
+                boost_factor=tops.boost_factor
+            )
 
-        if pydantic_group.metadata_search:
+        metadata_criteria = None
+        if pydantic_group.metadata_search and CoreMetadataSearchCriteria:
             ms = pydantic_group.metadata_search
-            if CoreMetadataSearchCriteria:
-                core_group.metadata_criteria = CoreMetadataSearchCriteria(
-                    exact_matches=ms.exact_matches,
-                    like_patterns=ms.like_patterns,
-                    range_filters=ms.range_filters,
-                    exists_filters=ms.exists_filters
-                )
+            metadata_criteria = CoreMetadataSearchCriteria(
+                exact_matches=ms.exact_matches,
+                like_patterns=ms.like_patterns,
+                range_filters=ms.range_filters,
+                exists_filters=ms.exists_filters
+            )
 
-        if pydantic_group.element_search:
+        element_criteria = None
+        if pydantic_group.element_search and CoreElementSearchCriteria:
             els = pydantic_group.element_search
-            if CoreElementSearchCriteria:
-                core_group.element_criteria = CoreElementSearchCriteria(
-                    element_types=els.element_types,
-                    doc_ids=els.doc_ids,
-                    exclude_doc_ids=els.exclude_doc_ids,
-                    doc_sources=els.doc_sources,
-                    parent_element_ids=els.parent_element_ids,
-                    content_length_min=els.content_length_min,
-                    content_length_max=els.content_length_max
-                )
+            element_criteria = CoreElementSearchCriteria(
+                element_types=els.element_types,
+                doc_ids=els.doc_ids,
+                exclude_doc_ids=els.exclude_doc_ids,
+                doc_sources=els.doc_sources,
+                parent_element_ids=els.parent_element_ids,
+                content_length_min=els.content_length_min,
+                content_length_max=els.content_length_max
+            )
 
         # Convert subgroups recursively
+        sub_groups = []
         for sub_group in pydantic_group.sub_groups:
-            core_group.sub_groups.append(convert_criteria_group(sub_group))
+            sub_groups.append(convert_criteria_group(sub_group))
+
+        # NOW create the core group with ALL criteria at once
+        # This prevents validation from failing on an incomplete object
+        try:
+            # Option 1: If CoreSearchCriteriaGroup accepts all parameters in constructor
+            core_group = CoreSearchCriteriaGroup(
+                operator=operator,
+                text_criteria=text_criteria,
+                embedding_criteria=embedding_criteria,
+                date_criteria=date_criteria,
+                topic_criteria=topic_criteria,
+                metadata_criteria=metadata_criteria,
+                element_criteria=element_criteria,
+                sub_groups=sub_groups
+            )
+        except TypeError:
+            # Option 2: If CoreSearchCriteriaGroup doesn't accept all parameters
+            # Create with minimal required params, then set attributes
+            # This might still trigger validation, so we may need model_construct()
+            try:
+                core_group = CoreSearchCriteriaGroup(operator=operator)
+                # Set all criteria immediately after creation
+                if text_criteria is not None:
+                    core_group.text_criteria = text_criteria
+                if embedding_criteria is not None:
+                    core_group.embedding_criteria = embedding_criteria
+                if date_criteria is not None:
+                    core_group.date_criteria = date_criteria
+                if topic_criteria is not None:
+                    core_group.topic_criteria = topic_criteria
+                if metadata_criteria is not None:
+                    core_group.metadata_criteria = metadata_criteria
+                if element_criteria is not None:
+                    core_group.element_criteria = element_criteria
+                core_group.sub_groups = sub_groups
+            except ValueError as e:
+                if "must have at least one criterion" in str(e):
+                    # Option 3: Use model_construct to bypass validation during creation
+                    if hasattr(CoreSearchCriteriaGroup, 'model_construct'):
+                        core_group = CoreSearchCriteriaGroup.model_construct(
+                            operator=operator,
+                            text_criteria=text_criteria,
+                            embedding_criteria=embedding_criteria,
+                            date_criteria=date_criteria,
+                            topic_criteria=topic_criteria,
+                            metadata_criteria=metadata_criteria,
+                            element_criteria=element_criteria,
+                            sub_groups=sub_groups
+                        )
+                    else:
+                        raise e
+                else:
+                    raise e
 
         return core_group
 

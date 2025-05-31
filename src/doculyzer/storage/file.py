@@ -57,16 +57,36 @@ except Exception as e:
 
 
 class FileDocumentDatabase(DocumentDatabase):
-    """File-based implementation with comprehensive structured search support."""
+    """File-based implementation with comprehensive structured search support and full text configuration."""
 
-    def __init__(self, storage_path: str):
+    def __init__(self, conn_params: Dict[str, Any]):
         """
-        Initialize file-based document database.
+        Initialize file-based document database with full text configuration support.
 
         Args:
-            storage_path: Path to storage directory
+            conn_params: Connection parameters for file storage
+                Core storage:
+                - storage_path: Path to storage directory (default: './file_storage')
+
+                Text storage and indexing options:
+                - store_full_text: Whether to store full text for retrieval (default: True)
+                - index_full_text: Whether to index full text for search (default: True)
+                - compress_full_text: Whether to enable compression for stored text (default: False)
+                - full_text_max_length: Maximum length for full text, truncate if longer (default: None)
+
+                Common configuration patterns:
+                - Search + Storage: store_full_text=True, index_full_text=True (default, best search quality)
+                - Search only: store_full_text=False, index_full_text=True (saves storage space)
+                - Storage only: store_full_text=True, index_full_text=False (for retrieval without search)
+                - Neither: store_full_text=False, index_full_text=False (minimal storage, preview only)
         """
-        self.storage_path = storage_path
+        # Call parent constructor for full text configuration
+        super().__init__(conn_params)
+
+        # Extract storage path from connection parameters
+        self.storage_path = conn_params.get('storage_path', './file_storage')
+
+        # File-based storage structures
         self.documents = {}
         self.elements = {}
         self.element_pks = {}  # Map element_id to element_pk
@@ -76,6 +96,201 @@ class FileDocumentDatabase(DocumentDatabase):
         self.element_dates = {}  # Store dates by element_id
         self.processing_history = {}  # Dictionary to track processing history
         self.embedding_generator = None
+
+        # Log configuration
+        logger.info(f"File database initialized with storage path: {self.storage_path}")
+        config_info = self.get_text_storage_config()
+        logger.info(f"Text storage config - Store: {config_info['store_full_text']}, "
+                    f"Index: {config_info['index_full_text']}, "
+                    f"Compress: {config_info['compress_full_text']}")
+        if config_info['full_text_max_length']:
+            logger.info(f"Full text will be truncated to {config_info['full_text_max_length']} characters")
+
+    # ========================================
+    # FULL TEXT CONFIGURATION METHODS
+    # ========================================
+
+    def supports_full_text_search(self) -> bool:
+        """
+        Indicate whether this backend supports full-text search capabilities.
+
+        For File implementation, we support full-text search when index_full_text is enabled.
+        """
+        return self.index_full_text
+
+    def get_text_storage_config(self) -> Dict[str, Any]:
+        """
+        Get current text storage and indexing configuration.
+
+        Returns:
+            Dictionary with current text storage settings
+        """
+        return {
+            'store_full_text': self.store_full_text,
+            'index_full_text': self.index_full_text,
+            'compress_full_text': self.compress_full_text,
+            'full_text_max_length': self.full_text_max_length,
+            'search_capabilities': {
+                'can_search_full_text': self.index_full_text,
+                'can_retrieve_full_text': self.store_full_text,
+                'search_fields': self._get_available_search_fields()
+            }
+        }
+
+    def get_storage_size_estimate(self) -> Dict[str, str]:
+        """
+        Get estimated storage usage based on current configuration.
+
+        Returns:
+            Dictionary with storage estimates
+        """
+        estimates = {
+            'full_text_storage': 'High' if self.store_full_text else 'None',
+            'full_text_index': 'Medium' if self.index_full_text else 'None',  # File-based search is less intensive
+            'compression_enabled': self.compress_full_text
+        }
+
+        # Calculate overall storage impact
+        if not self.store_full_text and not self.index_full_text:
+            estimates['overall_storage'] = 'Minimal (preview only)'
+        elif not self.store_full_text:
+            estimates['overall_storage'] = 'Medium (search capability only)'
+        elif not self.index_full_text:
+            estimates['overall_storage'] = 'Medium (storage only)'
+        elif self.compress_full_text:
+            estimates['overall_storage'] = 'High (compressed full text)'
+        else:
+            estimates['overall_storage'] = 'High (full text + search)'
+
+        return estimates
+
+    def get_full_text_usage_recommendations(self) -> Dict[str, Any]:
+        """
+        Get recommendations for optimizing full-text usage based on current configuration.
+
+        Returns:
+            Dictionary with optimization recommendations
+        """
+        config = self.get_text_storage_config()
+        storage = self.get_storage_size_estimate()
+
+        recommendations = {
+            'current_config': 'optimal',
+            'suggestions': [],
+            'warnings': []
+        }
+
+        # Check for configuration issues
+        if not self.store_full_text and not self.index_full_text:
+            recommendations['suggestions'].append(
+                "Minimal configuration detected. Consider enabling store_full_text=True "
+                "if you need to retrieve original content."
+            )
+
+        if self.store_full_text and not self.index_full_text:
+            recommendations['suggestions'].append(
+                "Consider enabling index_full_text=True to enable full-text search capabilities."
+            )
+
+        if storage['overall_storage'] == 'High' and not self.compress_full_text:
+            recommendations['suggestions'].append(
+                "High storage usage detected. Consider enabling compress_full_text=True "
+                "to reduce file sizes."
+            )
+
+        if self.full_text_max_length is None:
+            recommendations['suggestions'].append(
+                "No length limit set for full text. Consider setting full_text_max_length "
+                "to prevent very large documents from consuming excessive storage."
+            )
+
+        # File-specific recommendations
+        recommendations['suggestions'].append(
+            "File-based storage loads all data into memory. Consider using database backends "
+            "for large datasets (>10k documents)."
+        )
+
+        return recommendations
+
+    def _get_available_search_fields(self) -> List[str]:
+        """
+        Get list of fields available for text search based on configuration.
+
+        Returns:
+            List of field names that can be searched
+        """
+        fields = ['content_preview']  # Always available
+
+        if self.index_full_text:
+            fields.append('full_text')
+
+        return fields
+
+    def _process_full_content(self, element: Dict[str, Any]) -> None:
+        """
+        Process full_content field based on configuration settings.
+
+        Args:
+            element: Element dictionary to process (modified in place)
+        """
+        if "full_content" not in element:
+            return
+
+        full_content = element["full_content"]
+
+        # Apply length limit if configured
+        if self.full_text_max_length and len(full_content) > self.full_text_max_length:
+            full_content = full_content[:self.full_text_max_length] + "..."
+            logger.debug(f"Truncated full_text for element {element.get('element_id')} "
+                         f"to {self.full_text_max_length} characters")
+
+        # Store/index full text based on configuration
+        if self.store_full_text or self.index_full_text:
+            # Apply compression if enabled (simple approach for file storage)
+            if self.compress_full_text:
+                try:
+                    import gzip
+                    import base64
+                    compressed = gzip.compress(full_content.encode('utf-8'))
+                    element["full_text"] = base64.b64encode(compressed).decode('ascii')
+                    element["full_text_compressed"] = True
+                except ImportError:
+                    logger.warning("gzip not available for compression, storing uncompressed")
+                    element["full_text"] = full_content
+                    element["full_text_compressed"] = False
+            else:
+                element["full_text"] = full_content
+                element["full_text_compressed"] = False
+
+        # Always remove the original full_content field to avoid duplication
+        del element["full_content"]
+
+    def _get_element_full_text(self, element: Dict[str, Any]) -> str:
+        """
+        Get full text content from element, handling compression.
+
+        Args:
+            element: Element dictionary
+
+        Returns:
+            Full text content (decompressed if necessary)
+        """
+        full_text = element.get("full_text", "")
+        if not full_text:
+            return ""
+
+        # Check if content is compressed
+        if element.get("full_text_compressed", False):
+            try:
+                import gzip
+                import base64
+                compressed_data = base64.b64decode(full_text.encode('ascii'))
+                return gzip.decompress(compressed_data).decode('utf-8')
+            except Exception as e:
+                logger.error(f"Error decompressing full text: {str(e)}")
+                return ""
+
+        return full_text
 
     # ========================================
     # STRUCTURED SEARCH IMPLEMENTATION
@@ -89,7 +304,6 @@ class FileDocumentDatabase(DocumentDatabase):
             # Core search types
             SearchCapability.TEXT_SIMILARITY,
             SearchCapability.EMBEDDING_SIMILARITY,
-            SearchCapability.FULL_TEXT_SEARCH,
 
             # Date capabilities
             SearchCapability.DATE_FILTERING,
@@ -132,6 +346,10 @@ class FileDocumentDatabase(DocumentDatabase):
             SearchCapability.RESULT_HIGHLIGHTING,
         }
 
+        # Add full text search capability if enabled
+        if self.index_full_text:
+            supported.add(SearchCapability.FULL_TEXT_SEARCH)
+
         return BackendCapabilities(supported)
 
     def execute_structured_search(self, query: StructuredSearchQuery) -> List[Dict[str, Any]]:
@@ -151,7 +369,7 @@ class FileDocumentDatabase(DocumentDatabase):
             final_results = self._process_search_results(raw_results, query)
 
             # Apply pagination
-            start_idx = query.offset
+            start_idx = query.offset or 0
             end_idx = start_idx + query.limit
 
             return final_results[start_idx:end_idx]
@@ -649,7 +867,7 @@ class FileDocumentDatabase(DocumentDatabase):
         return enriched_results
 
     @staticmethod
-    def _calculate_combined_score(scores: Dict[str, List[float]],
+    def _calculate_combined_score(scores: Dict[str, List[float] | float],
                                   combination_method: str,
                                   weights: Dict[str, float]) -> float:
         """Calculate final combined score from multiple score types."""
@@ -660,8 +878,10 @@ class FileDocumentDatabase(DocumentDatabase):
         # Average scores of the same type
         avg_scores = {}
         for score_type, score_list in scores.items():
-            if score_list:
+            if isinstance(score_list, list) and len(score_list) > 0:
                 avg_scores[score_type] = sum(score_list) / len(score_list)
+            elif isinstance(score_list, float):
+                avg_scores[score_type] = score_list
 
         if not avg_scores:
             return 0.0
@@ -893,9 +1113,6 @@ class FileDocumentDatabase(DocumentDatabase):
         """Close the database (no-op for file-based database)."""
         pass
 
-    # [Continue with all existing methods from the original implementation]
-    # For brevity, I'm including key ones but all others remain the same
-
     def get_element(self, element_id_or_pk: Union[str, int]) -> Optional[Dict[str, Any]]:
         """
         Get element by ID or PK.
@@ -933,7 +1150,6 @@ class FileDocumentDatabase(DocumentDatabase):
 
     # ========================================
     # DATE STORAGE AND SEARCH METHODS
-    # ========================================
     # ========================================
 
     def store_element_dates(self, element_id: str, dates: List[Dict[str, Any]]) -> None:
@@ -1188,7 +1404,7 @@ class FileDocumentDatabase(DocumentDatabase):
         self.documents[doc_id] = document
         self._save_document(doc_id)
 
-        # Store elements
+        # Store elements with full text processing
         for element in elements:
             element_id = element["element_id"]
 
@@ -1199,6 +1415,9 @@ class FileDocumentDatabase(DocumentDatabase):
 
             # Store mapping
             self.element_pks[element_id] = element_pk
+
+            # Process full text content based on configuration
+            self._process_full_content(element)
 
             # Store element
             self.elements[element_id] = element
@@ -1244,6 +1463,10 @@ class FileDocumentDatabase(DocumentDatabase):
                 if self._has_element_changed(element, existing_elements[element_id]):
                     # Preserve the element_pk from the existing element
                     element["element_pk"] = existing_elements[element_id].get("element_pk")
+
+                    # Process full text content based on configuration
+                    self._process_full_content(element)
+
                     self.elements[element_id] = element
                     self._save_element(element_id)
             else:
@@ -1254,6 +1477,9 @@ class FileDocumentDatabase(DocumentDatabase):
 
                 # Store mapping
                 self.element_pks[element_id] = element_pk
+
+                # Process full text content based on configuration
+                self._process_full_content(element)
 
                 # Store element
                 self.elements[element_id] = element
@@ -1443,18 +1669,46 @@ class FileDocumentDatabase(DocumentDatabase):
         return results
 
     def search_elements_by_content(self, search_text: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Search elements by content preview."""
+        """
+        Search elements by content preview and optionally full text based on configuration.
+
+        Implementation Notes:
+            - Always searches content_preview
+            - Also searches full_text field if index_full_text=True
+            - Handles compressed full text automatically
+        """
         results = []
         search_text_lower = search_text.lower()
 
         for element in self.elements.values():
+            # Always search content_preview
             content_preview = element.get("content_preview", "").lower()
+            found_in_preview = search_text_lower in content_preview
 
-            if search_text_lower in content_preview:
-                results.append(element)
+            # Also search full text if indexing is enabled
+            found_in_full_text = False
+            if self.index_full_text and "full_text" in element:
+                try:
+                    full_text = self._get_element_full_text(element).lower()
+                    found_in_full_text = search_text_lower in full_text
+                except Exception as e:
+                    logger.warning(f"Error searching full text for element {element.get('element_id')}: {str(e)}")
+
+            if found_in_preview or found_in_full_text:
+                # Add a simple relevance score
+                element_copy = element.copy()
+                if found_in_full_text and not found_in_preview:
+                    element_copy['_score'] = 0.8  # Full text matches get slightly lower score
+                else:
+                    element_copy['_score'] = 1.0  # Preview matches get full score
+
+                results.append(element_copy)
 
                 if len(results) >= limit:
                     break
+
+        # Sort by score (highest first)
+        results.sort(key=lambda x: x.get('_score', 0), reverse=True)
 
         return results
 
@@ -2751,9 +3005,15 @@ class FileDocumentDatabase(DocumentDatabase):
 
 if __name__ == "__main__":
     # Example demonstrating structured search with File database
-    storage_path = './test_file_storage'
+    conn_params = {
+        'storage_path': './test_file_storage',
+        'store_full_text': True,
+        'index_full_text': True,
+        'compress_full_text': True,
+        'full_text_max_length': 50000
+    }
 
-    db = FileDocumentDatabase(storage_path)
+    db = FileDocumentDatabase(conn_params)
     db.initialize()
 
     # Show backend capabilities
@@ -2761,6 +3021,15 @@ if __name__ == "__main__":
     print(f"File database supports {len(capabilities.supported)} capabilities:")
     for cap in sorted(capabilities.get_supported_list()):
         print(f"  ✓ {cap}")
+
+    # Show text storage configuration
+    config_info = db.get_text_storage_config()
+    print(f"\nText storage configuration:")
+    print(f"  Store full text: {config_info['store_full_text']}")
+    print(f"  Index full text: {config_info['index_full_text']}")
+    print(f"  Compress full text: {config_info['compress_full_text']}")
+    print(f"  Max length: {config_info['full_text_max_length']}")
+    print(f"  Search fields: {config_info['search_capabilities']['search_fields']}")
 
     # Example structured search
     from .structured_search import SearchQueryBuilder, LogicalOperator
