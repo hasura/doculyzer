@@ -1,15 +1,17 @@
 """
-Enhanced SOLR Implementation with Structured Search Support
+Enhanced SOLR Implementation with Structured Search Support and Full-Text Configuration
 
 This module provides a complete SOLR implementation of the DocumentDatabase
-with full structured search capabilities, matching the PostgreSQL and SQLite implementations.
-It leverages SOLR's advanced features including full-text search, faceting, and
-multi-valued fields to provide comprehensive search functionality.
+with full structured search capabilities and comprehensive full-text configuration support,
+matching the PostgreSQL and SQLite implementations. It leverages SOLR's advanced features
+including full-text search, faceting, and multi-valued fields to provide comprehensive
+search functionality while respecting all full-text storage and indexing options.
 """
 
 import json
 import logging
 import os
+import zlib
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple, Union, TYPE_CHECKING
 
@@ -78,19 +80,26 @@ except Exception as e:
 
 
 class SolrDocumentDatabase(DocumentDatabase):
-    """SOLR implementation with comprehensive structured search support."""
+    """SOLR implementation with comprehensive structured search support and full-text configuration."""
 
     def __init__(self, conn_params: Dict[str, Any]):
         """
-        Initialize SOLR document database.
+        Initialize SOLR document database with full-text configuration support.
 
         Args:
-            conn_params: Connection parameters for SOLR
+            conn_params: Connection parameters for SOLR with full-text options:
                 (host, port, username, password, core_prefix)
-        """
-        self.conn_params = conn_params
 
-        # Extract connection parameters
+                Full-text storage and indexing options:
+                - store_full_text: Whether to store full text for retrieval (default: True)
+                - index_full_text: Whether to index full text for search (default: True)
+                - compress_full_text: Whether to enable compression for stored text (default: False)
+                - full_text_max_length: Maximum length for full text, truncate if longer (default: None)
+        """
+        # Initialize base class first to get full-text configuration
+        super().__init__(conn_params)
+
+        # Extract SOLR-specific connection parameters
         host = conn_params.get('host', 'localhost')
         port = conn_params.get('port', 8983)
         username = conn_params.get('username')
@@ -108,7 +117,7 @@ class SolrDocumentDatabase(DocumentDatabase):
         self.relationships_core = f"{self.core_prefix}_relationships"
         self.history_core = f"{self.core_prefix}_history"
         self.embeddings_core = f"{self.core_prefix}_embeddings"
-        self.dates_core = f"{self.core_prefix}_dates"  # NEW: For structured search date support
+        self.dates_core = f"{self.core_prefix}_dates"  # For structured search date support
 
         # Initialize SOLR clients to None - will be created in initialize()
         self.documents = None
@@ -116,7 +125,7 @@ class SolrDocumentDatabase(DocumentDatabase):
         self.relationships = None
         self.history = None
         self.embeddings = None
-        self.dates = None  # NEW: For date storage
+        self.dates = None
 
         # Auto-increment counters
         self.element_pk_counter = 0
@@ -127,6 +136,128 @@ class SolrDocumentDatabase(DocumentDatabase):
             self.vector_dimension = config.config.get('embedding', {}).get('dimensions', self.vector_dimension)
 
         self.embedding_generator = None
+
+        # Log full-text configuration
+        logger.info(f"SOLR database initialized with full-text config: "
+                   f"store={self.store_full_text}, index={self.index_full_text}, "
+                   f"compress={self.compress_full_text}, max_length={self.full_text_max_length}")
+
+    # ========================================
+    # FULL-TEXT CONFIGURATION METHODS
+    # ========================================
+
+    def supports_full_text_search(self) -> bool:
+        """
+        SOLR has excellent full-text search capabilities.
+
+        Returns:
+            True - SOLR supports advanced full-text search
+        """
+        return True
+
+    def get_text_storage_config(self) -> Dict[str, Any]:
+        """
+        Get current text storage and indexing configuration for SOLR.
+
+        Returns:
+            Dictionary with current text storage settings including SOLR-specific capabilities
+        """
+        base_config = super().get_text_storage_config()
+
+        # Add SOLR-specific capabilities
+        base_config['backend_capabilities'] = {
+            'supports_compression': True,  # SOLR can handle compressed content
+            'supports_highlighting': True,  # SOLR has excellent highlighting
+            'supports_faceting': True,     # SOLR excels at faceted search
+            'supports_phrase_queries': True,  # SOLR supports phrase queries
+            'supports_fuzzy_search': True,    # SOLR supports fuzzy matching
+            'supports_boost_queries': True    # SOLR supports query boosting
+        }
+
+        return base_config
+
+    def get_storage_size_estimate(self) -> Dict[str, str]:
+        """
+        Get estimated storage usage based on current configuration for SOLR.
+
+        Returns:
+            Dictionary with storage estimates including SOLR-specific considerations
+        """
+        base_estimate = super().get_storage_size_estimate()
+
+        # Add SOLR-specific notes
+        if self.index_full_text:
+            base_estimate['solr_index_overhead'] = 'Medium'  # SOLR indexes add overhead
+            base_estimate['solr_features'] = 'Full-text indexing with stemming, highlighting, faceting'
+        else:
+            base_estimate['solr_index_overhead'] = 'Low'
+            base_estimate['solr_features'] = 'Basic indexing without full-text features'
+
+        return base_estimate
+
+    def _process_full_text_content(self, content: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Process full text content according to configuration settings.
+
+        Args:
+            content: Raw full text content
+
+        Returns:
+            Tuple of (stored_content, indexed_content) based on configuration
+        """
+        if not content:
+            return None, None
+
+        # Apply length limit if configured
+        processed_content = content
+        if self.full_text_max_length and len(content) > self.full_text_max_length:
+            processed_content = content[:self.full_text_max_length]
+            logger.debug(f"Truncated full text from {len(content)} to {len(processed_content)} characters")
+
+        # Determine what to store
+        stored_content = None
+        if self.store_full_text:
+            if self.compress_full_text:
+                # Compress the content using zlib
+                compressed = zlib.compress(processed_content.encode('utf-8'))
+                # Store as base64 string with compression marker
+                import base64
+                stored_content = f"COMPRESSED:{base64.b64encode(compressed).decode('ascii')}"
+                logger.debug(f"Compressed full text from {len(processed_content)} to {len(compressed)} bytes")
+            else:
+                stored_content = processed_content
+
+        # Determine what to index
+        indexed_content = None
+        if self.index_full_text:
+            indexed_content = processed_content
+
+        return stored_content, indexed_content
+
+    def _retrieve_full_text_content(self, stored_content: str) -> Optional[str]:
+        """
+        Retrieve and decompress full text content if needed.
+
+        Args:
+            stored_content: Content as stored in SOLR
+
+        Returns:
+            Decompressed content or original content
+        """
+        if not stored_content:
+            return None
+
+        if stored_content.startswith("COMPRESSED:"):
+            try:
+                import base64
+                compressed_data = base64.b64decode(stored_content[11:])  # Remove "COMPRESSED:" prefix
+                decompressed = zlib.decompress(compressed_data).decode('utf-8')
+                return decompressed
+            except Exception as e:
+                logger.error(f"Error decompressing content: {str(e)}")
+                return None
+        else:
+            return stored_content
 
     # ========================================
     # STRUCTURED SEARCH IMPLEMENTATION
@@ -259,7 +390,15 @@ class SolrDocumentDatabase(DocumentDatabase):
         try:
             # Use SOLR's full-text search first for broad recall
             escaped_text = self._escape_solr_query(criteria.query_text)
-            text_query = f'content_preview:{escaped_text} OR full_text:{escaped_text}'
+
+            # Build query based on full-text configuration
+            query_parts = [f'content_preview:{escaped_text}']
+
+            # Only search full_text if it's indexed
+            if self.index_full_text:
+                query_parts.append(f'full_text:{escaped_text}')
+
+            text_query = " OR ".join(query_parts)
 
             # Execute SOLR text search
             text_results = self.elements.search(text_query, rows=1000)
@@ -868,7 +1007,7 @@ class SolrDocumentDatabase(DocumentDatabase):
             self.relationships = pysolr.Solr(f"{self.base_url}/{self.relationships_core}", always_commit=True)
             self.history = pysolr.Solr(f"{self.base_url}/{self.history_core}", always_commit=True)
             self.embeddings = pysolr.Solr(f"{self.base_url}/{self.embeddings_core}", always_commit=True)
-            self.dates = pysolr.Solr(f"{self.base_url}/{self.dates_core}", always_commit=True)  # NEW
+            self.dates = pysolr.Solr(f"{self.base_url}/{self.dates_core}", always_commit=True)
 
             # Check if cores exist by making a simple query
             try:
@@ -882,6 +1021,8 @@ class SolrDocumentDatabase(DocumentDatabase):
             self._initialize_counter()
 
             logger.info("SOLR document database initialized successfully")
+            logger.info(f"Full-text config: store={self.store_full_text}, index={self.index_full_text}, "
+                       f"compress={self.compress_full_text}")
 
         except Exception as e:
             logger.error(f"Error initializing SOLR database: {str(e)}")
@@ -961,17 +1102,17 @@ class SolrDocumentDatabase(DocumentDatabase):
             logger.error(f"Error updating processing history for {source_id}: {str(e)}")
 
     # ========================================
-    # DOCUMENT AND ELEMENT CRUD OPERATIONS
+    # DOCUMENT AND ELEMENT CRUD OPERATIONS WITH FULL-TEXT SUPPORT
     # ========================================
 
     def store_document(self, document: Dict[str, Any], elements: List[Dict[str, Any]],
                        relationships: List[Dict[str, Any]]) -> None:
         """
-        Store a document with its elements and relationships.
+        Store a document with its elements and relationships, respecting full-text configuration.
 
         Args:
             document: Document metadata
-            elements: Document elements
+            elements: Document elements (may contain 'full_content' field)
             relationships: Element relationships
         """
         if not self.documents:
@@ -1011,7 +1152,7 @@ class SolrDocumentDatabase(DocumentDatabase):
             # Store document
             self.documents.add([solr_document])
 
-            # Process elements
+            # Process elements with full-text configuration
             solr_elements = []
             for element in elements:
                 solr_element = {**element}
@@ -1026,11 +1167,19 @@ class SolrDocumentDatabase(DocumentDatabase):
                 # Ensure element has a unique id for SOLR
                 solr_element["id"] = solr_element["element_id"]
 
-                # Extract full content if available
-                # This will be indexed but not stored
-                if "full_content" in element:
-                    solr_element["full_text"] = element["full_content"]
-                    # Don't store the full content
+                # Process full content according to configuration
+                if "full_content" in element and element["full_content"]:
+                    stored_content, indexed_content = self._process_full_text_content(element["full_content"])
+
+                    # Store content if configured
+                    if stored_content is not None:
+                        solr_element["full_content_stored"] = stored_content
+
+                    # Index content if configured
+                    if indexed_content is not None:
+                        solr_element["full_text"] = indexed_content
+
+                    # Remove original full_content to avoid duplication
                     if "full_content" in solr_element:
                         del solr_element["full_content"]
 
@@ -1067,7 +1216,8 @@ class SolrDocumentDatabase(DocumentDatabase):
                 self.update_processing_history(source, content_hash)
 
             logger.info(
-                f"Stored document {doc_id} with {len(elements)} elements and {len(relationships)} relationships")
+                f"Stored document {doc_id} with {len(elements)} elements and {len(relationships)} relationships "
+                f"(full-text: store={self.store_full_text}, index={self.index_full_text})")
 
         except Exception as e:
             logger.error(f"Error storing document {doc_id}: {str(e)}")
@@ -1077,12 +1227,12 @@ class SolrDocumentDatabase(DocumentDatabase):
                         elements: List[Dict[str, Any]],
                         relationships: List[Dict[str, Any]]) -> None:
         """
-        Update an existing document.
+        Update an existing document, respecting full-text configuration.
 
         Args:
             doc_id: Document ID
             document: Document metadata
-            elements: Document elements
+            elements: Document elements (may contain 'full_content' field)
             relationships: Element relationships
         """
         if not self.documents:
@@ -1128,7 +1278,7 @@ class SolrDocumentDatabase(DocumentDatabase):
             # Store updated document
             self.documents.add([solr_document])
 
-            # Process elements
+            # Process elements with full-text configuration
             solr_elements = []
             for element in elements:
                 solr_element = {**element}
@@ -1143,11 +1293,19 @@ class SolrDocumentDatabase(DocumentDatabase):
                 # Ensure element has a unique id for SOLR
                 solr_element["id"] = solr_element["element_id"]
 
-                # Extract full content if available
-                # This will be indexed but not stored
-                if "full_content" in element:
-                    solr_element["full_text"] = element["full_content"]
-                    # Don't store the full content
+                # Process full content according to configuration
+                if "full_content" in element and element["full_content"]:
+                    stored_content, indexed_content = self._process_full_text_content(element["full_content"])
+
+                    # Store content if configured
+                    if stored_content is not None:
+                        solr_element["full_content_stored"] = stored_content
+
+                    # Index content if configured
+                    if indexed_content is not None:
+                        solr_element["full_text"] = indexed_content
+
+                    # Remove original full_content to avoid duplication
                     if "full_content" in solr_element:
                         del solr_element["full_content"]
 
@@ -1186,7 +1344,8 @@ class SolrDocumentDatabase(DocumentDatabase):
                 self.update_processing_history(source, content_hash)
 
             logger.info(
-                f"Updated document {doc_id} with {len(elements)} elements and {len(relationships)} relationships")
+                f"Updated document {doc_id} with {len(elements)} elements and {len(relationships)} relationships "
+                f"(full-text: store={self.store_full_text}, index={self.index_full_text})")
 
         except Exception as e:
             logger.error(f"Error updating document {doc_id}: {str(e)}")
@@ -1236,13 +1395,13 @@ class SolrDocumentDatabase(DocumentDatabase):
 
     def get_document_elements(self, doc_id: str) -> List[Dict[str, Any]]:
         """
-        Get elements for a document.
+        Get elements for a document, including full text content if stored.
 
         Args:
             doc_id: Document ID
 
         Returns:
-            List of document elements
+            List of document elements with full_content restored if stored
         """
         if not self.elements:
             raise ValueError("Database not initialized")
@@ -1268,6 +1427,14 @@ class SolrDocumentDatabase(DocumentDatabase):
                         element["metadata"] = json.loads(element["metadata_json"])
                     except:
                         pass
+
+                # Restore full_content if it was stored
+                if "full_content_stored" in element and self.store_full_text:
+                    restored_content = self._retrieve_full_text_content(element["full_content_stored"])
+                    if restored_content:
+                        element["full_content"] = restored_content
+                    # Remove the stored version from the result
+                    del element["full_content_stored"]
 
                 elements.append(element)
 
@@ -1324,13 +1491,13 @@ class SolrDocumentDatabase(DocumentDatabase):
 
     def get_element(self, element_id_or_pk: Union[str, int]) -> Optional[Dict[str, Any]]:
         """
-        Get element by ID or PK.
+        Get element by ID or PK, including full text content if stored.
 
         Args:
             element_id_or_pk: Either the element_id (string) or element_pk (integer)
 
         Returns:
-            Element data or None if not found
+            Element data with full_content restored if stored, or None if not found
         """
         if not self.elements:
             raise ValueError("Database not initialized")
@@ -1357,6 +1524,14 @@ class SolrDocumentDatabase(DocumentDatabase):
                     element["metadata"] = json.loads(element["metadata_json"])
                 except:
                     pass
+
+            # Restore full_content if it was stored
+            if "full_content_stored" in element and self.store_full_text:
+                restored_content = self._retrieve_full_text_content(element["full_content_stored"])
+                if restored_content:
+                    element["full_content"] = restored_content
+                # Remove the stored version from the result
+                del element["full_content_stored"]
 
             return element
 
@@ -1419,7 +1594,7 @@ class SolrDocumentDatabase(DocumentDatabase):
             return False
 
     # ========================================
-    # SEARCH AND QUERY METHODS
+    # SEARCH AND QUERY METHODS WITH FULL-TEXT SUPPORT
     # ========================================
 
     def find_documents(self, query: Dict[str, Any] = None, limit: int = 100) -> List[Dict[str, Any]]:
@@ -1537,7 +1712,7 @@ class SolrDocumentDatabase(DocumentDatabase):
             limit: Maximum number of results
 
         Returns:
-            List of matching elements
+            List of matching elements with full_content restored if stored
         """
         if not self.elements:
             raise ValueError("Database not initialized")
@@ -1611,7 +1786,7 @@ class SolrDocumentDatabase(DocumentDatabase):
 
             results = self.elements.search(solr_query, **params)
 
-            # Convert SOLR docs to dicts
+            # Convert SOLR docs to dicts and restore full content
             elements = []
             for doc in results.docs:
                 element = dict(doc)
@@ -1622,6 +1797,14 @@ class SolrDocumentDatabase(DocumentDatabase):
                         element["metadata"] = json.loads(element["metadata_json"])
                     except:
                         pass
+
+                # Restore full_content if it was stored
+                if "full_content_stored" in element and self.store_full_text:
+                    restored_content = self._retrieve_full_text_content(element["full_content_stored"])
+                    if restored_content:
+                        element["full_content"] = restored_content
+                    # Remove the stored version from the result
+                    del element["full_content_stored"]
 
                 elements.append(element)
 
@@ -1633,26 +1816,32 @@ class SolrDocumentDatabase(DocumentDatabase):
 
     def search_elements_by_content(self, search_text: str, limit: int = 10) -> List[Dict[str, Any]]:
         """
-        Search elements by content.
+        Search elements by content, respecting full-text configuration.
 
         Args:
             search_text: Text to search for
             limit: Maximum number of results
 
         Returns:
-            List of matching elements
+            List of matching elements with full_content restored if stored
         """
         if not self.elements:
             raise ValueError("Database not initialized")
 
         try:
-            # Build query to search both content_preview and full_text
+            # Build query based on full-text configuration
             escaped_text = self._escape_solr_query(search_text)
-            query = f'content_preview:{escaped_text} OR full_text:{escaped_text}'
+            query_parts = [f'content_preview:{escaped_text}']
+
+            # Only search full_text if it's indexed
+            if self.index_full_text:
+                query_parts.append(f'full_text:{escaped_text}')
+
+            query = " OR ".join(query_parts)
 
             results = self.elements.search(query, rows=limit)
 
-            # Convert SOLR docs to dicts
+            # Convert SOLR docs to dicts and restore full content
             elements = []
             for doc in results.docs:
                 element = dict(doc)
@@ -1663,6 +1852,14 @@ class SolrDocumentDatabase(DocumentDatabase):
                         element["metadata"] = json.loads(element["metadata_json"])
                     except:
                         pass
+
+                # Restore full_content if it was stored
+                if "full_content_stored" in element and self.store_full_text:
+                    restored_content = self._retrieve_full_text_content(element["full_content_stored"])
+                    if restored_content:
+                        element["full_content"] = restored_content
+                    # Remove the stored version from the result
+                    del element["full_content_stored"]
 
                 elements.append(element)
 
@@ -1967,7 +2164,7 @@ class SolrDocumentDatabase(DocumentDatabase):
     def search_by_text(self, search_text: str, limit: int = 10,
                        filter_criteria: Dict[str, Any] = None) -> List[Tuple[int, float]]:
         """
-        Search elements by semantic similarity to the provided text.
+        Search elements by semantic similarity to the provided text, respecting full-text configuration.
 
         This method combines text-to-embedding conversion and embedding search
         into a single convenient operation. It implements a hybrid search approach
@@ -1985,9 +2182,15 @@ class SolrDocumentDatabase(DocumentDatabase):
             raise ValueError("Database not initialized")
 
         try:
-            # First, perform traditional text search
+            # Build query based on full-text configuration
             escaped_text = self._escape_solr_query(search_text)
-            text_query = f'content_preview:{escaped_text} OR full_text:{escaped_text}'
+            query_parts = [f'content_preview:{escaped_text}']
+
+            # Only search full_text if it's indexed
+            if self.index_full_text:
+                query_parts.append(f'full_text:{escaped_text}')
+
+            text_query = " OR ".join(query_parts)
 
             # Add filter queries if needed
             params = {"rows": limit * 2}  # Get more results for better merging
@@ -2520,6 +2723,15 @@ class SolrDocumentDatabase(DocumentDatabase):
                         element["metadata"] = json.loads(element["metadata_json"])
                     except:
                         pass
+
+                # Restore full_content if it was stored
+                if "full_content_stored" in element and self.store_full_text:
+                    restored_content = self._retrieve_full_text_content(element["full_content_stored"])
+                    if restored_content:
+                        element["full_content"] = restored_content
+                    # Remove the stored version from the result
+                    del element["full_content_stored"]
+
                 elements.append(element)
 
             return elements
@@ -2603,6 +2815,15 @@ class SolrDocumentDatabase(DocumentDatabase):
                         element["metadata"] = json.loads(element["metadata_json"])
                     except:
                         pass
+
+                # Restore full_content if it was stored
+                if "full_content_stored" in element and self.store_full_text:
+                    restored_content = self._retrieve_full_text_content(element["full_content_stored"])
+                    if restored_content:
+                        element["full_content"] = restored_content
+                    # Remove the stored version from the result
+                    del element["full_content_stored"]
+
                 elements.append(element)
 
             return elements
@@ -3086,11 +3307,17 @@ class SolrDocumentDatabase(DocumentDatabase):
 
 
 if __name__ == "__main__":
-    # Example demonstrating structured search with SOLR
+    # Example demonstrating structured search with SOLR and full-text configuration
     conn_params = {
         'host': 'localhost',
         'port': 8983,
-        'core_prefix': 'doculyzer'
+        'core_prefix': 'doculyzer',
+
+        # Full-text configuration examples
+        'store_full_text': True,      # Store full text for retrieval
+        'index_full_text': True,      # Index full text for search
+        'compress_full_text': False,  # Disable compression for this example
+        'full_text_max_length': None  # No length limit
     }
 
     db = SolrDocumentDatabase(conn_params)
@@ -3101,6 +3328,21 @@ if __name__ == "__main__":
     print(f"SOLR supports {len(capabilities.supported)} capabilities:")
     for cap in sorted(capabilities.get_supported_list()):
         print(f"  ✓ {cap}")
+
+    # Show full-text configuration
+    config_info = db.get_text_storage_config()
+    print(f"\nFull-text configuration:")
+    print(f"  Store full text: {config_info['store_full_text']}")
+    print(f"  Index full text: {config_info['index_full_text']}")
+    print(f"  Compress full text: {config_info['compress_full_text']}")
+    print(f"  Max length: {config_info['full_text_max_length']}")
+    print(f"  Search fields: {config_info['search_capabilities']['search_fields']}")
+
+    # Show storage estimates
+    storage_info = db.get_storage_size_estimate()
+    print(f"\nStorage estimates:")
+    print(f"  Overall impact: {storage_info['overall_storage']}")
+    print(f"  SOLR features: {storage_info.get('solr_features', 'N/A')}")
 
     # Example structured search
     from .structured_search import SearchQueryBuilder, LogicalOperator
@@ -3131,3 +3373,18 @@ if __name__ == "__main__":
 
         for result in results[:3]:  # Show first 3 results
             print(f"  - {result['element_id']}: {result['final_score']:.3f}")
+            if result.get('topics'):
+                print(f"    Topics: {result['topics']}")
+            if result.get('extracted_dates'):
+                print(f"    Dates: {len(result['extracted_dates'])} date(s)")
+
+    # Example full-text usage recommendations
+    recommendations = db.get_full_text_usage_recommendations()
+    print(f"\nFull-text recommendations:")
+    print(f"  Current config: {recommendations['current_config']}")
+    for suggestion in recommendations['suggestions']:
+        print(f"  Suggestion: {suggestion}")
+    for warning in recommendations['warnings']:
+        print(f"  Warning: {warning}")
+
+    db.close()
