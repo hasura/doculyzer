@@ -82,25 +82,48 @@ except Exception as e:
 
 
 class PostgreSQLDocumentDatabase(DocumentDatabase):
-    """PostgreSQL implementation of document database with comprehensive structured search support."""
+    """
+    Enhanced PostgreSQL implementation of document database with comprehensive structured search support
+    and native PostgreSQL full-text search capabilities.
+    """
 
     def __init__(self, conn_params: Dict[str, Any]):
         """
-        Initialize PostgreSQL document database.
+        Initialize PostgreSQL document database with full-text search support.
 
         Args:
-            conn_params: Connection parameters for PostgreSQL
-                (host, port, dbname, user, password)
+            conn_params: Connection parameters for PostgreSQL with full-text configuration options:
+                - host, port, dbname, user, password: Standard PostgreSQL connection parameters
+                - store_full_text: Whether to store full text for retrieval (default: True)
+                - index_full_text: Whether to index full text for search (default: True)
+                - compress_full_text: Whether to enable compression for stored text (default: False)
+                - full_text_max_length: Maximum length for full text, truncate if longer (default: None)
+                - full_text_language: Language configuration for PostgreSQL text search (default: 'english')
+                - full_text_weights: Dictionary of field weights for ranking (default: {'content_preview': 'A', 'full_content': 'B'})
         """
         if not PSYCOPG2_AVAILABLE:
             raise ImportError("psycopg2 is required for PostgreSQL support")
 
-        self.conn_params = conn_params
+        # Initialize base class with full-text configuration
+        super().__init__(conn_params)
+
+        # PostgreSQL-specific connection parameters
         self.conn: PostgresConnectionType = None
         self.cursor: PostgresCursorType = None
         self.vector_extension = None
         self.vector_dimension = config.config.get('embedding', {}).get('dimensions', 384) if config else 384
         self.embedding_generator = None
+
+        # Full-text search configuration
+        self.full_text_language = conn_params.get('full_text_language', 'english')
+        self.full_text_weights = conn_params.get('full_text_weights', {
+            'content_preview': 'A',  # Highest weight
+            'full_content': 'B'  # Lower weight
+        })
+
+    def supports_full_text_search(self) -> bool:
+        """PostgreSQL always supports full-text search."""
+        return True
 
     # ========================================
     # STRUCTURED SEARCH IMPLEMENTATION
@@ -108,13 +131,13 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
 
     def get_backend_capabilities(self) -> BackendCapabilities:
         """
-        PostgreSQL supports comprehensive search capabilities through SQL queries and JSONB operations.
+        PostgreSQL supports comprehensive search capabilities including native full-text search.
         """
         supported = {
             # Core search types
             SearchCapability.TEXT_SIMILARITY,
             SearchCapability.EMBEDDING_SIMILARITY,
-            SearchCapability.FULL_TEXT_SEARCH,
+            SearchCapability.FULL_TEXT_SEARCH,  # Native PostgreSQL full-text search
 
             # Date capabilities
             SearchCapability.DATE_FILTERING,
@@ -154,14 +177,14 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
 
             # Advanced features
             SearchCapability.FACETED_SEARCH,
-            SearchCapability.RESULT_HIGHLIGHTING,  # PostgreSQL has full-text search highlighting
+            SearchCapability.RESULT_HIGHLIGHTING,  # PostgreSQL has native highlighting
         }
 
         return BackendCapabilities(supported)
 
     def execute_structured_search(self, query: StructuredSearchQuery) -> List[Dict[str, Any]]:
         """
-        Execute a structured search query using PostgreSQL's SQL and JSONB capabilities.
+        Execute a structured search query using PostgreSQL's advanced capabilities.
         """
         if not self.cursor:
             raise ValueError("Database not initialized")
@@ -228,7 +251,66 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
         return self._combine_results(all_results, group.operator)
 
     def _execute_text_criteria(self, criteria: TextSearchCriteria) -> List[Dict[str, Any]]:
-        """Execute text similarity search using embeddings."""
+        """Execute text search using PostgreSQL's native full-text search or embedding similarity."""
+        try:
+            # Decide whether to use full-text search or semantic search
+            if self.index_full_text and criteria.use_full_text_search:
+                return self._execute_full_text_search(criteria)
+            else:
+                return self._execute_semantic_search(criteria)
+
+        except Exception as e:
+            logger.error(f"Error executing text criteria: {str(e)}")
+            return []
+
+    def _execute_full_text_search(self, criteria: TextSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute PostgreSQL native full-text search."""
+        try:
+            # Build full-text search query
+            search_query = criteria.query_text.replace("'", "''")  # Escape single quotes
+
+            # Build the SQL query with full-text search
+            sql = """
+            SELECT 
+                e.element_pk,
+                ts_rank_cd(e.search_vector, plainto_tsquery(%s, %s)) as fts_rank
+            FROM elements e
+            WHERE e.search_vector @@ plainto_tsquery(%s, %s)
+            """
+            params = [self.full_text_language, search_query, self.full_text_language, search_query]
+
+            # Add similarity threshold filter
+            if criteria.similarity_threshold > 0:
+                sql += " AND ts_rank_cd(e.search_vector, plainto_tsquery(%s, %s)) >= %s"
+                params.extend([self.full_text_language, search_query, criteria.similarity_threshold])
+
+            # Order by rank and limit for initial processing
+            sql += " ORDER BY fts_rank DESC LIMIT 1000"
+
+            self.cursor.execute(sql, params)
+
+            # Filter by similarity operator and apply boost factor
+            filtered_results = []
+            for row in self.cursor.fetchall():
+                element_pk, fts_rank = row[0], row[1]
+
+                if self._compare_similarity(fts_rank, criteria.similarity_threshold, criteria.similarity_operator):
+                    filtered_results.append({
+                        'element_pk': element_pk,
+                        'scores': {
+                            'full_text_rank': fts_rank * criteria.boost_factor
+                        }
+                    })
+
+            return filtered_results
+
+        except Exception as e:
+            logger.error(f"Error executing full-text search: {str(e)}")
+            # Fallback to semantic search
+            return self._execute_semantic_search(criteria)
+
+    def _execute_semantic_search(self, criteria: TextSearchCriteria) -> List[Dict[str, Any]]:
+        """Execute semantic search using embeddings."""
         try:
             # Generate embedding for the query text
             query_embedding = self._generate_embedding(criteria.query_text)
@@ -254,7 +336,7 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
             return filtered_results
 
         except Exception as e:
-            logger.error(f"Error executing text criteria: {str(e)}")
+            logger.error(f"Error executing semantic search: {str(e)}")
             return []
 
     def _execute_embedding_criteria(self, criteria: EmbeddingSearchCriteria) -> List[Dict[str, Any]]:
@@ -617,7 +699,7 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
 
     def _process_search_results(self, raw_results: List[Dict[str, Any]],
                                 query: StructuredSearchQuery) -> List[Dict[str, Any]]:
-        """Process and enrich search results."""
+        """Process and enrich search results with highlighting support."""
 
         # Calculate combined scores
         for result in raw_results:
@@ -663,9 +745,74 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
                     enriched_result['extracted_dates'] = self.get_element_dates(element_id)
                     enriched_result['date_count'] = len(enriched_result['extracted_dates'])
 
+            # Add highlighting if requested and we have text criteria
+            if query.include_highlighting:
+                enriched_result['highlights'] = self._generate_highlights(element, query)
+
             enriched_results.append(enriched_result)
 
         return enriched_results
+
+    def _generate_highlights(self, element: Dict[str, Any], query: StructuredSearchQuery) -> Dict[str, str]:
+        """Generate search result highlights using PostgreSQL's highlighting functions."""
+        highlights = {}
+
+        # Extract text criteria from query to get search terms
+        search_terms = []
+        self._extract_search_terms(query.criteria_group, search_terms)
+
+        if not search_terms:
+            return highlights
+
+        try:
+            # Use PostgreSQL's ts_headline function for highlighting
+            for search_term in search_terms:
+                # Highlight content_preview
+                if element.get('content_preview'):
+                    self.cursor.execute("""
+                        SELECT ts_headline(%s, %s, plainto_tsquery(%s, %s), 
+                                         'MaxWords=50, MinWords=10, ShortWord=3, HighlightAll=false')
+                    """, [
+                        self.full_text_language,
+                        element['content_preview'],
+                        self.full_text_language,
+                        search_term
+                    ])
+
+                    result = self.cursor.fetchone()
+                    if result and result[0]:
+                        highlights['content_preview'] = result[0]
+                        break  # Use the first successful highlight
+
+                # Highlight full_content if available
+                if element.get('full_content'):
+                    self.cursor.execute("""
+                        SELECT ts_headline(%s, %s, plainto_tsquery(%s, %s), 
+                                         'MaxWords=100, MinWords=20, ShortWord=3, HighlightAll=false')
+                    """, [
+                        self.full_text_language,
+                        element['full_content'],
+                        self.full_text_language,
+                        search_term
+                    ])
+
+                    result = self.cursor.fetchone()
+                    if result and result[0]:
+                        highlights['full_content'] = result[0]
+                        break  # Use the first successful highlight
+
+        except Exception as e:
+            logger.warning(f"Error generating highlights: {str(e)}")
+
+        return highlights
+
+    def _extract_search_terms(self, group: SearchCriteriaGroup, search_terms: List[str]) -> None:
+        """Recursively extract search terms from query criteria."""
+        if group.text_criteria:
+            search_terms.append(group.text_criteria.query_text)
+
+        for sub_group in group.sub_groups:
+            self._extract_search_terms(sub_group, search_terms)
 
     @staticmethod
     def _calculate_combined_score(scores: Dict[str, List[float] | float],
@@ -803,7 +950,7 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
     # ========================================
 
     def initialize(self) -> None:
-        """Initialize the database by connecting and creating tables if they don't exist."""
+        """Initialize the database by connecting and creating tables with full-text search support."""
         if not PSYCOPG2_AVAILABLE:
             raise ImportError("psycopg2 is required for PostgreSQL support")
 
@@ -830,14 +977,18 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
         # Discover vector extensions
         self._discover_vector_extensions()
 
-        # Create tables if they don't exist
+        # Create tables with full-text search support
         self._create_tables()
 
         # Create vector column if vector extension is available
         if self.vector_extension:
             self._create_vector_column()
 
+        # Setup full-text search
+        self._setup_full_text_search()
+
         logger.info(f"Initialized PostgreSQL database with vector extension: {self.vector_extension}")
+        logger.info(f"Full-text search language: {self.full_text_language}")
 
     def _discover_vector_extensions(self) -> None:
         """Discover available vector search extensions."""
@@ -877,6 +1028,153 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
         except Exception as e:
             logger.warning(f"Error discovering vector extensions: {str(e)}")
             self.vector_extension = None
+
+    def _setup_full_text_search(self) -> None:
+        """Setup PostgreSQL full-text search capabilities."""
+        try:
+            # Check if the language configuration exists
+            self.cursor.execute("""
+                SELECT EXISTS(
+                    SELECT 1 FROM pg_ts_config WHERE cfgname = %s
+                )
+            """, (self.full_text_language,))
+
+            language_exists = self.cursor.fetchone()[0]
+
+            if not language_exists:
+                logger.warning(
+                    f"Text search configuration '{self.full_text_language}' not found. Using 'simple' instead.")
+                self.full_text_language = 'simple'
+
+            # Add search_vector column if it doesn't exist
+            self.cursor.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'elements' AND column_name = 'search_vector'
+            """)
+
+            if not self.cursor.fetchone():
+                logger.info("Adding search_vector column for full-text search...")
+                self.cursor.execute("ALTER TABLE elements ADD COLUMN search_vector tsvector")
+
+            # Add full_content column if it doesn't exist and store_full_text is enabled
+            if self.store_full_text:
+                self.cursor.execute("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'elements' AND column_name = 'full_content'
+                """)
+
+                if not self.cursor.fetchone():
+                    logger.info("Adding full_content column for full-text storage...")
+                    if self.compress_full_text:
+                        # Use bytea with compression
+                        self.cursor.execute("ALTER TABLE elements ADD COLUMN full_content bytea")
+                    else:
+                        self.cursor.execute("ALTER TABLE elements ADD COLUMN full_content text")
+
+            # Create or update the search_vector update function based on compression setting
+            if self.store_full_text and self.compress_full_text:
+                # Handle bytea column with compression
+                self.cursor.execute(f"""
+                    CREATE OR REPLACE FUNCTION update_search_vector() RETURNS trigger AS $$
+                    BEGIN
+                        NEW.search_vector := 
+                            setweight(to_tsvector('{self.full_text_language}', coalesce(NEW.content_preview, '')), 'A') ||
+                            setweight(to_tsvector('{self.full_text_language}', coalesce(
+                                CASE 
+                                    WHEN NEW.full_content IS NOT NULL AND octet_length(NEW.full_content) > 0 THEN
+                                        convert_from(NEW.full_content, 'UTF8')
+                                    ELSE ''
+                                END, '')), 'B');
+                        RETURN NEW;
+                    END;
+                    $$ LANGUAGE plpgsql;
+                """)
+            elif self.store_full_text:
+                # Handle text column without compression
+                self.cursor.execute(f"""
+                    CREATE OR REPLACE FUNCTION update_search_vector() RETURNS trigger AS $$
+                    BEGIN
+                        NEW.search_vector := 
+                            setweight(to_tsvector('{self.full_text_language}', coalesce(NEW.content_preview, '')), 'A') ||
+                            setweight(to_tsvector('{self.full_text_language}', coalesce(NEW.full_content, '')), 'B');
+                        RETURN NEW;
+                    END;
+                    $$ LANGUAGE plpgsql;
+                """)
+            else:
+                # Only content_preview, no full_content
+                self.cursor.execute(f"""
+                    CREATE OR REPLACE FUNCTION update_search_vector() RETURNS trigger AS $$
+                    BEGIN
+                        NEW.search_vector := 
+                            setweight(to_tsvector('{self.full_text_language}', coalesce(NEW.content_preview, '')), 'A');
+                        RETURN NEW;
+                    END;
+                    $$ LANGUAGE plpgsql;
+                """)
+
+            # Create trigger for automatic search vector updates
+            self.cursor.execute("""
+                DROP TRIGGER IF EXISTS elements_search_vector_update ON elements;
+                CREATE TRIGGER elements_search_vector_update
+                    BEFORE INSERT OR UPDATE ON elements
+                    FOR EACH ROW EXECUTE FUNCTION update_search_vector();
+            """)
+
+            # Create GIN index for fast full-text search
+            self.cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_elements_search_vector 
+                ON elements USING GIN (search_vector)
+            """)
+
+            # Update existing rows that don't have search vectors based on compression setting
+            logger.info("Updating search vectors for existing elements...")
+
+            if self.store_full_text and self.compress_full_text:
+                # Handle bytea column with compression
+                self.cursor.execute(f"""
+                    UPDATE elements 
+                    SET search_vector = 
+                        setweight(to_tsvector('{self.full_text_language}', coalesce(content_preview, '')), 'A') ||
+                        setweight(to_tsvector('{self.full_text_language}', coalesce(
+                            CASE 
+                                WHEN full_content IS NOT NULL AND octet_length(full_content) > 0 THEN
+                                    convert_from(full_content, 'UTF8')
+                                ELSE ''
+                            END, '')), 'B')
+                    WHERE search_vector IS NULL
+                """)
+            elif self.store_full_text:
+                # Handle text column without compression
+                self.cursor.execute(f"""
+                    UPDATE elements 
+                    SET search_vector = 
+                        setweight(to_tsvector('{self.full_text_language}', coalesce(content_preview, '')), 'A') ||
+                        setweight(to_tsvector('{self.full_text_language}', coalesce(full_content, '')), 'B')
+                    WHERE search_vector IS NULL
+                """)
+            else:
+                # Only content_preview, no full_content
+                self.cursor.execute(f"""
+                    UPDATE elements 
+                    SET search_vector = 
+                        setweight(to_tsvector('{self.full_text_language}', coalesce(content_preview, '')), 'A')
+                    WHERE search_vector IS NULL
+                """)
+
+            rows_updated = self.cursor.rowcount
+            if rows_updated > 0:
+                logger.info(f"Updated search vectors for {rows_updated} elements")
+
+            self.conn.commit()
+            logger.info("Full-text search setup completed successfully")
+
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"Error setting up full-text search: {str(e)}")
+            raise
 
     def close(self) -> None:
         """Close the database connection."""
@@ -965,13 +1263,7 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
                        element_dates: Optional[Dict[str, List[Dict[str, Any]]]] = None) -> None:
         """
         Store a document with its elements, relationships, and extracted dates.
-        If a document with the same source already exists, update it instead.
-
-        Args:
-            document: Document metadata
-            elements: Document elements
-            relationships: Element relationships
-            element_dates: Optional mapping of element_id -> list of extracted date dictionaries
+        Enhanced with full-text content storage and indexing.
         """
         if not self.cursor:
             raise ValueError("Database not initialized")
@@ -1030,7 +1322,7 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
                 )
             )
 
-            # Store elements
+            # Store elements with full-text support
             for element in elements:
                 element_id = element["element_id"]
                 metadata_json = json.dumps(element.get("metadata", {}))
@@ -1038,25 +1330,63 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
                 if len(content_preview) > 100:
                     content_preview = content_preview[:100] + "..."
 
-                self.cursor.execute(
-                    """
-                    INSERT INTO elements 
-                    (element_id, doc_id, element_type, parent_id, content_preview, 
-                     content_location, content_hash, metadata)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    RETURNING element_pk
-                    """,
-                    (
-                        element_id,
-                        element.get("doc_id", ""),
-                        element.get("element_type", ""),
-                        element.get("parent_id", ""),
-                        content_preview,
-                        element.get("content_location", ""),
-                        element.get("content_hash", ""),
-                        metadata_json
+                # Handle full content storage
+                full_content = None
+                if self.store_full_text:
+                    full_content_raw = element.get("full_content", "")
+                    if full_content_raw:
+                        # Apply length limit if configured
+                        if self.full_text_max_length and len(full_content_raw) > self.full_text_max_length:
+                            full_content_raw = full_content_raw[:self.full_text_max_length]
+
+                        if self.compress_full_text:
+                            # Use PostgreSQL compression
+                            full_content = full_content_raw.encode('utf-8')
+                        else:
+                            full_content = full_content_raw
+
+                # Insert element with full content
+                if self.store_full_text:
+                    self.cursor.execute(
+                        """
+                        INSERT INTO elements 
+                        (element_id, doc_id, element_type, parent_id, content_preview, 
+                         content_location, content_hash, metadata, full_content)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        RETURNING element_pk
+                        """,
+                        (
+                            element_id,
+                            element.get("doc_id", ""),
+                            element.get("element_type", ""),
+                            element.get("parent_id", ""),
+                            content_preview,
+                            element.get("content_location", ""),
+                            element.get("content_hash", ""),
+                            metadata_json,
+                            full_content
+                        )
                     )
-                )
+                else:
+                    self.cursor.execute(
+                        """
+                        INSERT INTO elements 
+                        (element_id, doc_id, element_type, parent_id, content_preview, 
+                         content_location, content_hash, metadata)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        RETURNING element_pk
+                        """,
+                        (
+                            element_id,
+                            element.get("doc_id", ""),
+                            element.get("element_type", ""),
+                            element.get("parent_id", ""),
+                            content_preview,
+                            element.get("content_location", ""),
+                            element.get("content_hash", ""),
+                            metadata_json
+                        )
+                    )
 
                 # Get the PostgreSQL serial auto-increment ID
                 element_pk = self.cursor.fetchone()[0]
@@ -1223,20 +1553,34 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
         return doc
 
     def get_document_elements(self, doc_id: str) -> List[Dict[str, Any]]:
-        """Get elements for a document."""
+        """Get elements for a document with full content support."""
         if not self.cursor:
             raise ValueError("Database not initialized")
 
         # Modified to handle doc_id being either an actual doc_id or a source
-        self.cursor.execute(
-            """
-            SELECT e.* FROM elements e
-            JOIN documents d ON e.doc_id = d.doc_id
-            WHERE d.doc_id = %s OR d.source = %s
-            ORDER BY e.element_id
-            """,
-            (doc_id, doc_id)
-        )
+        # and to include full_content if available
+        if self.store_full_text:
+            self.cursor.execute(
+                """
+                SELECT e.* FROM elements e
+                JOIN documents d ON e.doc_id = d.doc_id
+                WHERE d.doc_id = %s OR d.source = %s
+                ORDER BY e.element_id
+                """,
+                (doc_id, doc_id)
+            )
+        else:
+            self.cursor.execute(
+                """
+                SELECT e.element_pk, e.element_id, e.doc_id, e.element_type, e.parent_id,
+                       e.content_preview, e.content_location, e.content_hash, e.metadata
+                FROM elements e
+                JOIN documents d ON e.doc_id = d.doc_id
+                WHERE d.doc_id = %s OR d.source = %s
+                ORDER BY e.element_id
+                """,
+                (doc_id, doc_id)
+            )
 
         elements = []
         for row in self.cursor.fetchall():
@@ -1247,6 +1591,15 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
                 element["metadata"] = element["metadata"]
             except (json.JSONDecodeError, TypeError):
                 element["metadata"] = {}
+
+            # Handle full content decompression if needed
+            if self.store_full_text and 'full_content' in element and element['full_content']:
+                if self.compress_full_text and isinstance(element['full_content'], bytes):
+                    try:
+                        element['full_content'] = element['full_content'].decode('utf-8')
+                    except UnicodeDecodeError:
+                        logger.warning(f"Failed to decode full_content for element {element.get('element_id')}")
+                        element['full_content'] = None
 
             elements.append(element)
 
@@ -1293,7 +1646,7 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
 
     def get_element(self, element_id_or_pk: Union[int, str]) -> Optional[Dict[str, Any]]:
         """
-        Get element by ID or PK.
+        Get element by ID or PK with full content support.
 
         Args:
             element_id_or_pk: Either the element_id (string) or element_pk (integer)
@@ -1307,16 +1660,32 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
         # Try to interpret as element_pk (integer) first
         try:
             element_pk = int(element_id_or_pk)
-            self.cursor.execute(
-                "SELECT * FROM elements WHERE element_pk = %s",
-                (element_pk,)
-            )
+            if self.store_full_text:
+                self.cursor.execute(
+                    "SELECT * FROM elements WHERE element_pk = %s",
+                    (element_pk,)
+                )
+            else:
+                self.cursor.execute(
+                    """SELECT element_pk, element_id, doc_id, element_type, parent_id,
+                              content_preview, content_location, content_hash, metadata
+                       FROM elements WHERE element_pk = %s""",
+                    (element_pk,)
+                )
         except (ValueError, TypeError):
             # If not an integer, treat as element_id (string)
-            self.cursor.execute(
-                "SELECT * FROM elements WHERE element_id = %s",
-                (element_id_or_pk,)
-            )
+            if self.store_full_text:
+                self.cursor.execute(
+                    "SELECT * FROM elements WHERE element_id = %s",
+                    (element_id_or_pk,)
+                )
+            else:
+                self.cursor.execute(
+                    """SELECT element_pk, element_id, doc_id, element_type, parent_id,
+                              content_preview, content_location, content_hash, metadata
+                       FROM elements WHERE element_id = %s""",
+                    (element_id_or_pk,)
+                )
 
         row = self.cursor.fetchone()
         if row is None:
@@ -1329,6 +1698,15 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
             element["metadata"] = element["metadata"]
         except (json.JSONDecodeError, TypeError):
             element["metadata"] = {}
+
+        # Handle full content decompression if needed
+        if self.store_full_text and 'full_content' in element and element['full_content']:
+            if self.compress_full_text and isinstance(element['full_content'], bytes):
+                try:
+                    element['full_content'] = element['full_content'].decode('utf-8')
+                except UnicodeDecodeError:
+                    logger.warning(f"Failed to decode full_content for element {element.get('element_id')}")
+                    element['full_content'] = None
 
         return element
 
@@ -1414,8 +1792,13 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
         if not self.cursor:
             raise ValueError("Database not initialized")
 
-        # Start with base query
-        sql = "SELECT * FROM elements"
+        # Start with base query - include full_content if storing it
+        if self.store_full_text:
+            sql = "SELECT * FROM elements"
+        else:
+            sql = """SELECT element_pk, element_id, doc_id, element_type, parent_id,
+                            content_preview, content_location, content_hash, metadata
+                     FROM elements"""
         params = []
 
         # Apply filters if provided
@@ -1490,31 +1873,128 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
             except (json.JSONDecodeError, TypeError):
                 element["metadata"] = {}
 
+            # Handle full content decompression if needed
+            if self.store_full_text and 'full_content' in element and element['full_content']:
+                if self.compress_full_text and isinstance(element['full_content'], bytes):
+                    try:
+                        element['full_content'] = element['full_content'].decode('utf-8')
+                    except UnicodeDecodeError:
+                        logger.warning(f"Failed to decode full_content for element {element.get('element_id')}")
+                        element['full_content'] = None
+
             elements.append(element)
 
         return elements
 
     def search_elements_by_content(self, search_text: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Search elements by content preview."""
+        """
+        Search elements by content using PostgreSQL's full-text search when available,
+        with fallback to LIKE queries.
+        """
         if not self.cursor:
             raise ValueError("Database not initialized")
 
-        self.cursor.execute(
-            "SELECT * FROM elements WHERE content_preview LIKE %s LIMIT %s",
-            (f"%{search_text}%", limit)
-        )
-
         elements = []
-        for row in self.cursor.fetchall():
-            element = dict(row)
 
-            # Convert metadata from JSON
-            try:
-                element["metadata"] = element["metadata"]
-            except (json.JSONDecodeError, TypeError):
-                element["metadata"] = {}
+        try:
+            # Try full-text search first if indexing is enabled
+            if self.index_full_text:
+                # Use PostgreSQL's full-text search
+                self.cursor.execute("""
+                    SELECT *, ts_rank_cd(search_vector, plainto_tsquery(%s, %s)) as rank
+                    FROM elements 
+                    WHERE search_vector @@ plainto_tsquery(%s, %s)
+                    ORDER BY rank DESC
+                    LIMIT %s
+                """, (self.full_text_language, search_text, self.full_text_language, search_text, limit))
 
-            elements.append(element)
+                for row in self.cursor.fetchall():
+                    element = dict(row)
+
+                    # Convert metadata from JSON
+                    try:
+                        element["metadata"] = element["metadata"]
+                    except (json.JSONDecodeError, TypeError):
+                        element["metadata"] = {}
+
+                    # Handle full content decompression if needed
+                    if self.store_full_text and 'full_content' in element and element['full_content']:
+                        if self.compress_full_text and isinstance(element['full_content'], bytes):
+                            try:
+                                element['full_content'] = element['full_content'].decode('utf-8')
+                            except UnicodeDecodeError:
+                                logger.warning(f"Failed to decode full_content for element {element.get('element_id')}")
+                                element['full_content'] = None
+
+                    # Add the rank for reference
+                    element['search_rank'] = float(row['rank']) if row['rank'] else 0.0
+                    elements.append(element)
+
+            # If no full-text results or full-text search not enabled, fall back to LIKE search
+            if not elements:
+                # Build query based on available columns
+                if self.store_full_text:
+                    search_sql = """
+                        SELECT * FROM elements 
+                        WHERE content_preview LIKE %s 
+                           OR (full_content IS NOT NULL AND 
+                               CASE 
+                                   WHEN octet_length(full_content) > 0 THEN
+                                       CASE 
+                                           WHEN left(full_content::text, 1) = E'\\x' THEN 
+                                               convert_from(full_content, 'UTF8') LIKE %s
+                                           ELSE 
+                                               full_content::text LIKE %s
+                                       END
+                                   ELSE FALSE
+                               END)
+                        LIMIT %s
+                    """
+                    params = (f"%{search_text}%", f"%{search_text}%", f"%{search_text}%", limit)
+                else:
+                    search_sql = "SELECT * FROM elements WHERE content_preview LIKE %s LIMIT %s"
+                    params = (f"%{search_text}%", limit)
+
+                self.cursor.execute(search_sql, params)
+
+                for row in self.cursor.fetchall():
+                    element = dict(row)
+
+                    # Convert metadata from JSON
+                    try:
+                        element["metadata"] = element["metadata"]
+                    except (json.JSONDecodeError, TypeError):
+                        element["metadata"] = {}
+
+                    # Handle full content decompression if needed
+                    if self.store_full_text and 'full_content' in element and element['full_content']:
+                        if self.compress_full_text and isinstance(element['full_content'], bytes):
+                            try:
+                                element['full_content'] = element['full_content'].decode('utf-8')
+                            except UnicodeDecodeError:
+                                logger.warning(f"Failed to decode full_content for element {element.get('element_id')}")
+                                element['full_content'] = None
+
+                    elements.append(element)
+
+        except Exception as e:
+            logger.error(f"Error in content search: {str(e)}")
+            # Ultimate fallback to simple content_preview search
+            self.cursor.execute(
+                "SELECT * FROM elements WHERE content_preview LIKE %s LIMIT %s",
+                (f"%{search_text}%", limit)
+            )
+
+            for row in self.cursor.fetchall():
+                element = dict(row)
+
+                # Convert metadata from JSON
+                try:
+                    element["metadata"] = element["metadata"]
+                except (json.JSONDecodeError, TypeError):
+                    element["metadata"] = {}
+
+                elements.append(element)
 
         return elements
 
@@ -2094,17 +2574,28 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
         end_timestamp = end_date.timestamp()
 
         try:
-            self.cursor.execute(
+            # Build query based on whether we're storing full content
+            if self.store_full_text:
+                sql = """
+                    SELECT DISTINCT e.* 
+                    FROM elements e
+                    JOIN element_dates ed ON e.element_pk = ed.element_pk
+                    WHERE ed.timestamp_value >= %s AND ed.timestamp_value <= %s
+                    ORDER BY e.element_pk
+                    LIMIT %s
                 """
-                SELECT DISTINCT e.* 
-                FROM elements e
-                JOIN element_dates ed ON e.element_pk = ed.element_pk
-                WHERE ed.timestamp_value >= %s AND ed.timestamp_value <= %s
-                ORDER BY e.element_pk
-                LIMIT %s
-                """,
-                (start_timestamp, end_timestamp, limit)
-            )
+            else:
+                sql = """
+                    SELECT DISTINCT e.element_pk, e.element_id, e.doc_id, e.element_type, e.parent_id,
+                                   e.content_preview, e.content_location, e.content_hash, e.metadata
+                    FROM elements e
+                    JOIN element_dates ed ON e.element_pk = ed.element_pk
+                    WHERE ed.timestamp_value >= %s AND ed.timestamp_value <= %s
+                    ORDER BY e.element_pk
+                    LIMIT %s
+                """
+
+            self.cursor.execute(sql, (start_timestamp, end_timestamp, limit))
 
             elements = []
             for row in self.cursor.fetchall():
@@ -2114,6 +2605,16 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
                     element["metadata"] = element["metadata"]
                 except (json.JSONDecodeError, TypeError):
                     element["metadata"] = {}
+
+                # Handle full content decompression if needed
+                if self.store_full_text and 'full_content' in element and element['full_content']:
+                    if self.compress_full_text and isinstance(element['full_content'], bytes):
+                        try:
+                            element['full_content'] = element['full_content'].decode('utf-8')
+                        except UnicodeDecodeError:
+                            logger.warning(f"Failed to decode full_content for element {element.get('element_id')}")
+                            element['full_content'] = None
+
                 elements.append(element)
 
             return elements
@@ -2248,16 +2749,26 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
             raise ValueError("Database not initialized")
 
         try:
-            self.cursor.execute(
+            # Build query based on whether we're storing full content
+            if self.store_full_text:
+                sql = """
+                    SELECT DISTINCT e.* 
+                    FROM elements e
+                    JOIN element_dates ed ON e.element_pk = ed.element_pk
+                    ORDER BY e.element_pk
+                    LIMIT %s
                 """
-                SELECT DISTINCT e.* 
-                FROM elements e
-                JOIN element_dates ed ON e.element_pk = ed.element_pk
-                ORDER BY e.element_pk
-                LIMIT %s
-                """,
-                (limit,)
-            )
+            else:
+                sql = """
+                    SELECT DISTINCT e.element_pk, e.element_id, e.doc_id, e.element_type, e.parent_id,
+                                   e.content_preview, e.content_location, e.content_hash, e.metadata
+                    FROM elements e
+                    JOIN element_dates ed ON e.element_pk = ed.element_pk
+                    ORDER BY e.element_pk
+                    LIMIT %s
+                """
+
+            self.cursor.execute(sql, (limit,))
 
             elements = []
             for row in self.cursor.fetchall():
@@ -2267,6 +2778,16 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
                     element["metadata"] = element["metadata"]
                 except (json.JSONDecodeError, TypeError):
                     element["metadata"] = {}
+
+                # Handle full content decompression if needed
+                if self.store_full_text and 'full_content' in element and element['full_content']:
+                    if self.compress_full_text and isinstance(element['full_content'], bytes):
+                        try:
+                            element['full_content'] = element['full_content'].decode('utf-8')
+                        except UnicodeDecodeError:
+                            logger.warning(f"Failed to decode full_content for element {element.get('element_id')}")
+                            element['full_content'] = None
+
                 elements.append(element)
 
             return elements
@@ -2373,11 +2894,11 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
             return {}
 
     # ========================================
-    # ENHANCED TABLE CREATION
+    # ENHANCED TABLE CREATION WITH FULL-TEXT SEARCH
     # ========================================
 
     def _create_tables(self) -> None:
-        """Create database tables including the enhanced element_dates table."""
+        """Create database tables including full-text search support."""
         try:
             # Create the required schemas (existing tables)
             self.cursor.execute("""
@@ -2392,8 +2913,8 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
             )
             """)
 
-            # Modified elements table with element_pk as serial
-            self.cursor.execute("""
+            # Enhanced elements table with optional full_content and search_vector columns
+            elements_sql = """
             CREATE TABLE IF NOT EXISTS elements (
                 element_pk SERIAL PRIMARY KEY,
                 element_id TEXT UNIQUE NOT NULL,
@@ -2403,9 +2924,20 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
                 content_preview TEXT,
                 content_location TEXT,
                 content_hash TEXT,
-                metadata JSONB
-            )
-            """)
+                metadata JSONB,
+                search_vector tsvector
+            """
+
+            # Add full_content column based on configuration
+            if self.store_full_text:
+                if self.compress_full_text:
+                    elements_sql += ", full_content bytea"
+                else:
+                    elements_sql += ", full_content text"
+
+            elements_sql += ")"
+
+            self.cursor.execute(elements_sql)
 
             # ENHANCED: Create comprehensive element_dates table with all temporal analysis fields
             self.cursor.execute("""
@@ -2582,8 +3114,8 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
             """)
 
             self.conn.commit()
-            logger.info(
-                "Created core database tables including enhanced element_dates with comprehensive temporal analysis")
+            logger.info("Created core database tables including enhanced full-text search support")
+
         except Exception as e:
             self.conn.rollback()
             logger.error(f"Error creating tables: {str(e)}")
@@ -3608,13 +4140,23 @@ class PostgreSQLDocumentDatabase(DocumentDatabase):
 
 
 if __name__ == "__main__":
-    # Example demonstrating structured search with PostgreSQL
+    # Example demonstrating enhanced PostgreSQL implementation with full-text search
     conn_params = {
         'host': 'localhost',
         'port': 5432,
         'dbname': 'doculyzer',
         'user': 'postgres',
-        'password': 'password'
+        'password': 'password',
+        # Full-text configuration
+        'store_full_text': True,
+        'index_full_text': True,
+        'compress_full_text': False,
+        'full_text_max_length': None,
+        'full_text_language': 'english',
+        'full_text_weights': {
+            'content_preview': 'A',  # Highest weight
+            'full_content': 'B'  # Lower weight
+        }
     }
 
     db = PostgreSQLDocumentDatabase(conn_params)
@@ -3622,47 +4164,88 @@ if __name__ == "__main__":
 
     # Show backend capabilities
     capabilities = db.get_backend_capabilities()
-    print(f"PostgreSQL supports {len(capabilities.supported)} capabilities:")
+    print(f"Enhanced PostgreSQL supports {len(capabilities.supported)} capabilities:")
     for cap in sorted(capabilities.get_supported_list()):
         print(f"  ✓ {cap}")
 
-    # Example structured search
+    # Show full-text search configuration
+    fts_config = db.get_text_storage_config()
+    print(f"\nFull-text search configuration:")
+    print(f"  Language: {db.full_text_language}")
+    print(f"  Store full text: {fts_config['store_full_text']}")
+    print(f"  Index full text: {fts_config['index_full_text']}")
+    print(f"  Can search full text: {fts_config['search_capabilities']['can_search_full_text']}")
+    print(f"  Search fields: {fts_config['search_capabilities']['search_fields']}")
+
+    # Example structured search with full-text capabilities
     from .structured_search import SearchQueryBuilder, LogicalOperator
 
-    query = (SearchQueryBuilder()
-             .with_operator(LogicalOperator.AND)
-             .text_search("machine learning algorithms", similarity_threshold=0.8)
-             .last_days(30)
-             .topics(include=["ml%", "ai%"])
-             .element_types(["header", "paragraph"])
-             .include_dates(True)
-             .include_topics_in_results(True)
-             .build())
+    # Test both full-text and semantic search
+    query_fts = (SearchQueryBuilder()
+                 .with_operator(LogicalOperator.AND)
+                 .text_search("artificial intelligence", similarity_threshold=0.1, use_full_text_search=True)
+                 .last_days(90)
+                 .element_types(["header", "paragraph"])
+                 .include_highlighting(True)
+                 .build())
 
-    print(f"\nExecuting structured search...")
-    print(f"Query capabilities required: {len(query.get_required_capabilities())}")
+    query_semantic = (SearchQueryBuilder()
+                      .with_operator(LogicalOperator.AND)
+                      .text_search("machine learning algorithms", similarity_threshold=0.8, use_full_text_search=False)
+                      .topics(include=["ml%", "ai%"])
+                      .include_dates(True)
+                      .include_topics_in_results(True)
+                      .build())
 
-    # Validate query
-    missing = db.validate_query_support(query)
-    if missing:
-        print(f"Missing capabilities: {[m.value for m in missing]}")
-    else:
-        print("Query fully supported!")
-
-        # Execute the search
-        results = db.execute_structured_search(query)
-        print(f"Found {len(results)} results")
-
-        for result in results[:3]:  # Show first 3 results
+    print(f"\nTesting full-text search...")
+    if db.is_query_supported(query_fts):
+        results = db.execute_structured_search(query_fts)
+        print(f"Full-text search found {len(results)} results")
+        for result in results[:2]:
             print(f"  - {result['element_id']}: {result['final_score']:.3f}")
+            if 'highlights' in result and result['highlights']:
+                print(f"    Highlights: {result['highlights']}")
 
-    print("\nPostgreSQL DocumentDatabase with structured search capabilities ready!")
-    print("Features include:")
+    print(f"\nTesting semantic search...")
+    if db.is_query_supported(query_semantic):
+        results = db.execute_structured_search(query_semantic)
+        print(f"Semantic search found {len(results)} results")
+        for result in results[:2]:
+            print(f"  - {result['element_id']}: {result['final_score']:.3f}")
+            if 'topics' in result:
+                print(f"    Topics: {result['topics']}")
+
+    # Test content search with different approaches
+    print(f"\nTesting content search methods...")
+
+    # Test full-text search if available
+    if db.index_full_text:
+        fts_results = db.search_elements_by_content("artificial intelligence", limit=3)
+        print(f"Full-text content search: {len(fts_results)} results")
+        for result in fts_results:
+            rank = result.get('search_rank', 0.0)
+            print(f"  - {result['element_id']}: rank={rank:.3f}")
+
+    # Test unified search convenience method
+    unified_results = db.unified_search(
+        search_text="deep learning",
+        element_types=["paragraph"],
+        limit=5,
+        include_element_dates=True
+    )
+    print(f"Unified search: {len(unified_results)} results")
+
+    print("\nEnhanced PostgreSQL DocumentDatabase with full-text search capabilities ready!")
+    print("Enhanced features include:")
+    print("- Native PostgreSQL full-text search with ts_vector and GIN indexes")
+    print("- Configurable full-text storage with optional compression")
+    print("- Search result highlighting using PostgreSQL's ts_headline")
+    print("- Dual search modes: full-text and semantic similarity")
     print("- Complete structured search with logical operators")
     print("- Topic-aware embeddings with JSONB support")
     print("- Comprehensive date storage and temporal analysis")
     print("- pgvector integration for fast similarity search")
-    print("- Full-text search capabilities")
     print("- Hierarchical element relationships")
     print("- Metadata filtering with JSONB operators")
-    print("- All base DocumentDatabase methods implemented")
+    print("- Enhanced convenience methods and search builders")
+    print("- Full backward compatibility with base DocumentDatabase interface")
